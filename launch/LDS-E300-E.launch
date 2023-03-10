@@ -26,6 +26,7 @@ def generate_launch_description():
      #对多版本的兼容性处理 首字母e以及之前为18.04或更早,之后为20.04或更晚
     ROS_DISTRO=''
     ROS_DISTRO = os.getenv('ROS_DISTRO')
+    print("share_dir:",share_dir);
     print("Current ROS2 Version: ",ROS_DISTRO)
     if ROS_DISTRO[0] <= 'e':
         try:
