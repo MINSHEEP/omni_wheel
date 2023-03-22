@@ -35,3 +35,4 @@ bluesea_node:
     collect_angle: 0
     error_circle: 3
     error_scale: 0.9
+    direction: 0
