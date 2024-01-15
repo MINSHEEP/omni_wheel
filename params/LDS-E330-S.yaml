@@ -14,7 +14,7 @@ bluesea_node:
     max_angle: 3.14159
     mask1: "0,3.14"
     mask2: "-3,-2"
-    hard_resample: false
+    hard_resample: true
     soft_resample: false
     with_checksum: true
     inverted: false
