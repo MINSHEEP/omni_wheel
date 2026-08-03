@@ -1,0 +1,22 @@
+# ROS 2 / colcon 生成目录
+/build/
+/install/
+/log/
+
+# Python 与测试缓存
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+coverage.xml
+
+# rosbag 与运行时输出
+*.bag
+*.db3
+*.mcap
+
+# 编辑器和系统文件
+.vscode/
+.idea/
+.DS_Store
+
