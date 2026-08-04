@@ -1,3 +1,4 @@
+# Kiwi 三轮全向底盘的唯一运行时参数文件，包含通信、安全和运动学配置。
 kiwi_base_node:
   ros__parameters:
     transport: usb_cdc
@@ -24,5 +25,11 @@ kiwi_base_node:
     base_frame_id: base_footprint
     imu_frame_id: imu_link
     estop_topic: /kiwi/estop
-    # 几何参数单独维护在 config/kiwi_kinematics.yaml，启动时必须一并加载。
+    # 运行时只需加载本文件；下面是当前已知的 Kiwi 三轮几何初值。
+    # 轮 1 在 +y，底盘中心到轮心 0.32256 m，轮直径 0.203 m。
+    wheel_positions_m: [0.0, 0.32256, -0.279345154, -0.16128, 0.279345154, -0.16128]
+    wheel_tangent_angles_deg: [0.0, 120.0, 240.0]
+    wheel_radius_m: [0.1015, 0.1015, 0.1015]
+    wheel_sign: [1, 1, 1]
+    motor_reduction_ratio: [19.0, 19.0, 19.0]
     wheel_names: [wheel_joint_1, wheel_joint_2, wheel_joint_3]

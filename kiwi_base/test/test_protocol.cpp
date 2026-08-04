@@ -1,29 +1,39 @@
+/**
+ * @file test_protocol.cpp
+ * @brief 验证 USB CDC 命令帧、CRC、重同步及轮速/IMU 反馈解码。
+ */
 #include <gtest/gtest.h>
 #include "kiwi_base/robomaster_protocol.hpp"
 #include <cstring>
 #include <limits>
 
 namespace {
+// 写入协议规定的小端序 uint16 字段。
 void put_u16(std::vector<uint8_t> & payload, size_t offset, uint16_t value)
 {
   payload[offset] = static_cast<uint8_t>(value);
   payload[offset + 1] = static_cast<uint8_t>(value >> 8);
 }
 
+// 写入协议规定的小端序 uint32 字段。
 void put_u32(std::vector<uint8_t> & payload, size_t offset, uint32_t value)
 {
   for (size_t i = 0; i < 4; ++i) payload[offset + i] = static_cast<uint8_t>(value >> (8 * i));
 }
 
+// 按主机浮点表示写入一个 float32 字段，测试协议偏移和字节序。
 void put_f32(std::vector<uint8_t> & payload, size_t offset, float value)
 {
   std::memcpy(payload.data() + offset, &value, sizeof(value));
 }
 }  // namespace
 
+// 分片和连续拼接的命令帧都应被解析为完整回调。
 TEST(Protocol, HandlesPartialAndConcatenatedFrames){kiwi_base::CommandFrame c;c.seq=42;c.timestamp_ms=123;c.enable=true;c.motor_rad_s={1.0f,-2.0f,3.0f};auto bytes=kiwi_base::encode_command(c);int calls=0;kiwi_base::FrameParser p([&](uint8_t v,kiwi_base::FrameType t,const std::vector<uint8_t>&payload){EXPECT_EQ(v,0x33);EXPECT_EQ(t,kiwi_base::FrameType::Command);EXPECT_EQ(payload.size(),12u);++calls;});p.feed(bytes.data(),4);p.feed(bytes.data()+4,bytes.size()-4);p.feed(bytes.data(),bytes.size());EXPECT_EQ(calls,2u);EXPECT_EQ(p.crc_errors(),0u);}
+// 修改 payload 后 CRC 不匹配，解析器必须丢弃该帧并计数。
 TEST(Protocol, DetectsCrcError){auto b=kiwi_base::encode_command({});b[7]^=0x20;kiwi_base::FrameParser p; p.feed(b.data(),b.size());EXPECT_EQ(p.crc_errors(),1u);}
 
+// 固定零速向量用于锁定计划文档中的协议 golden vector。
 TEST(Protocol, MatchesPlanGoldenVector){
   const auto bytes = kiwi_base::encode_command({1, 0, true, {0.0f, 0.0f, 0.0f}});
   const std::vector<uint8_t> expected = {
@@ -32,6 +42,7 @@ TEST(Protocol, MatchesPlanGoldenVector){
   EXPECT_EQ(bytes, expected);
 }
 
+// 三路电机速度应以 little-endian float32 顺序编码。
 TEST(Protocol, EncodesThreeMotorFloatsLittleEndian){
   const auto bytes = kiwi_base::encode_command({0, 0, true, {1.0f, -2.0f, 3.0f}});
   const std::vector<uint8_t> expected = {
@@ -40,6 +51,7 @@ TEST(Protocol, EncodesThreeMotorFloatsLittleEndian){
   EXPECT_EQ(bytes, expected);
 }
 
+// 未知数据 ID 不能触发有效帧回调。
 TEST(Protocol, RejectsUnknownFrameType){
   auto bytes = kiwi_base::encode_command({});
   bytes[2] = 0x40;
@@ -50,6 +62,7 @@ TEST(Protocol, RejectsUnknownFrameType){
   EXPECT_GE(parser.dropped_bytes(), 1u);
 }
 
+// 命令 ID 使用错误 payload 长度时应被拒绝。
 TEST(Protocol, RejectsWrongCommandLength){
   auto bytes = kiwi_base::encode_command({});
   bytes[1] = 0x0B;
@@ -60,12 +73,14 @@ TEST(Protocol, RejectsWrongCommandLength){
   EXPECT_GE(parser.crc_errors(), 1u);
 }
 
+// 软件禁能时，无论调用者传入什么速度，线上都必须发送零速。
 TEST(Protocol, DisabledCommandEncodesAllZeros){
   const auto bytes = kiwi_base::encode_command({0, 0, false, {1.0f, -2.0f, 3.0f}});
   const auto zero = kiwi_base::encode_command({0, 0, true, {0.0f, 0.0f, 0.0f}});
   EXPECT_EQ(bytes, zero);
 }
 
+// NaN/Inf 等非法命令必须安全降级为零速帧。
 TEST(Protocol, NonFiniteCommandFailsSafeToAllZeros){
   const auto nan = std::numeric_limits<float>::quiet_NaN();
   const auto bytes = kiwi_base::encode_command({0, 0, true, {1.0f, nan, 3.0f}});
@@ -73,6 +88,7 @@ TEST(Protocol, NonFiniteCommandFailsSafeToAllZeros){
   EXPECT_EQ(bytes, zero);
 }
 
+// 反馈解析路径同样拒绝包含非有限浮点值的帧。
 TEST(Protocol, RejectsNonFiniteMotorSpeed){
   auto bytes = kiwi_base::encode_command({0, 0, true, {1.0f, 2.0f, 3.0f}});
   const float nan = std::numeric_limits<float>::quiet_NaN();
@@ -86,6 +102,7 @@ TEST(Protocol, RejectsNonFiniteMotorSpeed){
   EXPECT_GE(parser.crc_errors(), 1u);
 }
 
+// IMU 时间戳按四字节无符号小端整数解码，不能截断为 uint16。
 TEST(Protocol, DecodesImuTimestampAsUint32){
   std::vector<uint8_t> payload(34, 0);
   payload[0] = 7;
@@ -96,6 +113,7 @@ TEST(Protocol, DecodesImuTimestampAsUint32){
   EXPECT_EQ(imu.timestamp_ms, 0x12345678u);
 }
 
+// 验证轮状态各字段偏移、符号和电池/故障字段的解码结果。
 TEST(Protocol, DecodesWheelStateFieldOffsets){
   std::vector<uint8_t> payload(46, 0);
   put_u16(payload, 0, 0x1234);

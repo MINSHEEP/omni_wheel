@@ -1,3 +1,7 @@
+/**
+ * @file robomaster_protocol.hpp
+ * @brief 上位机与 Robomaster C 板之间的 USB CDC 帧编解码和反馈解析接口。
+ */
 #pragma once
 #include <array>
 #include <cstdint>
@@ -13,6 +17,7 @@ namespace kiwi_base
    */
   constexpr uint8_t kProtocolVersion = 0x33;
   constexpr uint8_t kMotorCommandPayloadLength = 12;
+  /** 当前协议支持的命令及三类反馈帧数据 ID。 */
   enum class FrameType : uint8_t
   {
     /** 用户确认的三电机速度命令 ID。 */
@@ -70,9 +75,15 @@ namespace kiwi_base
   /** 将三路电机轴速度编码为 18 字节联调帧；enable=false 时线上强制发送零速。 */
   std::vector<uint8_t> encode_command(const CommandFrame &command);
 
+  /**
+   * @brief 增量解析 USB 字节流，并在 CRC 与字段校验通过后分发完整反馈帧。
+   *
+   * 解析器允许半帧、粘包和错误字节输入，内部缓存有上限，适合在非阻塞串口回调中使用。
+   */
   class FrameParser
   {
   public:
+    /** 完整帧回调：参数依次为协议版本、数据 ID 和不含头尾 CRC 的 payload。 */
     using FrameCallback = std::function<void(uint8_t version, FrameType type, const std::vector<uint8_t> &payload)>;
     /** 创建解析器；回调在完整帧通过校验后同步执行。 */
     explicit FrameParser(FrameCallback callback = {});

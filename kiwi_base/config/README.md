@@ -1,12 +1,20 @@
 # Kiwi 参数入口
 
-`kiwi_base.yaml` 是节点运行参数和安全限值；`kiwi_kinematics.yaml` 是上位机逆运动学的几何参数。两者一起加载时，后者覆盖同名的轮几何字段：
+`kiwi_base.yaml` 现在同时包含节点运行参数、安全限值和三轮运动学参数，是正常启动时唯一需要加载的文件。节点声明中仍保留同样的默认值，因此即使省略参数文件也能启动；参数文件提供同名键时会覆盖节点默认值。
 
 ```bash
-ros2 run kiwi_base kiwi_base_node --ros-args \
-  --params-file /home/ym/ros2_ws/src/kiwi_base/config/kiwi_base.yaml \
-  --params-file /home/ym/ros2_ws/src/kiwi_base/config/kiwi_kinematics.yaml
+ros2 launch kiwi_base kiwi_base.launch.py
 ```
+
+也可以从工作区根目录使用相对路径直接运行：
+
+```bash
+cd /home/ym/ros2_ws
+ros2 run kiwi_base kiwi_base_node --ros-args \
+  --params-file src/kiwi_base/config/kiwi_base.yaml
+```
+
+`kiwi_kinematics.yaml` 仅作为历史兼容文件保留，正常启动不再加载。launch 默认使用已安装包下的 `share/kiwi_base/config/kiwi_base.yaml`，因此不依赖当前工作目录；需要覆盖文件时可传 `params_file:=/path/to/your.yaml`。
 
 运动学参数含义：
 
@@ -31,8 +39,7 @@ ros2 run kiwi_base kiwi_base_node --ros-args \
 source /opt/ros/humble/setup.bash
 source /home/ym/ros2_ws/install/setup.bash
 ros2 run kiwi_base kiwi_base_node --ros-args \
-  --params-file /home/ym/ros2_ws/src/kiwi_base/config/kiwi_base.yaml \
-  --params-file /home/ym/ros2_ws/src/kiwi_base/config/kiwi_kinematics.yaml
+  --params-file /home/ym/ros2_ws/src/kiwi_base/config/kiwi_base.yaml
 
 # 终端 2：发布 /cmd_vel_safe；w/s 前后、a/d 横移、q/e 旋转、空格或 x 停止。
 source /opt/ros/humble/setup.bash

@@ -1,3 +1,7 @@
+/**
+ * @file kiwi_kinematics.hpp
+ * @brief 三轮 Kiwi 全向底盘的运动学数据结构与正逆解接口。
+ */
 #pragma once
 
 #include <array>

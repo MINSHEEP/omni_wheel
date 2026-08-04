@@ -1,3 +1,4 @@
+# Kiwi 三轮全向底盘 ROS 2 功能包的构建入口，安装驱动、遥操作、参数和启动文件。
 cmake_minimum_required(VERSION 3.8)
 project(kiwi_base)
 if(NOT CMAKE_CXX_STANDARD)
@@ -22,6 +23,7 @@ ament_target_dependencies(kiwi_teleop_keyboard rclcpp geometry_msgs)
 install(TARGETS kiwi_base_node kiwi_teleop_keyboard kiwi_base_core ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
+install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
 install(PROGRAMS tools/kiwi_serial_test.py DESTINATION lib/${PROJECT_NAME})
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)

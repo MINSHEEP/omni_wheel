@@ -130,6 +130,7 @@ class ProvisionalParser:
     _PAYLOAD_LENGTHS = {STATE_WHEEL: 46, STATE_IMU: 34}
 
     def __init__(self) -> None:
+        """初始化半帧缓存和联调统计计数器。"""
         self.buffer = bytearray()
         self.crc_errors = 0
         self.dropped_bytes = 0

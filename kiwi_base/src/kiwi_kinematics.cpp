@@ -1,3 +1,7 @@
+/**
+ * @file kiwi_kinematics.cpp
+ * @brief 实现三轮全向底盘的 Jacobian 构建、逆运动学和正运动学。
+ */
 #include "kiwi_base/kiwi_kinematics.hpp"
 #include <algorithm>
 #include <cmath>

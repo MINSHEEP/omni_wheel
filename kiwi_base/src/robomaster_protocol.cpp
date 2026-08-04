@@ -1,3 +1,7 @@
+/**
+ * @file robomaster_protocol.cpp
+ * @brief 实现 USB CDC 命令帧编码、CRC 校验和反馈帧解析。
+ */
 #include "kiwi_base/robomaster_protocol.hpp"
 #include <algorithm>
 #include <cstring>

@@ -1,3 +1,7 @@
+/**
+ * @file kiwi_teleop_keyboard.cpp
+ * @brief 读取终端键盘并发布带死手超时保护的机体 Twist 指令。
+ */
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/twist.hpp>
 
@@ -11,6 +15,9 @@
 #include <cstring>
 #include <string>
 
+/**
+ * @brief 键盘遥操作节点，仅产生 ROS 速度命令，不直接访问底盘串口。
+ */
 class KeyboardTeleop final : public rclcpp::Node
 {
 public:

@@ -1,3 +1,7 @@
+/**
+ * @file kiwi_base_node.cpp
+ * @brief ROS 2 Kiwi 底盘驱动：接收机体速度、做逆运动学、管理 USB CDC 和反馈话题。
+ */
 #include "kiwi_base/kiwi_kinematics.hpp"
 #include "kiwi_base/robomaster_protocol.hpp"
 
@@ -56,6 +60,11 @@ namespace kiwi_base
     }
   }
 
+  /**
+   * @brief 三轮底盘的唯一 USB 传输拥有者和 ROS 适配节点。
+   *
+   * 节点负责速度安全门控、轮速逆解、命令周期发送、反馈解码以及轮速/IMU/诊断发布。
+   */
   class KiwiBaseNode final : public rclcpp::Node
   {
   public:
@@ -97,12 +106,15 @@ namespace kiwi_base
       wheel_names_ = declare_parameter<std::vector<std::string>>(
           "wheel_names", {"wheel_joint_1", "wheel_joint_2", "wheel_joint_3"});
 
+      // 使用当前已知底盘尺寸作为兜底值；参数文件提供同名键时，ROS 2 参数覆盖优先。
+      // 轮 1 在 +y，L=322.56 mm，轮半径按直径 203 mm 取 101.5 mm。
       const auto positions = declare_parameter<std::vector<double>>(
-          "wheel_positions_m", std::vector<double>{});
+          "wheel_positions_m",
+          std::vector<double>{0.0, 0.32256, -0.279345154, -0.16128, 0.279345154, -0.16128});
       const auto angles = declare_parameter<std::vector<double>>(
-          "wheel_tangent_angles_deg", std::vector<double>{});
+          "wheel_tangent_angles_deg", std::vector<double>{0.0, 120.0, 240.0});
       const auto radii = declare_parameter<std::vector<double>>(
-          "wheel_radius_m", std::vector<double>{});
+          "wheel_radius_m", std::vector<double>{0.1015, 0.1015, 0.1015});
       const auto signs = declare_parameter<std::vector<int64_t>>(
           "wheel_sign", std::vector<int64_t>{1, 1, 1});
       const auto motor_ratios = declare_parameter<std::vector<double>>(
@@ -165,7 +177,7 @@ namespace kiwi_base
       {
         RCLCPP_ERROR(
             get_logger(),
-            "wheel parameters are incomplete; node stays disabled until real geometry is configured");
+            "wheel parameters are incomplete or invalid; node stays disabled until geometry is corrected");
       }
 
       wheel_odom_pub_ = create_publisher<nav_msgs::msg::Odometry>(wheel_odom_topic_, 10);
