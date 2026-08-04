@@ -1,0 +1,13 @@
+# Kiwi 三轮底盘上位机运动学参数（唯一几何说明入口）。
+#
+# 约定：base_link x 向前、y 向左；轮 1 位于 +y；322.56 mm 暂按
+# “底盘中心到轮心的径向距离”解释。wheel_sign 和轮序必须低速点动确认。
+# 该文件可与 kiwi_base.yaml 一起加载，后加载的参数覆盖前一个文件。
+kiwi_base_node:
+  ros__parameters:
+    wheel_positions_m: [0.0, 0.32256, -0.279345154, -0.16128, 0.279345154, -0.16128]
+    wheel_tangent_angles_deg: [0.0, 120.0, 240.0]
+    wheel_radius_m: [0.1015, 0.1015, 0.1015]
+    wheel_sign: [1, 1, 1]
+    # 联调帧发送电机轴 rad/s；主机将轮输出轴速度乘此减速比一次，MCU 不再重复相乘。
+    motor_reduction_ratio: [19.0, 19.0, 19.0]

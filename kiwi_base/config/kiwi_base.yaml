@@ -1,0 +1,28 @@
+kiwi_base_node:
+  ros__parameters:
+    transport: usb_cdc
+    device: /dev/robomaster_c
+    protocol_version: 51  # 0x33，帧同步/协议版本字节
+    command_timeout_ms: 100
+    feedback_timeout_ms: 150
+    reconnect_interval_ms: 1000
+    publish_rate: 50.0
+    max_wheel_speed_rad_s: 30.0
+    # 主机安全限幅；30 rad/s 是轮输出轴保守运行上限，不是电机规格极限。
+    max_linear_speed_m_s: 0.6
+    max_lateral_speed_m_s: 0.6
+    max_angular_speed_rad_s: 1.5
+    max_accel_m_s2: 0.8
+    max_decel_m_s2: 1.2
+    max_yaw_accel_rad_s2: 2.0
+    max_yaw_decel_rad_s2: 3.0
+    cmd_vel_topic: /cmd_vel_safe
+    wheel_odom_topic: /wheel/odom
+    imu_topic: /imu/data_raw
+    joint_states_topic: /joint_states
+    odom_frame_id: odom
+    base_frame_id: base_footprint
+    imu_frame_id: imu_link
+    estop_topic: /kiwi/estop
+    # 几何参数单独维护在 config/kiwi_kinematics.yaml，启动时必须一并加载。
+    wheel_names: [wheel_joint_1, wheel_joint_2, wheel_joint_3]
