@@ -35,8 +35,8 @@ struct WheelGeometry
 /**
  * 三轮 Kiwi 底盘的逆/正运动学。
  *
- * 构造时建立轮速 Jacobian 并检查几何满秩。该类不依赖 ROS 或串口，便于在
- * 没有硬件时单独验证轮序、方向和机体速度映射。
+ * 构造时校验几何参数。当前控制使用已经过底盘验证的固定方向矩阵；该类不依赖
+ * ROS 或串口，便于在没有硬件时单独验证轮序、方向和机体速度映射。
  *
  * 注意：当前 C 板联调协议使用固定的归一化 Kiwi 矩阵，代码中的 3.0 是
  * 标定比例；它不等于轮半径，也不等于 M3508 的 19:1 减速比。主机节点
@@ -45,7 +45,7 @@ struct WheelGeometry
 class KiwiKinematics
 {
 public:
-  /** 根据三个轮子的几何参数构造并检查 Jacobian 是否满秩。 */
+  /** 根据三个轮子的几何参数构造并检查有限值、半径和方向符号。 */
   explicit KiwiKinematics(const std::array<WheelGeometry, 3> &wheels);
 
   /** 返回构造时的参数/矩阵校验结果。 */
@@ -65,7 +65,7 @@ public:
 
 private:
   std::array<WheelGeometry, 3> wheels_{};
-  // 物理几何 Jacobian 及其伪逆：构造时用于满秩检查，保留给后续物理模型切换。
+  // 物理几何 Jacobian 及其伪逆代码当前在 .cpp 中以 #if 0 保留，不参与运行。
   // 当前 inverse()/forward() 使用的固定联调映射见 kiwi_kinematics.cpp 的 kCommandMap。
   double j_[3][3]{};
   double pinv_[3][3]{};

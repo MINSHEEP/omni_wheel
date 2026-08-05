@@ -26,8 +26,8 @@ namespace kiwi_base
   }
 
   /**
-   * 根据轮心位置、滚动切向和轮半径构造 J；每一行描述一个轮子的角速度。
-   * 同时计算 (J^T J)^-1 J^T，若半径、符号或矩阵秩不满足要求则保持 invalid。
+   * 校验轮心位置、滚动切向、轮半径和方向符号。
+   * 当前固定控制矩阵不依赖物理 Jacobian，构造函数不执行满秩检查。
    */
   KiwiKinematics::KiwiKinematics(const std::array<WheelGeometry, 3> &wheels) : wheels_(wheels)
   {
@@ -39,9 +39,9 @@ namespace kiwi_base
         error_ = "wheel geometry must be finite; radius positive and sign +/-1";
         return;
       }
+    // 旧的物理 Jacobian/伪逆路径暂时保留，不参与当前控制，也不做满秩检查。
+#if 0
     // J 的列依次对应 vx、vy、wz，输出单位为轮输出轴 rad/s。
-    // 这里仍按实物几何检查满秩，确保参数不是重复轮心或平行轮；
-    // 当前 USB 联调的数值映射使用下面的固定 K 矩阵，以兼容已烧录的 C 板。
     for (size_t i = 0; i < 3; ++i)
     {
       const auto &w = wheels_[i];
@@ -95,6 +95,7 @@ namespace kiwi_base
       for (int c = 0; c < 3; ++c)
         for (int k = 0; k < 3; ++k)
           pinv_[r][c] += inv[r][k] * j_[c][k];
+#endif
     valid_ = true;
   }
   /**
