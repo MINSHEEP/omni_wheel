@@ -87,7 +87,7 @@ public:
   {
     device_ = declare_parameter<std::string>("device", "/dev/robomaster_c");
     publish_rate_ = declare_parameter<double>("publish_rate", 50.0);
-    log_serial_frames_ = declare_parameter<bool>("log_serial_frames", true);
+    log_serial_frames_ = declare_parameter<bool>("log_serial_frames", false);
     feedback_scale_ = declare_parameter<double>("feedback_motor_scale_to_rad_s", 1.0);
 
     const auto ratios = declare_parameter<std::vector<double>>(
@@ -201,21 +201,23 @@ private:
   void update()
   {
     read_serial();
-    // twist逆向输出电机转速
+    // Twist -> 三轮轮输出轴速度。
     const auto wheel_speed = kinematics_.inverse(command_);
 
     CommandFrame frame{};
-    // 使能
+    // 线上没有 enable 字段；这里保持接口语义清楚，编码器只发送三个 float。
     frame.enable = true;
-    // 电机转速乘减速比
     for (size_t i = 0; i < 3; ++i)
       frame.motor_rad_s[i] = static_cast<float>(wheel_speed[i] * motor_ratio_[i]);
     if (log_serial_frames_)
     {
-      RCLCPP_INFO(get_logger(),"CMD vx=%.4f vy=%.4f wz=%.4f -> wheel=[%.4f %.4f %.4f] motor=[%.4f %.4f %.4f]",
+      RCLCPP_INFO(
+        get_logger(),
+        "CMD vx=%.4f vy=%.4f wz=%.4f -> wheel=[%.4f %.4f %.4f] motor=[%.4f %.4f %.4f]",
         command_.vx, command_.vy, command_.wz,
         wheel_speed[0], wheel_speed[1], wheel_speed[2],
-        frame.motor_rad_s[0], frame.motor_rad_s[1], frame.motor_rad_s[2]);}
+        frame.motor_rad_s[0], frame.motor_rad_s[1], frame.motor_rad_s[2]);
+    }
     send_command(frame);
   }
 
