@@ -1,7 +1,7 @@
 # ROS 2 Humble + Ubuntu 22.04 三轮全向底盘建图导航实施方案
 
 > 版本：2026-08-05
-> Git 基线：`src` 子仓库 `877f3f6`（kiwi_base 最小联调链路）；`standard-robot-pro` 仍为独立固件工作区，未纳入本次 ROS 提交。
+> Git 基线：`src` 子仓库 `823d820`（统一 0x3B 反馈链路）；`standard-robot-pro` 仍为独立固件工作区，未纳入本次 ROS 提交。
 > 目标平台：Ubuntu 22.04 LTS + ROS 2 Humble
 > 激光雷达：Pacecat LDS-E110-R，依据本地 V1.5 手册
 > 底盘控制器：DJI RoboMaster 开发板 C 型（STM32F407）
@@ -17,7 +17,7 @@
 
 1. 主机运行 Ubuntu 22.04 和 ROS 2 Humble，所有 Humble 软件包固定在同一发行版。
 2. RoboMaster C 型板负责底盘实时控制，通过 CAN1 连接三个外置电调；该开发板不是电机功率驱动器。
-3. 第一版让 C 型板通过 USB CDC 与主机通信；若实测抗干扰不足，再使用隔离 USB-CAN 接 CAN2。当前联调命令协议为 `0x33/len=12/id=0x3A/三个电机轴 float32/CRC16`；反馈帧和物理单位仍需抓包确认，watchdog 与硬件急停独立保留。
+3. 第一版让 C 型板通过 USB CDC 与主机通信；若实测抗干扰不足，再使用隔离 USB-CAN 接 CAN2。当前联调命令协议为 `0x33/len=12/id=0x3A`，反馈协议固定为 `0x33/len=48/id=0x3B`，两者均使用 CRC8+CRC16；watchdog 与硬件急停独立保留。
 4. 不采用 `omnidirectional_controllers`，也不把标准控制器管理器放进第一版；新建单一 `kiwi_base_node`，负责三轮逆运动学、上/下位机协议、编码器/IMU解析和原始轮里程计。
 5. 里程计由轮编码器计算，轮里程计和 IMU 用 robot_localization EKF 融合；EKF 唯一发布 odom 到 base_footprint 的 TF。
 6. 建图使用 SLAM Toolbox；保存地图后，定位使用 AMCL，并明确使用 Humble 的 OmniMotionModel。
@@ -144,7 +144,7 @@ LDS-E110-R 保持直连主机，不经过 C 型板转发。若 USB CDC 抗干扰
 | 三轮实际轮序、切向角和正方向 | Jacobian、URDF、编码器符号 | 待低速点动确认 |
 | 三个电机 CAN ID、CAN 总线和终端电阻 | C 型板闭环 | 待抓包/实测 |
 | C620 电流 raw 与安培换算、温度保护 | 电流限幅和诊断 | 待用电流计校准 |
-| USB 命令帧格式、版本和校验 | `ros_bridge` 与主机 codec | 命令格式已按 0x33/0x3A/三 float 冻结；反馈帧仍待确认 |
+| USB 命令/反馈帧格式、版本和校验 | `robomaster_protocol` 与 MCU codec | 0x3A/12 命令和 0x3B/48 反馈均已冻结；单位仍待实测 |
 | 编码器反馈单位、零点和掉线行为 | 轮位置/速度 | 待实测 |
 | BMI088 相对底盘安装方向 | IMU frame 和 EKF | 待测量 |
 | STM32F407 完整料号、主频和存储 | 固件资源预算 | 待从芯片丝印/固件工程确认 |
@@ -216,14 +216,13 @@ base_link ──> wheel_link_1/2/3
 |---|---|---|---|
 | /scan | sensor_msgs/msg/LaserScan | LDS-E110 驱动 | SLAM、AMCL、costmap、collision_monitor |
 | /imu/data_raw | sensor_msgs/msg/Imu | `kiwi_base_node` BMI088 bridge | EKF |
-| /battery_state | sensor_msgs/msg/BatteryState | `kiwi_base_node` ADC_BAT bridge | diagnostics、任务前置检查 |
 | /wheel/odom | nav_msgs/msg/Odometry | `kiwi_base_node` | EKF、调试 |
 | /odometry/filtered | nav_msgs/msg/Odometry | EKF | Nav2、调试 |
 | /joint_states | sensor_msgs/msg/JointState | `kiwi_base_node` | robot_state_publisher |
 | /cmd_vel | geometry_msgs/msg/Twist | Nav2/遥控 | velocity_smoother |
 | /cmd_vel_smoothed | geometry_msgs/msg/Twist | velocity_smoother | collision_monitor |
 | /cmd_vel_safe | geometry_msgs/msg/Twist | collision_monitor | `kiwi_base_node` |
-| /diagnostics | diagnostic_msgs/msg/DiagnosticArray | 各驱动 | 监控和任务前置检查 |
+| /diagnostics | diagnostic_msgs/msg/DiagnosticArray | 雷达/系统驱动 | 监控和任务前置检查 |
 
 Humble 基线统一使用 geometry_msgs/msg/Twist（非 stamped）。`kiwi_base_node` 订阅 `/cmd_vel_safe`；若后续切换 TwistStamped，必须在 Nav2、安全层和底盘节点三端同时切换。
 
@@ -450,37 +449,26 @@ Ubuntu 22.04 / ROS 2 Humble 主机
 
 手册只确认 USB 具备通信能力，不提供本项目需要的 CDC 应用协议；USB 描述符、收发缓冲和项目 CRC codec 均由 `ros_bridge`/ROS 适配层实现。USB 给板载 STM32/部分器件供电时，不能同时假定它给 PWM 外设电源供电。
 
-### 8.3 主机与 C 型板协议（命令帧冻结格式）
+### 8.3 主机与 C 型板协议（0x3A/0x3B）
 
-命令帧按你提供的 C 型板解析流程实现；反馈帧布局仍按当前固件结构保留，后续抓包后可只替换反馈 codec，
-不改变“上位机逆解、C 板执行速度闭环”的所有权：
+命令和反馈都使用同一通用帧：`sof | len | id | crc8 | payload | crc16_le`。
+`sof=0x33`，CRC8 覆盖前三字节，CRC16 覆盖帧头、CRC8 和 payload。所有整数和
+`float32` 均为 little-endian。协议的唯一数据 ID 如下：
 
 ~~~text
-header = sof(0x33) | payload_len | msg_id | header_crc8
-frame  = header | payload | crc16_le
-
-CMD_MOTOR_SPEED(0x3A): payload 12 字节、整帧 18 字节：
-motor_target_rad_s[0]:f32@0、motor_target_rad_s[1]:f32@4、
-motor_target_rad_s[2]:f32@8。三个值是电机轴 rad/s，小端 IEEE-754 float32。
-
-字节顺序：33 | 0c | 3a | 65 | motor1:f32 | motor2:f32 | motor3:f32 | crc16_le。
-轮/电机映射：wheel_joint_1/2/3 -> payload[0/1/2] -> CAN ID 1/2/3。
-
-STATE_WHEEL(0x80): payload 46 字节，state_seq、last_cmd_seq、mcu_time_ms、
-position[3]、velocity[3]、current_raw[3]、battery_mV、fault_bits、flags。
-STATE_IMU(0x81): payload 34 字节，seq:u16@0、mcu_time_ms:u32@2、
-gyro[3]:f32@6、accel[3]:f32@18、temperature:f32@30。
+0x3A 主机 -> C 板，len=12，总长 18：motor_target_rad_s[3]，三个电机转子轴 rad/s
+0x3B C 板 -> 主机，len=48，总长 54：motor_actual[3]、roll/pitch/yaw、gyro[3]、accel[3]
 ~~~
 
-命令帧没有 seq、timestamp、enable 或 clear_fault 字段。主机安全门控在发送前把禁能/超时目标写成三个零速值；
-MCU 对每个 CRC、长度、有限值和量程合法的新帧刷新 100 ms watchdog。`STATE_WHEEL.last_cmd_seq` 是 MCU 本地接受计数，
-不是线上回显的主机序号。
+`0x3B` payload 的 12 个字段按 4 字节连续排列，偏移为
+`0,4,8,12,16,20,24,28,32,36,40,44`。接收解析器只接受 `0x3B/48`，收到其它 ID、
+错误长度、CRC 错误或非有限浮点值时丢弃并重新寻找 `0x33`。当前 ROS 默认把
+`motor_actual` 视为电机转子轴 `rad/s`，除以 `motor_reduction_ratio` 后得到轮输出轴速度；
+如果下位机单位是 rpm，只调整 `feedback_motor_scale_to_rad_s`。
 
-本版依据 `CAN_receive.c` 的 M3508 反馈和速度 PID，把三个 float 冻结为电机转子轴 `rad/s`。若后续双方改为 `rpm` 或减速箱输出轴速度，只修改 ROS/MCU 的单位转换层，不能在不升协议版本的情况下改变含义。
-
-收到未知版本、ID、长度或 CRC 错误时必须丢弃并计数；命令速度量程按 `KIWI_MAX_MOTOR_RAD_S` 检查。
-
-MCU 时间戳单位为 `ms`；当前 ROS 消息 header 使用接收时刻，尚未实现 MCU 到 ROS 的偏移估计，后续 EKF 联调前必须补齐。`STATE_POWER=0x82` 仅保留解码接口，当前 MCU 不发送。所有整数小端、float32 IEEE-754 小端，未知版本/长度/CRC 直接丢弃。
+代码对应关系：`encode_command()` 生成 0x3A，`FrameParser::consume()` 校验并分发 0x3B，
+`decode_feedback()` 解码 12 个浮点，`KiwiBaseNode::on_feedback()` 发布轮里程计、关节和 IMU。
+命令帧没有 seq、timestamp 或 enable 字段；停止时三个目标速度全部为零。
 
 ### 8.4 上位机与底盘安全保护
 
@@ -500,7 +488,8 @@ MCU 时间戳单位为 `ms`；当前 ROS 消息 header 使用接收时刻，尚�
 | 电流/功率 | C620 命令能力上限 20 A；当前 `KIWI_MAX_COMMAND_RAW=8192` 是约 10 A 命令电流刻度的起始 raw 限制，不等同电调输入电流或电机额定连续电流 | 需用电源侧电流计和温度实测后再调整；16384 仅保留为峰值上限，不默认启用 |
 | 硬件层 | 物理急停 GPIO/电调使能/动力回路 | 必须独立切断执行器；尚未接入前项目验收不通过 |
 
-`KIWI_C620_COMMAND_RAW_PER_AMP=819.2` 只描述 C620 CAN 命令映射；`STATE_WHEEL.motor_current_raw` 是 DJI 反馈原始码，未完成标定前禁止在 ROS 中当作安培或据此做热保护。软件急停不是功能安全急停，硬件急停必须在 ROS、USB 和 MCU 全部失效时仍有效。
+`KIWI_C620_COMMAND_RAW_PER_AMP=819.2` 只描述 C620 CAN 命令映射；当前 0x3B 反馈没有电流字段，
+不能在 ROS 中据此做热保护。软件急停不是功能安全急停，硬件急停必须在 ROS、USB 和 MCU 全部失效时仍有效。
 
 ### 8.5 频率与看门狗
 
@@ -522,16 +511,15 @@ cmd_vel subscriber → Kiwi inverse kinematics → nonblocking write → USB CDC
                                               ↑                    ↓
 wheel odom publisher ← encoder state ← framed RX parser ← C 型板 feedback
 imu publisher        ← BMI088 state   ← framed RX parser
-diagnostics          ← heartbeat/fault/timeout/estop
 ~~~
 
 节点接口固定为：
 
 - 订阅 `/cmd_vel_safe`（`geometry_msgs/msg/Twist`），只接受机体 `vx/vy/wz`；
-- 发布 `/wheel/odom`（`nav_msgs/msg/Odometry`）、`/joint_states`、`/imu/data_raw`、`/battery_state` 和 `/diagnostics`；
+- 发布 `/wheel/odom`（`nav_msgs/msg/Odometry`）、`/joint_states` 和 `/imu/data_raw`；
 - 不发布 `odom→base_footprint` TF，由 `robot_localization` EKF 独占；
 - USB I/O 使用 wall timer、非阻塞读写和 1 s 断线重连；USB 未配置时 MCU 下一个 2 ms 周期立即停机，重连会清除旧命令会话；当前没有独立线程、socketcan fallback 或 TX 队列；
-- 收到 CRC 正确且版本匹配的反馈才更新时间戳和在线状态，命令超时立即发送三个零速电机值。
+- 收到 CRC 正确、版本匹配且为 `0x3B/48` 的反馈才更新时间戳并更新轮速、里程计和 IMU。
 - `usb_cdc` 传输使用 Linux `termios` 读取 `/dev/robomaster_c`；其他 transport 当前拒绝启动。
 
 后续若需要接入仿真、控制器管理器或多种底盘，只把上述传输和运动学模块拆成标准硬件适配层，不改变协议和话题契约。
@@ -658,16 +646,16 @@ kiwi_base_node:
 | `src/kiwi_base/src/kiwi_base_node.cpp` | `KiwiBaseNode::KiwiBaseNode` | 读取最小参数、建立话题和定时器；不做物理几何检查 |
 | 同上 | `open_serial` / `close_serial` / `read_serial` | USB CDC raw 非阻塞 I/O、重连和半帧缓存处理 |
 | 同上 | `update` | 读取当前 Twist、固定逆解、乘减速比并发送命令 |
-| 同上 | `send_command` / `on_frame` | 发送 0x3A；接收 0x3B/0x80/0x81/0x82 并发布反馈 |
-| 同上 | `publish_odom` / `publish_joints` / `publish_imu` / `publish_battery` | 发布原始轮里程计、关节、IMU 和电池话题；不发布 odom TF |
-| 同上 | `publish_diagnostics` | 汇总配置、USB、反馈、MCU、急停和 CRC 计数 |
+| 同上 | `send_command` / `on_feedback` | 发送 0x3A；接收唯一 0x3B/48 帧并解码反馈 |
+| 同上 | `publish_odom` / `publish_joints` / `publish_imu` | 发布原始轮里程计、关节和 IMU 话题；不发布 odom TF |
 | `src/kiwi_base/src/kiwi_teleop_keyboard.cpp` | `tick` / `publish_zero` | 键盘到 Twist 的映射、空格清零和退出清零；死手超时暂时注释 |
 | `src/kiwi_base/src/kiwi_kinematics.cpp` | `inverse` / `forward` | 主机 Twist↔三个轮输出轴角速度；不访问硬件 |
 | `src/kiwi_base/src/robomaster_protocol.cpp` | `encode_command` / `FrameParser` / `decode_*` | 0x3A 三 float 命令与反馈 codec；协议变化时替换此层 |
 
-Python 台架工具为 `src/kiwi_base/tools/kiwi_serial_test.py`：`--self-test` 不接硬件，`--dry-run` 打印电机轴速度和 18 字节帧，`--enable` 才允许发送非零值，`--raw-hex` 用于反馈抓包/发送。
+Python 台架工具分为两个职责：`kiwi_serial_test.py` 只生成/发送 0x3A 命令，
+`kiwi_feedback_receiver.py` 只接收、校验和解码 0x3B 反馈；两者都提供 `--self-test`。
 
-键盘联调时，`kiwi_teleop_keyboard` 只发布 `/cmd_vel_safe`，`kiwi_base_node` 是唯一 USB 所有者并负责逆解、减速比转换、安全门控和 0x3A 帧发送。两个终端的完整命令见 `src/kiwi_base/config/README.md`，不要同时运行 Python 直连脚本和 `kiwi_base_node` 抢占同一 CDC 设备。
+键盘联调时，`kiwi_teleop_keyboard` 只发布 `/cmd_vel_safe`，`kiwi_base_node` 是唯一 USB 所有者并负责逆解、减速比转换和 0x3A 帧发送；当前不启用主机安全限幅。两个终端的完整命令见 `src/kiwi_base/config/README.md`，不要同时运行 Python 直连脚本和 `kiwi_base_node` 抢占同一 CDC 设备。
 
 ## 10. 里程计、IMU 和 EKF
 
@@ -1165,27 +1153,27 @@ sudo udevadm trigger
 
 ## 17. 分阶段实施计划
 
-### 阶段 0：命令接口和安全基线（代码已完成，反馈协议/实物待验）
+### 阶段 0：命令接口和安全基线（代码已完成，实物待验）
 
 - 已在 `/home/ym/ros2_ws` 保留 ROS 包和固件嵌套仓库；Keil 当前通过 `ROBOT_CONTROL_KIWI=1` 选择 Kiwi profile。
-- 命令 codec 已按 `0x33/len=12/id=0x3A/三个电机轴 float32/CRC16` 对齐；反馈帧仍待协议评审和实物抓包确认。
+- 命令 codec 已按 `0x33/len=12/id=0x3A/三个电机轴 float32` 对齐；反馈 codec 已按 `0x33/len=48/id=0x3B/十二个 float32` 对齐。
 - M3508/C620、203 mm 轮径和 322.56 mm 中心到轮心初值已录入；仍需确认 L 的语义、轮序/符号、CAN ID、有效接触半径和电流反馈单位。
-- 主机限速/斜坡/软件急停、MCU watchdog/电流 raw 限制代码已具备；物理急停断能尚未验收，未接入前不能宣称安全完成。
+- MCU watchdog/电流 raw 限制属于固件侧方案；主机限速、斜坡、超时和软件急停在当前最小联调版暂不启用，物理急停断能尚未验收，未接入前不能宣称安全完成。
 
 ### 阶段 1：硬件和传感器单测（代码骨架已完成，台架待验）
 
-- RoboMaster C 固件已接入 CAN 电调控制、BMI088 快照、ADC_BAT、watchdog 和 WHEEL/IMU 反馈帧；物理急停尚未接入。
-- USB CDC 回调已写入环形缓冲区，旧 USB 任务在 Kiwi 模式下不创建；ROS 侧 golden vector、半帧/粘包/CRC/WHEEL 偏移测试已通过。
+- RoboMaster C 固件已接入 CAN 电调控制、BMI088 快照和 watchdog；物理急停尚未接入。
+- USB CDC 回调已写入环形缓冲区，旧 USB 任务在 Kiwi 模式下不创建；ROS 侧 golden vector、半帧/粘包/CRC/十二浮点偏移测试已通过。
 - E110 接主机，验证 230400 8N1、帧头、校验、角度方向和帧率。
 - IMU 发布正确 frame_id、时间戳和 covariance。
 - 验收：雷达连续运行、USB 枚举、CAN 电机、急停和拔线安全停机均待实物测试。
 
 ### 阶段 2：底盘控制节点和运动学（ROS 代码已完成，实物标定待验）
 
-- 已完成 `kiwi_base_node` 的 USB CDC 0x3A 三 float 命令收发、上位机三轮逆运动学、安全门控、joint states、轮里程计、IMU/电池/诊断发布和断线重连代码；不引入第三方全向控制器。
-- CRC/半帧/粘包/WHEEL 偏移测试已通过；节点级超时/重连测试和实物 +x/+y/+wz 标定待补。
+- 已完成 `kiwi_base_node` 的 USB CDC 0x3A 三 float 命令发送、0x3B 十二 float 反馈接收、上位机三轮逆运动学、joint states、轮里程计、IMU 发布和断线重连代码；不引入第三方全向控制器。
+- CRC/半帧/粘包/十二浮点偏移测试已通过；节点级重连测试和实物 +x/+y/+wz 标定待补。
 - 完成 +x、+y、+wz 三组纯运动标定，保存参数版本。
-- 验收：无重复 TF；轮速/机体速度限幅、斜坡、超时归零和软件急停有效；物理急停、横向串扰和电流温升达到目标。
+- 验收：无重复 TF；完成实物标定后再恢复轮速/机体速度限幅、斜坡、超时归零和软件急停，物理急停、横向串扰和电流温升达到目标。
 
 ### 阶段 3：EKF 和 TF（1–2 天）
 
@@ -1226,7 +1214,7 @@ sudo udevadm trigger
 □ 10 分钟校验错误=0、帧率稳定、拔插可重连
 
 底盘
-□ C 型板 USB CDC/CAN 链路、USB 枚举和 0x3A 三 float 命令已完成实物验证（反馈帧仍待确认）
+□ C 型板 USB CDC/CAN 链路、USB 枚举、0x3A 命令和 0x3B/48 反馈已完成实物验证
 □ CAN1 三个电调在线，CAN1/CAN2 终端电阻已实测
 □ BMI088 安装方向、时间戳、温度和 covariance 已完成实物验证（当前温度帧为 0、ROS 用接收时刻）
 □ 三个 wheel_joint 名称唯一，r/L/gamma 与实物记录一致
