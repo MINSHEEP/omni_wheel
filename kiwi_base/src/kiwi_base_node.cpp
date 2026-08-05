@@ -209,7 +209,7 @@ private:
     {
       RCLCPP_INFO(
         get_logger(),
-        "twist vx=%.4f vy=%.4f wz=%.4f -> wheel=[%.4f %.4f %.4f] motor=[%.4f %.4f %.4f]",
+        "键盘命令 vx=%.4f vy=%.4f wz=%.4f -> 轮子转速=[%.4f %.4f %.4f] 电机转速=[%.4f %.4f %.4f]",
         command_.vx, command_.vy, command_.wz,
         wheel_speed[0], wheel_speed[1], wheel_speed[2],
         frame.motor_rad_s[0], frame.motor_rad_s[1], frame.motor_rad_s[2]);
