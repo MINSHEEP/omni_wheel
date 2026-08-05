@@ -16,8 +16,9 @@ namespace kiwi_base
     // 它是项目标定系数，不是轮半径或减速比；减速比在 kiwi_base_node 中单独处理。
     constexpr double kMotorCommandScale = 3.0;
 
-    // 固定轮序 [轮1, 轮2, 轮3] 的机体速度映射：列依次为 [vx, vy, wz]。
-    // w = kMotorCommandScale * K * [vx, vy, wz].
+    // 固定轮序 [轮1, 轮2, 轮3] 的底盘控制输入映射：列依次为 [u_x, u_y, u_wz]。
+    // 当前固件的方向约定是 u_x=-ROS vy、u_y=-ROS vx、u_wz=ROS wz。
+    // w = kMotorCommandScale * K * [u_x, u_y, u_wz].
     constexpr double kCommandMap[3][3] = {
       {-0.5, -kSin60, -1.0},
       {1.0, 0.0, -1.0},
@@ -99,14 +100,14 @@ namespace kiwi_base
   /**
    * 将机体速度转换为三个轮子的联调目标速度。
    *
-   * 输入：base_link 坐标系的 vx/vy（m/s）和 wz（rad/s）。
+   * 输入：ROS base_link 坐标系的 vx/vy（m/s）和 wz（rad/s）。
    * 输出：轮 1/2/3 的归一化输出轴速度，随后由 kiwi_base_node 乘以 19:1
    *       减速比编码为 C 板所需的电机转子轴 rad/s。
    *
-   * 当前固定映射为：
-   *   w1 = 3 * (-0.5*vx - sin60*vy - wz)
-   *   w2 = 3 * ( vx             - wz)
-   *   w3 = 3 * (-0.5*vx + sin60*vy - wz)
+   * 先按固件约定换轴：u_x=-vy、u_y=-vx、u_wz=wz；再代入固定矩阵：
+   *   w1 = 3 * ( sin60*vx + 0.5*vy - wz)
+   *   w2 = 3 * (-vy              - wz)
+   *   w3 = 3 * (-sin60*vx + 0.5*vy - wz)
    * `wheel_sign[i]` 是该路电机/编码器的整体方向修正，只能取 +1 或 -1。
    */
   std::array<double, 3> KiwiKinematics::inverse(const Twist2D &t) const
@@ -114,12 +115,13 @@ namespace kiwi_base
     std::array<double, 3> out{};
     if (!valid_ || !std::isfinite(t.vx) || !std::isfinite(t.vy) || !std::isfinite(t.wz))
       return out;
-    const double body_velocity[3] = {t.vx, t.vy, t.wz};
+    // 不在键盘节点或 MCU 再做一次换轴，轴变换只在这里发生一次。
+    const double control_velocity[3] = {-t.vy, -t.vx, t.wz};
     for (size_t i = 0; i < 3; ++i)
     {
       double command = 0.0;
       for (size_t k = 0; k < 3; ++k)
-        command += kCommandMap[i][k] * body_velocity[k];
+        command += kCommandMap[i][k] * control_velocity[k];
       out[i] = wheels_[i].sign * kMotorCommandScale * command;
     }
     return out;
@@ -139,8 +141,11 @@ namespace kiwi_base
     const double signed_w1 = wheels_[1].sign * w[1];
     const double signed_w2 = wheels_[2].sign * w[2];
     const double denominator = 3.0 * kMotorCommandScale;
-    t.vx = (2.0 * signed_w1 - signed_w0 - signed_w2) / denominator;
-    t.vy = (signed_w2 - signed_w0) / (2.0 * kSin60 * kMotorCommandScale);
+    // 先求固件控制坐标 [u_x,u_y,u_wz]，再还原到 ROS [vx,vy,wz]。
+    const double control_x = (2.0 * signed_w1 - signed_w0 - signed_w2) / denominator;
+    const double control_y = (signed_w2 - signed_w0) / (2.0 * kSin60 * kMotorCommandScale);
+    t.vx = -control_y;
+    t.vy = -control_x;
     t.wz = -(signed_w0 + signed_w1 + signed_w2) / denominator;
     return t;
   }

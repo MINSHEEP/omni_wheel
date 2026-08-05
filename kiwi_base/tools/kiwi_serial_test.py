@@ -68,10 +68,11 @@ def kiwi_inverse(
         raise ValueError("signs 必须是三个 +1 或 -1")
 
     command_map = ((-0.5, -SIN60, -1.0), (1.0, 0.0, -1.0), (-0.5, SIN60, -1.0))
-    body_velocity = (vx, vy, wz)
+    # 固件预定义坐标：前进 +vx 对应控制输入 -y，左移 +vy 对应 -x，旋转不换向。
+    control_velocity = (-vy, -vx, wz)
     result = []
     for sign, row in zip(signs, command_map):
-        result.append(sign * MOTOR_COMMAND_SCALE * sum(coef * value for coef, value in zip(row, body_velocity)))
+        result.append(sign * MOTOR_COMMAND_SCALE * sum(coef * value for coef, value in zip(row, control_velocity)))
     return tuple(result)  # type: ignore[return-value]
 
 

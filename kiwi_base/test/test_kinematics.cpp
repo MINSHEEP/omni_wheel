@@ -40,14 +40,14 @@ TEST(KiwiKinematics, MatchesExplicitMotorFormula)
   ASSERT_TRUE(k.valid()) << k.error();
 
   const auto forward = k.inverse({1.0, 0.0, 0.0});
-  EXPECT_NEAR(forward[0], -1.5, 1e-8);
-  EXPECT_NEAR(forward[1], 3.0, 1e-8);
-  EXPECT_NEAR(forward[2], -1.5, 1e-8);
+  EXPECT_NEAR(forward[0], 2.598076211352, 1e-10);
+  EXPECT_NEAR(forward[1], 0.0, 1e-10);
+  EXPECT_NEAR(forward[2], -2.598076211352, 1e-10);
 
   const auto lateral = k.inverse({0.0, 1.0, 0.0});
-  EXPECT_NEAR(lateral[0], -2.598076211352, 1e-10);
-  EXPECT_NEAR(lateral[1], 0.0, 1e-8);
-  EXPECT_NEAR(lateral[2], 2.598076211352, 1e-10);
+  EXPECT_NEAR(lateral[0], 1.5, 1e-10);
+  EXPECT_NEAR(lateral[1], -3.0, 1e-10);
+  EXPECT_NEAR(lateral[2], 1.5, 1e-10);
 
   const auto rotate = k.inverse({0.0, 0.0, 1.0});
   EXPECT_NEAR(rotate[0], -3.0, 1e-8);
