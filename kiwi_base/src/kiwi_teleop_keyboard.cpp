@@ -28,7 +28,7 @@ public:
   KeyboardTeleop() : Node("kiwi_teleop_keyboard")
   {
     const auto topic = declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel_safe");
-    speed_ = declare_parameter("speed_m_s", 0.25);
+    speed_ = declare_parameter("speed_m_s", 3);
     yaw_ = declare_parameter("yaw_rad_s", 0.8);
     // SSH 终端没有按键释放事件，以最后一次有效运动按键的时间作为停车依据。
     deadman_timeout_ms_ = static_cast<int>(declare_parameter<int>("deadman_timeout_ms", 250));
@@ -98,25 +98,25 @@ private:
         if (count == 1)
         {
           // 当前实车约定：前进=-输入 y，左移=-输入 x；这里直接发布已标定的控制输入。
-          if (key == 'w')
+          if (key == 'd')
           {
             vy_ = -speed_;
             vx_ = wz_ = 0.0;
             refreshed = true;
           }
-          else if (key == 's')
+          else if (key == 'a')
           {
             vy_ = speed_;
             vx_ = wz_ = 0.0;
             refreshed = true;
           }
-          else if (key == 'a')
+          else if (key == 's')
           {
             vx_ = -speed_;
             vy_ = wz_ = 0.0;
             refreshed = true;
           }
-          else if (key == 'd')
+          else if (key == 'w')
           {
             vx_ = speed_;
             vy_ = wz_ = 0.0;

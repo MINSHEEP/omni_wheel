@@ -80,14 +80,14 @@ public:
   : Node("kiwi_base_node"),
     parser_(
       [this](uint8_t version, const std::vector<uint8_t> &payload)
-      { on_feedback(version, payload); },
-      [this](const std::vector<uint8_t> &frame)
-      { log_frame("RX", frame); })
+      { on_feedback(version, payload); }
+      // ,[this](const std::vector<uint8_t> &frame){ log_frame("RX", frame); }
+    )
   {
     device_ = declare_parameter<std::string>("device", "/dev/robomaster_c");
     publish_rate_ = declare_parameter<double>("publish_rate", 50.0);
-    // 默认开启串口帧日志；仍保留参数以便高频运行时显式关闭。
-    log_serial_frames_ = declare_parameter<bool>("log_serial_frames", true);
+    // C++ 默认值只作为未加载参数文件时的回退，正常由 YAML 控制日志开关。
+    log_serial_frames_ = declare_parameter<bool>("log_serial_frames", false);
     feedback_scale_ = declare_parameter<double>("feedback_motor_scale_to_rad_s", 1.0);
 
     const auto ratios = declare_parameter<std::vector<double>>(
@@ -221,19 +221,19 @@ private:
   /** 将三个电机转子轴速度组装为 18 字节 0x3A 帧并写入 USB。 */
   void send_command(const CommandFrame &command)
   {
-    const auto frame = encode_command(command);
-    // 先打印组装后的完整 TX 帧，即使串口尚未打开也能检查协议内容。
-    log_frame("TX", frame);
     if (fd_ < 0)
       return;
+    const auto frame = encode_command(command);
     const ssize_t written = write(fd_, frame.data(), frame.size());
     if (written == static_cast<ssize_t>(frame.size()))
+    {
+      log_frame("TX", frame);
       return;
-    RCLCPP_WARN(get_logger(), "USB CDC partial write: %zd/%zu", written, frame.size());
+    }
     close_serial();
   }
 
-  /** 根据 log_serial_frames 参数打印完整 TX/RX 帧。 */
+  /** 根据 log_serial_frames 参数打印完整 TX 帧。 */
   void log_frame(const char *direction, const std::vector<uint8_t> &frame)
   {
     if (log_serial_frames_)
@@ -249,6 +249,21 @@ private:
     FeedbackFrame state{};
     if (!decode_feedback(payload, state))
       return;
+
+    // 0x3B 已通过版本、长度、CRC 和有限值检查；这里打印解码后的 12 个字段，
+    // 便于直接观察电机反馈和 IMU 原始角速度/加速度，避免手工拆 float32。
+    if (log_serial_frames_)
+    {
+      RCLCPP_INFO(
+        get_logger(),
+        "反馈电机转速=[%.4f %.4f %.4f] 欧拉角(rpy rad)=[%.4f %.4f %.4f] "
+        "IMU原始角速度(rad/s)=[%.4f %.4f %.4f] "
+        "IMU原始加速度(m/s^2)=[%.4f %.4f %.4f]",
+        state.motor_actual[0], state.motor_actual[1], state.motor_actual[2],
+        state.euler[0], state.euler[1], state.euler[2],
+        state.gyro[0], state.gyro[1], state.gyro[2],
+        state.accel[0], state.accel[1], state.accel[2]);
+    }
 
     const auto now = Clock::now();
     const double dt = have_feedback_time_ ?
@@ -340,7 +355,7 @@ private:
   int fd_{-1};
   double publish_rate_{50.0};
   double feedback_scale_{1.0};
-  bool log_serial_frames_{true};
+  bool log_serial_frames_{false};
   std::array<double, 3> motor_ratio_{{19.0, 19.0, 19.0}};
   std::vector<std::string> wheel_names_;
   KiwiKinematics kinematics_;

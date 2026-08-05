@@ -150,12 +150,14 @@ python3 src/kiwi_base/tools/kiwi_feedback_receiver.py \
   --port /dev/robomaster_c --print-hex
 ```
 
-YAML 中 `log_serial_frames: true` 时，节点逐帧显示目标映射、`TX[18] ...` 和 `RX[54] ...`：
+YAML 中 `log_serial_frames: true` 时，节点显示目标映射、`TX[18] ...` 原始发送帧，
+以及通过协议校验后的 0x3B 反馈解码结果：
 
 ```text
 键盘命令 vx=0.0000 vy=-0.2500 wz=0.0000 -> 轮子转速=[-0.1250 0.2500 -0.1250] 电机转速=[-2.3750 4.7500 -2.3750]
 TX[18] 33 0c 3a 65 ...
-RX[54] 33 30 3b 5b ...
+反馈电机转速=[...] 欧拉角(rpy rad)=[...] IMU原始角速度(rad/s)=[...]
+IMU原始加速度(m/s^2)=[...]
 ```
 
 同一串口只能由一个进程打开。
