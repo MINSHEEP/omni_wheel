@@ -345,7 +345,8 @@ omega = J * [vx, vy, wz]^T
 twist = (J^T J)^-1 J^T * omega       # 3 轮满秩时的正向解
 ~~~
 
-三轮 120° 对称布置只是该矩阵的一种特例。`kiwi_base_node` 在启动时检查矩阵满秩、轮半径为正、轮心不重合；缺参数或条件不满足时拒绝运行。正向运动学、逆向运动学和轮符号都必须用纯 `+x/+y/+wz` 测试验证。
+三轮 120° 对称布置只是该矩阵的一种特例。当前运行代码只校验几何参数有限、轮半径为正和方向符号合法，
+不执行 Jacobian 满秩检查，也不使用该 Jacobian 做控制。正向运动学、逆向运动学和轮符号仍必须用纯 `+x/+y/+wz` 测试验证。
 
 当前 `src/kiwi_base` 为兼容已经冻结的 C 板联调量，实际发送采用固定的归一化矩阵：
 
@@ -401,7 +402,7 @@ kiwi_base_node:
     joint_states_topic: /joint_states
 ~~~
 
-已覆盖：Jacobian 满秩/回环、协议 golden vector、半帧/粘包、CRC 错误、IMU 时间戳和 WHEEL 字段偏移。待补：命令超时/断线重连的节点级测试、rosbag odom 连续性、实机故障/急停测试。该节点不依赖 `omnidirectional_controllers` 或 `standard-robot-pro` 头文件。
+已覆盖：固定控制矩阵正逆解回环、协议 golden vector、半帧/粘包、CRC 错误、IMU 时间戳和 WHEEL 字段偏移。待补：命令超时/断线重连的节点级测试、rosbag odom 连续性、实机故障/急停测试。该节点不依赖 `omnidirectional_controllers` 或 `standard-robot-pro` 头文件。
 
 ### 7.3 符号与标定
 
