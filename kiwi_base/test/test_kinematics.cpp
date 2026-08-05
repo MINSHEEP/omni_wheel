@@ -23,8 +23,8 @@ TEST(KiwiKinematics, RejectsNonFiniteGeometry)
   EXPECT_FALSE(k.valid());
 }
 
-// 校验配置文件中的 322.56 mm 轮距和 203 mm 轮径对应的三个基准方向。
-TEST(KiwiKinematics, MatchesProvidedKiwiGeometry)
+// 锁定当前联调约定的固定轮序和 vx、vy、wz 三个基准输出。
+TEST(KiwiKinematics, MatchesExplicitMotorFormula)
 {
   // 与 config/kiwi_base.yaml 一致：轮1在 +y，L=0.32256 m，r=0.1015 m。
   constexpr double l = 0.32256;
@@ -40,17 +40,17 @@ TEST(KiwiKinematics, MatchesProvidedKiwiGeometry)
   ASSERT_TRUE(k.valid()) << k.error();
 
   const auto forward = k.inverse({1.0, 0.0, 0.0});
-  EXPECT_NEAR(forward[0], 1.0 / r, 1e-8);
-  EXPECT_NEAR(forward[1], -0.5 / r, 1e-8);
-  EXPECT_NEAR(forward[2], -0.5 / r, 1e-8);
+  EXPECT_NEAR(forward[0], -1.5, 1e-8);
+  EXPECT_NEAR(forward[1], 3.0, 1e-8);
+  EXPECT_NEAR(forward[2], -1.5, 1e-8);
 
   const auto lateral = k.inverse({0.0, 1.0, 0.0});
-  EXPECT_NEAR(lateral[0], 0.0, 1e-8);
-  EXPECT_NEAR(lateral[1], std::sqrt(3.0) * 0.5 / r, 1e-8);
-  EXPECT_NEAR(lateral[2], -std::sqrt(3.0) * 0.5 / r, 1e-8);
+  EXPECT_NEAR(lateral[0], -2.598075, 1e-8);
+  EXPECT_NEAR(lateral[1], 0.0, 1e-8);
+  EXPECT_NEAR(lateral[2], 2.598075, 1e-8);
 
   const auto rotate = k.inverse({0.0, 0.0, 1.0});
-  EXPECT_NEAR(rotate[0], -l / r, 1e-8);
-  EXPECT_NEAR(rotate[1], -l / r, 1e-8);
-  EXPECT_NEAR(rotate[2], -l / r, 1e-8);
+  EXPECT_NEAR(rotate[0], -3.0, 1e-8);
+  EXPECT_NEAR(rotate[1], -3.0, 1e-8);
+  EXPECT_NEAR(rotate[2], -3.0, 1e-8);
 }

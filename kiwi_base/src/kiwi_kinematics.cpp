@@ -7,6 +7,12 @@
 #include <cmath>
 namespace kiwi_base
 {
+  namespace
+  {
+    constexpr double kSin60 = 0.866025;
+    constexpr double kMotorCommandScale = 3.0;
+  }
+
   /**
    * 根据轮心位置、滚动切向和轮半径构造 J；每一行描述一个轮子的角速度。
    * 同时计算 (J^T J)^-1 J^T，若半径、符号或矩阵秩不满足要求则保持 invalid。
@@ -77,27 +83,27 @@ namespace kiwi_base
           pinv_[r][c] += inv[r][k] * j_[c][k];
     valid_ = true;
   }
-  /** 将机体 Twist 乘以 Jacobian，得到三个轮子的输出轴角速度。 */
+  /** 按固定轮序和当前联调比例，将机体 Twist 分别转换为三个电机速度。 */
   std::array<double, 3> KiwiKinematics::inverse(const Twist2D &t) const
   {
     std::array<double, 3> out{};
     if (!valid_)
       return out;
-    const double v[3] = {t.vx, t.vy, t.wz};
-    for (int i = 0; i < 3; ++i)
-      for (int k = 0; k < 3; ++k)
-        out[i] += j_[i][k] * v[k];
+    out[0] = kMotorCommandScale * (-0.5 * -t.vx - kSin60 * t.vy - t.wz);
+    out[1] = kMotorCommandScale * (-t.vx - t.wz);
+    out[2] = kMotorCommandScale * (-0.5 * -t.vx + kSin60 * t.vy - t.wz);
     return out;
   }
-  /** 将实测轮速乘以预计算伪逆，得到机体平面速度；无效矩阵返回零。 */
+  /** 使用当前固定三轮公式的解析逆变换恢复机体速度；无效配置返回零。 */
   Twist2D KiwiKinematics::forward(const std::array<double, 3> &w) const
   {
     Twist2D t;
     if (!valid_)
       return t;
-    t.vx = pinv_[0][0] * w[0] + pinv_[0][1] * w[1] + pinv_[0][2] * w[2];
-    t.vy = pinv_[1][0] * w[0] + pinv_[1][1] * w[1] + pinv_[1][2] * w[2];
-    t.wz = pinv_[2][0] * w[0] + pinv_[2][1] * w[1] + pinv_[2][2] * w[2];
+    const double denominator = 3.0 * kMotorCommandScale;
+    t.vx = (2.0 * w[1] - w[0] - w[2]) / denominator;
+    t.vy = (w[2] - w[0]) / (2.0 * kSin60 * kMotorCommandScale);
+    t.wz = -(w[0] + w[1] + w[2]) / denominator;
     return t;
   }
   /** 取逆解后三个轮速绝对值的最大值，用于主机命令限幅。 */

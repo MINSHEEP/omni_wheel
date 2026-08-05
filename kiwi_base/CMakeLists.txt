@@ -24,7 +24,10 @@ install(TARGETS kiwi_base_node kiwi_teleop_keyboard kiwi_base_core ARCHIVE DESTI
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
-install(PROGRAMS tools/kiwi_serial_test.py DESTINATION lib/${PROJECT_NAME})
+# 安装命令发送工具和 0x3B 组合反馈接收工具，便于脱离 ROS 节点进行串口联调。
+install(
+  PROGRAMS tools/kiwi_serial_test.py tools/kiwi_feedback_receiver.py
+  DESTINATION lib/${PROJECT_NAME})
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_kinematics test/test_kinematics.cpp)

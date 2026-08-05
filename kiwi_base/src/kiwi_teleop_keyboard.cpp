@@ -28,7 +28,7 @@ public:
   KeyboardTeleop() : Node("kiwi_teleop_keyboard")
   {
     const auto topic = declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel_safe");
-    speed_ = declare_parameter("speed_m_s", 0.25);
+    speed_ = declare_parameter("speed_m_s", 1);
     yaw_ = declare_parameter("yaw_rad_s", 0.8);
     deadman_timeout_ms_ = static_cast<int>(declare_parameter<int>("deadman_timeout_ms", 250));
     deadman_timeout_ms_ = std::max(1, deadman_timeout_ms_);
@@ -92,14 +92,14 @@ private:
         const ssize_t count = read(STDIN_FILENO, &key, 1);
         if (count == 1)
         {
-          if (key == 'w')
+          if (key == 'd')
             vx_ = speed_;
-          else if (key == 's')
-            vx_ = -speed_;
           else if (key == 'a')
-            vy_ = speed_;
-          else if (key == 'd')
+            vx_ = -speed_;
+          else if (key == 'w')
             vy_ = -speed_;
+          else if (key == 's')
+            vy_ = speed_;
           else if (key == 'q')
             wz_ = yaw_;
           else if (key == 'e')

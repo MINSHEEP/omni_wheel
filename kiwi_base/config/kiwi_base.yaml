@@ -3,12 +3,19 @@ kiwi_base_node:
   ros__parameters:
     transport: usb_cdc
     device: /dev/robomaster_c
+    # 联调阶段逐帧打印 TX/RX 十六进制；长期运行时应关闭，避免高频日志开销。
+    # 联调时可由 launch 参数开启；默认关闭，避免高频日志长期占用磁盘。
+    log_serial_frames: false
     protocol_version: 51  # 0x33，帧同步/协议版本字节
     command_timeout_ms: 100
     feedback_timeout_ms: 150
+    # false：无需反馈在线即可下发；true：必须持续收到有效 0x3B 反馈。
+    require_feedback_for_motion: false
     reconnect_interval_ms: 1000
     publish_rate: 50.0
     max_wheel_speed_rad_s: 30.0
+    # 下位机反馈值到电机轴 rad/s 的倍率；若反馈是 RPM，改为 0.104719755。
+    feedback_motor_scale_to_rad_s: 1.0
     # 主机安全限幅；30 rad/s 是轮输出轴保守运行上限，不是电机规格极限。
     max_linear_speed_m_s: 0.6
     max_lateral_speed_m_s: 0.6

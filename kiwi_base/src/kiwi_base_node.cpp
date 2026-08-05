@@ -58,6 +58,38 @@ namespace kiwi_base
       const double step = std::max(0.0, rate) * dt;
       return current + std::clamp(delta, -step, step);
     }
+
+    /** 将完整线上帧格式化为空格分隔的小写十六进制，供终端联调日志使用。 */
+    std::string frame_to_hex(const std::vector<uint8_t> &frame)
+    {
+      constexpr char digits[] = "0123456789abcdef";
+      std::string output;
+      output.reserve(frame.empty() ? 0 : frame.size() * 3 - 1);
+      for (size_t i = 0; i < frame.size(); ++i)
+      {
+        if (i != 0)
+          output.push_back(' ');
+        output.push_back(digits[frame[i] >> 4]);
+        output.push_back(digits[frame[i] & 0x0F]);
+      }
+      return output;
+    }
+
+    /** 按 ROS 固定轴 roll-pitch-yaw 约定把弧度欧拉角转换为 x/y/z/w 四元数。 */
+    std::array<double, 4> quaternion_from_rpy(double roll, double pitch, double yaw)
+    {
+      const double cr = std::cos(roll * 0.5);
+      const double sr = std::sin(roll * 0.5);
+      const double cp = std::cos(pitch * 0.5);
+      const double sp = std::sin(pitch * 0.5);
+      const double cy = std::cos(yaw * 0.5);
+      const double sy = std::sin(yaw * 0.5);
+      return {
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+        cr * cp * cy + sr * sp * sy};
+    }
   }
 
   /**
@@ -73,21 +105,28 @@ namespace kiwi_base
      * 参数或几何不完整时节点仍可启动，但保持禁能，便于先检查诊断信息。
      */
     KiwiBaseNode()
-        : Node("kiwi_base_node"),
+      : Node("kiwi_base_node"),
           parser_([this](uint8_t version, FrameType type, const std::vector<uint8_t> &payload)
-                  { on_frame(version, type, payload); })
+                  { on_frame(version, type, payload); },
+                  [this](const std::vector<uint8_t> &frame)
+                  { log_serial_frame("RX", frame); })
     {
       device_ = declare_parameter<std::string>("device", "/dev/robomaster_c");
       transport_ = declare_parameter<std::string>("transport", "usb_cdc");
+      declare_parameter<bool>("log_serial_frames", false);
       protocol_version_ = declare_parameter<int>("protocol_version", kProtocolVersion);
       command_timeout_ms_ = static_cast<int>(declare_parameter<int>("command_timeout_ms", 100));
       feedback_timeout_ms_ = static_cast<int>(declare_parameter<int>("feedback_timeout_ms", 150));
+      // 联调默认直接下发速度，不等待 0x3B 反馈；量产时可通过参数恢复反馈联锁。
+      require_feedback_for_motion_ = declare_parameter<bool>("require_feedback_for_motion", false);
       reconnect_interval_ms_ = static_cast<int>(declare_parameter<int>("reconnect_interval_ms", 1000));
       command_timeout_ms_ = std::max(1, command_timeout_ms_);
       feedback_timeout_ms_ = std::max(1, feedback_timeout_ms_);
       reconnect_interval_ms_ = std::max(100, reconnect_interval_ms_);
       publish_rate_ = std::max(1.0, declare_parameter<double>("publish_rate", 50.0));
       max_wheel_speed_ = declare_parameter<double>("max_wheel_speed_rad_s", 30.0);
+      feedback_motor_scale_to_rad_s_ =
+          declare_parameter<double>("feedback_motor_scale_to_rad_s", 1.0);
       max_linear_speed_ = declare_parameter<double>("max_linear_speed_m_s", 0.6);
       max_lateral_speed_ = declare_parameter<double>("max_lateral_speed_m_s", 0.6);
       max_angular_speed_ = declare_parameter<double>("max_angular_speed_rad_s", 1.5);
@@ -145,6 +184,12 @@ namespace kiwi_base
       {
         RCLCPP_ERROR(get_logger(), "max_wheel_speed_rad_s must be positive and finite");
         max_wheel_speed_ = 30.0;
+      }
+      if (!(feedback_motor_scale_to_rad_s_ > 0.0) ||
+          !std::isfinite(feedback_motor_scale_to_rad_s_))
+      {
+        RCLCPP_ERROR(get_logger(), "feedback_motor_scale_to_rad_s must be positive and finite");
+        feedback_motor_scale_to_rad_s_ = 1.0;
       }
       // 所有安全限值都必须是正数；错误配置回退到保守初值并保持诊断可见。
       max_linear_speed_ = std::isfinite(max_linear_speed_) && max_linear_speed_ > 0.0 ? max_linear_speed_ : 0.6;
@@ -392,8 +437,11 @@ namespace kiwi_base
 
       const Twist2D requested = command_fresh && !host_estop_ ? last_cmd_ : Twist2D{};
       const Twist2D command = limit_command(requested, steady_now);
-      const bool enabled = configured_ && fd_ >= 0 && feedback_fresh && command_fresh &&
-                           mcu_ready_ && !estop_ && !host_estop_;
+      // 默认不以反馈/电机在线状态阻塞 0x3A；显式启用联锁后才要求反馈新鲜且 MCU 就绪。
+      const bool feedback_gate_open =
+          !require_feedback_for_motion_ || (feedback_fresh && mcu_ready_ && fault_bits_ == 0U);
+      const bool enabled = configured_ && fd_ >= 0 && command_fresh && feedback_gate_open &&
+                           !estop_ && !host_estop_;
       auto wheels = kinematics_ ? kinematics_->inverse(command) : std::array<double, 3>{};
       double scale = 1.0;
       for (const double wheel : wheels)
@@ -402,7 +450,7 @@ namespace kiwi_base
       }
       for (double &wheel : wheels)
         wheel /= scale;
-      // 未通过全部在线/新鲜/急停门控时，帧内目标也必须为零，避免下位机误解残留速度。
+      // 未通过已启用的安全门控时整帧归零，避免下位机继续使用残留速度。
       if (!enabled)
         wheels = {};
 
@@ -416,8 +464,25 @@ namespace kiwi_base
         // 运动学输出是轮输出轴 rad/s；联调帧要求电机轴 rad/s，减速比只在主机转换一次。
         frame.motor_rad_s[i] = static_cast<float>(wheels[i] * motor_reduction_ratio_[i]);
       }
+      log_command(command, frame);
       send_command(frame);
       publish_diagnostics(command_age_ms, feedback_fresh, command_fresh);
+    }
+
+    /** 在串口联调日志开启时，打印机体命令和最终写入 0x3A 的三电机速度。 */
+    void log_command(const Twist2D &command, const CommandFrame &frame)
+    {
+      bool enabled = false;
+      get_parameter("log_serial_frames", enabled);
+      if (!enabled)
+        return;
+      RCLCPP_INFO(
+        get_logger(),
+        "CMD enabled=%s twist=[vx=%.6f vy=%.6f wz=%.6f] motor_rad_s=[%.6f %.6f %.6f]",
+        frame.enable ? "true" : "false", command.vx, command.vy, command.wz,
+        static_cast<double>(frame.motor_rad_s[0]),
+        static_cast<double>(frame.motor_rad_s[1]),
+        static_cast<double>(frame.motor_rad_s[2]));
     }
 
     /** 将一条已完成安全门控的三电机速度命令写入 USB；部分写入视为链路故障。 */
@@ -428,11 +493,26 @@ namespace kiwi_base
       const auto bytes = encode_command(command);
       const ssize_t count = write(fd_, bytes.data(), bytes.size());
       if (count == static_cast<ssize_t>(bytes.size()))
+      {
+        log_serial_frame("TX", bytes);
         return;
+      }
       if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
         return;
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "USB write failed or was partial; reconnecting");
       close_serial();
+    }
+
+    /** 在启用联调参数时逐帧打印方向、字节数和完整十六进制内容。 */
+    void log_serial_frame(const char *direction, const std::vector<uint8_t> &frame)
+    {
+      // 每次读取当前 ROS 参数，使运行中的节点无需重启即可开启或关闭高频帧日志。
+      bool enabled = false;
+      get_parameter("log_serial_frames", enabled);
+      if (!enabled)
+        return;
+      const std::string hex = frame_to_hex(frame);
+      RCLCPP_INFO(get_logger(), "%s[%zu] %s", direction, frame.size(), hex.c_str());
     }
 
     /** 分发一帧反馈：轮速更新里程计/关节，IMU 更新传感器，电源更新电池。 */
@@ -440,7 +520,33 @@ namespace kiwi_base
     {
       if (version != protocol_version_)
         return;
-      if (type == FrameType::WheelState)
+      if (type == FrameType::MotorImuFeedback)
+      {
+        MotorImuFeedbackFrame state;
+        if (!decode_motor_imu_feedback(payload, state))
+          return;
+        const auto feedback_now = SteadyClock::now();
+        const double dt = wheel_state_seen_ ?
+          std::chrono::duration<double>(feedback_now - last_state_steady_).count() : 0.0;
+        for (size_t i = 0; i < 3; ++i)
+        {
+          // 下位机回传电机轴实际速度；主机除以一次减速比得到轮输出轴速度。
+          wheel_vel_[i] = static_cast<float>(
+              state.motor_actual[i] * feedback_motor_scale_to_rad_s_ /
+              motor_reduction_ratio_[i]);
+          if (dt > 0.0 && dt < 1.0)
+            wheel_pos_[i] += static_cast<float>(wheel_vel_[i] * dt);
+        }
+        wheel_state_seen_ = true;
+        online_ = true;
+        mcu_ready_ = true;
+        fault_bits_ = 0U;
+        last_state_steady_ = feedback_now;
+        publish_odom();
+        publish_joints();
+        publish_motor_imu(state);
+      }
+      else if (type == FrameType::WheelState)
       {
         WheelStateFrame state;
         if (!decode_wheel_state(payload, state))
@@ -549,6 +655,28 @@ namespace kiwi_base
       imu_pub_->publish(message);
     }
 
+    /** 发布 0x3B 组合反馈中的欧拉角、原始角速度和线加速度。 */
+    void publish_motor_imu(const MotorImuFeedbackFrame &state)
+    {
+      sensor_msgs::msg::Imu message;
+      message.header.stamp = now();
+      message.header.frame_id = imu_frame_;
+      const auto quaternion = quaternion_from_rpy(state.euler[0], state.euler[1], state.euler[2]);
+      message.orientation.x = quaternion[0];
+      message.orientation.y = quaternion[1];
+      message.orientation.z = quaternion[2];
+      message.orientation.w = quaternion[3];
+      message.angular_velocity.x = state.gyro[0];
+      message.angular_velocity.y = state.gyro[1];
+      message.angular_velocity.z = state.gyro[2];
+      message.linear_acceleration.x = state.accel[0];
+      message.linear_acceleration.y = state.accel[1];
+      message.linear_acceleration.z = state.accel[2];
+      // 六轴 IMU 的 yaw 无绝对参考；发布姿态供观察，但明确禁止 EKF 当作可信姿态融合。
+      message.orientation_covariance[0] = -1.0;
+      imu_pub_->publish(message);
+    }
+
     /** 发布电池电压；电压字段来自反馈帧，present 仅表示收到有效快照。 */
     void publish_battery(const PowerStateFrame &state)
     {
@@ -559,7 +687,7 @@ namespace kiwi_base
       battery_pub_->publish(message);
     }
 
-    /** 按配置、USB、反馈、急停和命令新鲜度的优先级发布诊断状态。 */
+    /** 按配置、USB、急停、可选反馈联锁和命令新鲜度的优先级发布诊断状态。 */
     void publish_diagnostics(double command_age_ms, bool feedback_fresh, bool command_fresh)
     {
       diagnostic_msgs::msg::DiagnosticArray array;
@@ -567,18 +695,25 @@ namespace kiwi_base
       diagnostic_msgs::msg::DiagnosticStatus status;
       status.name = "kiwi_base";
       status.hardware_id = device_;
-      if (host_estop_ || !configured_ || fd_ < 0 || !feedback_fresh || !mcu_ready_ || estop_ || fault_bits_ != 0U)
+      const bool feedback_interlock_failed =
+          require_feedback_for_motion_ && (!feedback_fresh || !mcu_ready_ || fault_bits_ != 0U);
+      if (host_estop_ || !configured_ || fd_ < 0 || estop_ || feedback_interlock_failed)
       {
         status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
         status.message = host_estop_ ? "host software emergency stop" :
           (!configured_ ? "invalid configuration" : (fd_ < 0 ? "USB disconnected" :
-          (!feedback_fresh ? "feedback timeout" : (!mcu_ready_ ? "MCU not ready" :
-          (estop_ ? "MCU emergency stop" : "MCU motor fault")))));
+          (estop_ ? "MCU emergency stop" : (!feedback_fresh ? "feedback timeout" :
+          (!mcu_ready_ ? "MCU not ready" : "MCU motor fault")))));
       }
       else if (!command_fresh)
       {
         status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
         status.message = "waiting for fresh command";
+      }
+      else if (!feedback_fresh || !mcu_ready_ || fault_bits_ != 0U)
+      {
+        status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+        status.message = "direct command mode; feedback not ready";
       }
       else
       {
@@ -596,6 +731,11 @@ namespace kiwi_base
       add_value("mcu_flags", std::to_string(mcu_flags_));
       add_value("fault_bits", std::to_string(fault_bits_));
       add_value("host_estop", host_estop_ ? "true" : "false");
+      add_value("require_feedback_for_motion", require_feedback_for_motion_ ? "true" : "false");
+      bool log_serial_frames = false;
+      get_parameter("log_serial_frames", log_serial_frames);
+      add_value("log_serial_frames", log_serial_frames ? "true" : "false");
+      add_value("feedback_motor_scale_to_rad_s", std::to_string(feedback_motor_scale_to_rad_s_));
       add_value("command_limited", have_limited_command_ ? "true" : "false");
       add_value("crc_errors", std::to_string(parser_.crc_errors()));
       add_value("dropped_bytes", std::to_string(parser_.dropped_bytes()));
@@ -620,6 +760,7 @@ namespace kiwi_base
     int fd_{-1};
     double publish_rate_{50.0};
     double max_wheel_speed_{30.0};
+    double feedback_motor_scale_to_rad_s_{1.0};
     double max_linear_speed_{0.6};
     double max_lateral_speed_{0.6};
     double max_angular_speed_{1.5};
@@ -631,6 +772,7 @@ namespace kiwi_base
     bool configured_{false};
     bool online_{false};
     bool mcu_ready_{false};
+    bool require_feedback_for_motion_{false};
     bool wheel_state_seen_{false};
     bool estop_{false};
     bool host_estop_{false};

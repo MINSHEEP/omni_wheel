@@ -13,15 +13,18 @@ namespace kiwi_base
   /*
    * C 型板联调命令协议：SOF/version=0x33，header=[sof,len,id,crc8]，
    * id=0x3A、payload 为三个 little-endian float32 电机轴 rad/s，尾部 CRC16。
-   * 反馈帧仍沿用当前 0x80/0x81/0x82 适配格式；正式协议若调整，只替换本 codec 层。
+   * 实机反馈使用 id=0x3B、payload 为十二个 little-endian float32；旧反馈 ID 暂留兼容。
    */
   constexpr uint8_t kProtocolVersion = 0x33;
   constexpr uint8_t kMotorCommandPayloadLength = 12;
-  /** 当前协议支持的命令及三类反馈帧数据 ID。 */
+  constexpr uint8_t kMotorImuFeedbackPayloadLength = 48;
+  /** 当前协议支持的命令、实机组合反馈及旧适配反馈数据 ID。 */
   enum class FrameType : uint8_t
   {
     /** 用户确认的三电机速度命令 ID。 */
     Command = 0x3A,
+    /** 实机确认的三电机实际速度、欧拉角、角速度和加速度组合反馈。 */
+    MotorImuFeedback = 0x3B,
     WheelState = 0x80,
     ImuState = 0x81,
     PowerState = 0x82
@@ -34,6 +37,14 @@ namespace kiwi_base
     uint32_t timestamp_ms{0};
     bool enable{false};
     std::array<float, 3> motor_rad_s{};
+  };
+  /** C 板 0x3B 组合反馈；十二个 float 的顺序由实机抓包确认。 */
+  struct MotorImuFeedbackFrame
+  {
+    std::array<float, 3> motor_actual{};
+    std::array<float, 3> euler{};
+    std::array<float, 3> gyro{};
+    std::array<float, 3> accel{};
   };
   /** C 板反馈的轮位置、轮速度、原始电流、电压和故障状态。 */
   struct WheelStateFrame
@@ -85,8 +96,10 @@ namespace kiwi_base
   public:
     /** 完整帧回调：参数依次为协议版本、数据 ID 和不含头尾 CRC 的 payload。 */
     using FrameCallback = std::function<void(uint8_t version, FrameType type, const std::vector<uint8_t> &payload)>;
-    /** 创建解析器；回调在完整帧通过校验后同步执行。 */
-    explicit FrameParser(FrameCallback callback = {});
+    /** 原始帧回调：参数是已通过长度、CRC 和有限值校验的完整线上帧。 */
+    using RawFrameCallback = std::function<void(const std::vector<uint8_t> &frame)>;
+    /** 创建解析器；两个回调都在 feed() 调用线程内同步执行。 */
+    explicit FrameParser(FrameCallback callback = {}, RawFrameCallback raw_callback = {});
 
     /** 送入任意长度的 USB 字节片段，支持半帧和粘包。 */
     void feed(const uint8_t *data, size_t size);
@@ -108,10 +121,15 @@ namespace kiwi_base
     void consume();
     std::vector<uint8_t> buffer_;
     FrameCallback callback_{};
+    RawFrameCallback raw_callback_{};
     size_t crc_errors_{0}, frames_{0}, dropped_bytes_{0};
   };
   /** 按临时字段偏移解码轮状态，长度或浮点非法时返回 false。 */
   bool decode_wheel_state(const std::vector<uint8_t> &payload, WheelStateFrame &out);
+
+  /** 按实机确认的十二浮点顺序解码 0x3B 组合反馈。 */
+  bool decode_motor_imu_feedback(
+      const std::vector<uint8_t> &payload, MotorImuFeedbackFrame &out);
 
   /** 按临时字段偏移解码 IMU 状态，长度或浮点非法时返回 false。 */
   bool decode_imu_state(const std::vector<uint8_t> &payload, ImuStateFrame &out);

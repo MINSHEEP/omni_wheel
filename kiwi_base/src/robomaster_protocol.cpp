@@ -91,8 +91,9 @@ namespace kiwi_base
         out.push_back(uint8_t(crc >> 8));
         return out;
     }
-    /** 保存完整帧回调；解析在调用 feed() 的线程中同步执行。 */
-    FrameParser::FrameParser(FrameCallback cb) : callback_(std::move(cb)) {}
+    /** 保存字段和原始帧回调；解析在调用 feed() 的线程中同步执行。 */
+    FrameParser::FrameParser(FrameCallback cb, RawFrameCallback raw_cb)
+        : callback_(std::move(cb)), raw_callback_(std::move(raw_cb)) {}
 
     /** 清除半帧缓存，计数器保留用于诊断。 */
     void FrameParser::reset() { buffer_.clear(); }
@@ -131,6 +132,9 @@ namespace kiwi_base
             case FrameType::Command:
                 expected_len = kMotorCommandPayloadLength;
                 break;
+            case FrameType::MotorImuFeedback:
+                expected_len = kMotorImuFeedbackPayloadLength;
+                break;
             case FrameType::WheelState:
                 expected_len = 46;
                 break;
@@ -162,11 +166,12 @@ namespace kiwi_base
                 buffer_.erase(buffer_.begin());
                 continue;
             }
-            if (type == FrameType::Command)
+            if (type == FrameType::Command || type == FrameType::MotorImuFeedback)
             {
-                // 线上三个速度必须是有限 float；非法值不能触发 MCU watchdog 刷新。
+                // 命令与 0x3B 组合反馈全部由 float32 构成，任一非法值都拒绝整帧。
                 bool finite = true;
-                for (size_t offset = 4; offset < 4 + kMotorCommandPayloadLength; offset += 4)
+                const size_t payload_end = 4U + static_cast<size_t>(len);
+                for (size_t offset = 4; offset < payload_end; offset += 4)
                 {
                     const float value = get_f32(buffer_.data() + offset);
                     finite = finite && std::isfinite(value);
@@ -178,6 +183,8 @@ namespace kiwi_base
                     continue;
                 }
             }
+            if (raw_callback_)
+                raw_callback_(std::vector<uint8_t>(buffer_.begin(), buffer_.begin() + total));
             if (callback_)
                 callback_(buffer_[0], type, std::vector<uint8_t>(buffer_.begin() + 4, buffer_.begin() + 4 + len));
             ++frames_;
@@ -221,6 +228,26 @@ namespace kiwi_base
         i += 4;
         o.flags = get_u16(p.data() + i);
         return true;
+    }
+    /** 解码实机 0x3B：电机 1..3、roll/pitch/yaw、gyro xyz、accel xyz。 */
+    bool decode_motor_imu_feedback(const std::vector<uint8_t> &p, MotorImuFeedbackFrame &o)
+    {
+        if (p.size() != kMotorImuFeedbackPayloadLength)
+            return false;
+        size_t offset = 0;
+        const auto read_group = [&p, &offset](std::array<float, 3> &group)
+        {
+            for (auto &value : group)
+            {
+                value = get_f32(p.data() + offset);
+                if (!std::isfinite(value))
+                    return false;
+                offset += sizeof(float);
+            }
+            return true;
+        };
+        return read_group(o.motor_actual) && read_group(o.euler) &&
+               read_group(o.gyro) && read_group(o.accel);
     }
     /** 解码 34 字节 IMU 状态；角速度 rad/s、加速度 m/s^2。 */
     bool decode_imu_state(const std::vector<uint8_t> &p, ImuStateFrame &o)

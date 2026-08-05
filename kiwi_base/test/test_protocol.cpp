@@ -137,3 +137,51 @@ TEST(Protocol, DecodesWheelStateFieldOffsets){
   EXPECT_EQ(state.fault_bits, 0xaabbccddU);
   EXPECT_EQ(state.flags, 0x0009U);
 }
+
+// 使用实机抓到的完整 0x3B 帧锁定 ID、长度、CRC、分片处理和十二浮点顺序。
+TEST(Protocol, ParsesMotorImuFeedbackGoldenFrame){
+  const std::vector<uint8_t> frame = {
+    0x33, 0x30, 0x3B, 0x5B,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x47, 0xC0,
+    0x5C, 0xE2, 0x70, 0x3F, 0x95, 0x3F, 0xB1, 0xBC,
+    0xE7, 0xAE, 0xBC, 0x3B, 0x58, 0xA0, 0x8B, 0x3A,
+    0x5A, 0xC0, 0x42, 0x3B, 0x12, 0x73, 0xFE, 0xC0,
+    0xB9, 0x33, 0x55, 0x3D, 0x46, 0x4F, 0xBA, 0xC0,
+    0xEC, 0x74};
+  std::vector<uint8_t> payload;
+  std::vector<uint8_t> observed_raw;
+  kiwi_base::FrameParser parser(
+    [&](uint8_t version, kiwi_base::FrameType type, const std::vector<uint8_t> & value) {
+      EXPECT_EQ(version, kiwi_base::kProtocolVersion);
+      EXPECT_EQ(type, kiwi_base::FrameType::MotorImuFeedback);
+      payload = value;
+    },
+    [&](const std::vector<uint8_t> & value) {observed_raw = value;});
+  parser.feed(frame.data(), 19);
+  parser.feed(frame.data() + 19, frame.size() - 19);
+  ASSERT_EQ(parser.frames(), 1U);
+  EXPECT_EQ(observed_raw, frame);
+
+  kiwi_base::MotorImuFeedbackFrame state;
+  ASSERT_TRUE(kiwi_base::decode_motor_imu_feedback(payload, state));
+  EXPECT_FLOAT_EQ(state.motor_actual[0], 0.0F);
+  EXPECT_NEAR(state.euler[0], -3.11328125F, 1e-6F);
+  EXPECT_NEAR(state.euler[1], 0.94095397F, 1e-6F);
+  EXPECT_NEAR(state.euler[2], -0.021636764F, 1e-6F);
+  EXPECT_NEAR(state.gyro[0], 0.005758155F, 1e-6F);
+  EXPECT_NEAR(state.accel[0], -7.95154667F, 1e-6F);
+  EXPECT_NEAR(state.accel[2], -5.82217693F, 1e-6F);
+}
+
+// 0x3B 解码器必须拒绝错误长度和非有限传感器值。
+TEST(Protocol, RejectsInvalidMotorImuFeedbackPayload){
+  std::vector<uint8_t> payload(kiwi_base::kMotorImuFeedbackPayloadLength, 0U);
+  kiwi_base::MotorImuFeedbackFrame state;
+  ASSERT_TRUE(kiwi_base::decode_motor_imu_feedback(payload, state));
+  payload.pop_back();
+  EXPECT_FALSE(kiwi_base::decode_motor_imu_feedback(payload, state));
+  payload.resize(kiwi_base::kMotorImuFeedbackPayloadLength, 0U);
+  put_f32(payload, 20, std::numeric_limits<float>::quiet_NaN());
+  EXPECT_FALSE(kiwi_base::decode_motor_imu_feedback(payload, state));
+}

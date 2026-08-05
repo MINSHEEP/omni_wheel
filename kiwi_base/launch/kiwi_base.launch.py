@@ -15,6 +15,7 @@ def generate_launch_description():
     )
     params_file = LaunchConfiguration("params_file")
     device = LaunchConfiguration("device")
+    log_serial_frames = LaunchConfiguration("log_serial_frames")
 
     return LaunchDescription(
         [
@@ -28,12 +29,20 @@ def generate_launch_description():
                 default_value="/dev/robomaster_c",
                 description="USB CDC 设备路径",
             ),
+            DeclareLaunchArgument(
+                "log_serial_frames",
+                default_value="false",
+                description="是否在终端逐帧打印 USB TX/RX 十六进制数据",
+            ),
             Node(
                 package="kiwi_base",
                 executable="kiwi_base_node",
                 name="kiwi_base_node",
                 output="screen",
-                parameters=[params_file, {"device": device}],
+                parameters=[
+                    params_file,
+                    {"device": device, "log_serial_frames": log_serial_frames},
+                ],
             ),
         ]
     )
