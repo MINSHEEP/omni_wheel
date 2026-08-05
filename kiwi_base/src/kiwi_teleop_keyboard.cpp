@@ -1,6 +1,6 @@
 /**
  * @file kiwi_teleop_keyboard.cpp
- * @brief 读取终端键盘并发布带死手超时保护的机体 Twist 指令。
+ * @brief 读取终端键盘并发布机体 Twist 指令。
  */
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/twist.hpp>
@@ -10,7 +10,6 @@
 #include <fcntl.h>
 
 #include <chrono>
-#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <string>
@@ -23,15 +22,17 @@ class KeyboardTeleop final : public rclcpp::Node
 public:
   /**
    * 创建键盘速度源：将终端切换为 raw/non-blocking，并以 50 ms 周期发布 Twist。
-   * 未收到按键超过 deadman_timeout_ms 时自动发布零速度。
    */
   KeyboardTeleop() : Node("kiwi_teleop_keyboard")
   {
     const auto topic = declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel_safe");
-    speed_ = declare_parameter("speed_m_s", 1);
+    speed_ = declare_parameter("speed_m_s", 0.25);
     yaw_ = declare_parameter("yaw_rad_s", 0.8);
+#if 0
+    // 联调阶段暂不启用死手超时；恢复时取消此段注释并在 tick() 中启用对应逻辑。
     deadman_timeout_ms_ = static_cast<int>(declare_parameter<int>("deadman_timeout_ms", 250));
     deadman_timeout_ms_ = std::max(1, deadman_timeout_ms_);
+#endif
     pub_ = create_publisher<geometry_msgs::msg::Twist>(topic, 10);
 
     terminal_ready_ = isatty(STDIN_FILENO) == 1 && tcgetattr(STDIN_FILENO, &old_) == 0;
@@ -63,7 +64,9 @@ public:
     }
     timer_ = create_wall_timer(std::chrono::milliseconds(50), [this]()
                                { tick(); });
-    RCLCPP_INFO(get_logger(), "keyboard: w/a/s/d translate, q/e rotate, space or x stop, Ctrl-C quit");
+    RCLCPP_INFO(
+        get_logger(),
+        "keyboard: w=forward s=backward a=left d=right q=ccw e=cw, space/x=stop, Ctrl-C=quit");
   }
 
   /** 发布多帧零速度并恢复终端属性，防止退出后底盘继续保持运动命令。 */
@@ -80,10 +83,9 @@ public:
   }
 
 private:
-  /** 读取所有待处理按键、更新速度状态并执行死手超时保护。 */
+  /** 读取所有待处理按键、更新速度状态并发布 Twist。 */
   void tick()
   {
-    bool refreshed = false;
     if (terminal_ready_)
     {
       char key = 0;
@@ -92,23 +94,41 @@ private:
         const ssize_t count = read(STDIN_FILENO, &key, 1);
         if (count == 1)
         {
-          if (key == 'd')
-            vx_ = speed_;
-          else if (key == 'a')
-            vx_ = -speed_;
-          else if (key == 'w')
+          // 当前实车约定：前进=-输入 y，左移=-输入 x；这里直接发布已标定的控制输入。
+          if (key == 'w')
+          {
             vy_ = -speed_;
+            vx_ = wz_ = 0.0;
+          }
           else if (key == 's')
+          {
             vy_ = speed_;
+            vx_ = wz_ = 0.0;
+          }
+          else if (key == 'a')
+          {
+            vx_ = -speed_;
+            vy_ = wz_ = 0.0;
+          }
+          else if (key == 'd')
+          {
+            vx_ = speed_;
+            vy_ = wz_ = 0.0;
+          }
           else if (key == 'q')
+          {
             wz_ = yaw_;
+            vx_ = vy_ = 0.0;
+          }
           else if (key == 'e')
+          {
             wz_ = -yaw_;
+            vx_ = vy_ = 0.0;
+          }
           else if (key == ' ' || key == 'x')
             vx_ = vy_ = wz_ = 0.0;
           else
             continue;
-          refreshed = true;
         }
         else if (count == 0 || (count < 0 &&
                                 (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)))
@@ -125,6 +145,8 @@ private:
         }
       }
     }
+#if 0
+    // 联调阶段暂不启用“按键超时自动清零”；底盘停止请按空格或 x。
     if (refreshed)
     {
       last_key_steady_ = std::chrono::steady_clock::now();
@@ -136,6 +158,7 @@ private:
                                : static_cast<int64_t>(deadman_timeout_ms_) + 1;
     if (age > deadman_timeout_ms_)
       vx_ = vy_ = wz_ = 0.0;
+#endif
 
     geometry_msgs::msg::Twist message;
     message.linear.x = vx_;
@@ -158,16 +181,22 @@ private:
   rclcpp::TimerBase::SharedPtr timer_;
   termios old_{};
   int flags_{-1};
+#if 0
   int deadman_timeout_ms_{250};
+#endif
   bool terminal_ready_{false};
   bool termios_changed_{false};
+#if 0
   bool have_key_{false};
+#endif
   double speed_{0.25};
   double yaw_{0.8};
   double vx_{0.0};
   double vy_{0.0};
   double wz_{0.0};
+#if 0
   std::chrono::steady_clock::time_point last_key_steady_{};
+#endif
 };
 
 /** ROS 2 进程入口：运行键盘节点，退出时由析构函数负责安全停车。 */

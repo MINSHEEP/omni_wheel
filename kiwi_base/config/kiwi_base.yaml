@@ -1,42 +1,29 @@
-# Kiwi 三轮全向底盘的唯一运行时参数文件，包含通信、安全和运动学配置。
+# kiwi_base 唯一运行参数文件（ROS 2 Humble）。
+# 需要修改设备、话题、默认减速比或发布格式时，只改本文件。
 kiwi_base_node:
   ros__parameters:
-    transport: usb_cdc
+    # USB CDC 设备。没有硬件时节点仍可启动，但不会产生 TX 日志。
     device: /dev/robomaster_c
-    # 联调阶段逐帧打印 TX/RX 十六进制；长期运行时应关闭，避免高频日志开销。
-    # 联调时可由 launch 参数开启；默认关闭，避免高频日志长期占用磁盘。
-    log_serial_frames: false
-    protocol_version: 51  # 0x33，帧同步/协议版本字节
-    command_timeout_ms: 100
-    feedback_timeout_ms: 150
-    # false：无需反馈在线即可下发；true：必须持续收到有效 0x3B 反馈。
-    require_feedback_for_motion: false
-    reconnect_interval_ms: 1000
     publish_rate: 50.0
-    max_wheel_speed_rad_s: 30.0
-    # 下位机反馈值到电机轴 rad/s 的倍率；若反馈是 RPM，改为 0.104719755。
+    log_serial_frames: false
+
+    # 反馈电机数值 -> 轮输出轴 rad/s 的倍率。
+    # 若 C 板回传的是电机轴 rad/s，保持 1.0；主机随后除以 19。
     feedback_motor_scale_to_rad_s: 1.0
-    # 主机安全限幅；30 rad/s 是轮输出轴保守运行上限，不是电机规格极限。
-    max_linear_speed_m_s: 0.6
-    max_lateral_speed_m_s: 0.6
-    max_angular_speed_rad_s: 1.5
-    max_accel_m_s2: 0.8
-    max_decel_m_s2: 1.2
-    max_yaw_accel_rad_s2: 2.0
-    max_yaw_decel_rad_s2: 3.0
+    motor_reduction_ratio: [19.0, 19.0, 19.0]
+
+    # ROS 话题入口；Nav2、键盘或测试脚本只需要发布 cmd_vel_topic。
     cmd_vel_topic: /cmd_vel_safe
     wheel_odom_topic: /wheel/odom
     imu_topic: /imu/data_raw
     joint_states_topic: /joint_states
+    battery_topic: /battery_state
+
+    # ROS 坐标和关节名称。
     odom_frame_id: odom
     base_frame_id: base_footprint
     imu_frame_id: imu_link
-    estop_topic: /kiwi/estop
-    # 运行时只需加载本文件；下面是当前已知的 Kiwi 三轮几何初值。
-    # 轮 1 在 +y，底盘中心到轮心 0.32256 m，轮直径 0.203 m。
-    wheel_positions_m: [0.0, 0.32256, -0.279345154, -0.16128, 0.279345154, -0.16128]
-    wheel_tangent_angles_deg: [0.0, 120.0, 240.0]
-    wheel_radius_m: [0.1015, 0.1015, 0.1015]
-    wheel_sign: [1, 1, 1]
-    motor_reduction_ratio: [19.0, 19.0, 19.0]
     wheel_names: [wheel_joint_1, wheel_joint_2, wheel_joint_3]
+
+# 暂不启用：速度限幅、加速度斜坡、命令超时、反馈联锁、软件急停和物理几何参数。
+# 当前阶段先确认固定公式、USB 帧和 C 板电机闭环；恢复保护时再单独增加参数和测试。

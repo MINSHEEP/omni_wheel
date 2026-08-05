@@ -49,31 +49,21 @@ def kiwi_inverse(
     vx: float,
     vy: float,
     wz: float,
-    radius_m: float = 0.1015,
-    center_distance_m: float = 0.32256,
-    signs: Sequence[int] = (1, 1, 1),
 ) -> Tuple[float, float, float]:
-    """使用与 C++ ``KiwiKinematics`` 相同的固定联调矩阵计算三路轮速。
+    """使用与 C++ ``KiwiKinematics`` 相同的三行固定公式计算三路轮速。
 
-    ``radius_m`` 和 ``center_distance_m`` 保留在函数签名中以兼容旧脚本，但当前
-    联调矩阵的幅值由 ``MOTOR_COMMAND_SCALE=3`` 决定，并不直接使用这两个几何值。
-    完成实车标定后，若切换到物理 Jacobian，必须同步修改 C++、本脚本和测试。
+    当前公式不读取轮半径、轮心距和轮符号；3.0 是已经冻结的联调比例。
     """
-    values = (vx, vy, wz, radius_m, center_distance_m)
+    values = (vx, vy, wz)
     if not all(math.isfinite(value) for value in values):
-        raise ValueError("速度和几何参数必须是有限数")
-    if radius_m <= 0.0 or center_distance_m <= 0.0:
-        raise ValueError("轮半径和轮心距必须为正（兼容参数）")
-    if len(signs) != 3 or any(sign not in (-1, 1) for sign in signs):
-        raise ValueError("signs 必须是三个 +1 或 -1")
+        raise ValueError("速度必须是有限数")
 
-    command_map = ((-0.5, -SIN60, -1.0), (1.0, 0.0, -1.0), (-0.5, SIN60, -1.0))
-    # 固件预定义坐标：前进 +vx 对应控制输入 -y，左移 +vy 对应 -x，旋转不换向。
-    control_velocity = (-vy, -vx, wz)
-    result = []
-    for sign, row in zip(signs, command_map):
-        result.append(sign * MOTOR_COMMAND_SCALE * sum(coef * value for coef, value in zip(row, control_velocity)))
-    return tuple(result)  # type: ignore[return-value]
+    # 这里直接对应已标定控制坐标：vy<0 前进、vx<0 左移、wz>0 逆时针旋转。
+    return (
+        MOTOR_COMMAND_SCALE * (SIN60 * vx + 0.5 * vy - wz),
+        MOTOR_COMMAND_SCALE * (-vy - wz),
+        MOTOR_COMMAND_SCALE * (-SIN60 * vx + 0.5 * vy - wz),
+    )
 
 
 def wheel_to_motor(
@@ -260,14 +250,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--baudrate", type=int, default=115200, help="兼容串口 API；CDC 不使用该值")
     parser.add_argument("--rate", type=float, default=20.0, help="命令发送频率 Hz")
     parser.add_argument("--duration", type=float, default=1.0, help="发送持续时间 s；0 表示只发一帧")
-    parser.add_argument("--vx", type=float, default=0.0, help="机体前向速度 m/s")
-    parser.add_argument("--vy", type=float, default=0.0, help="机体左向速度 m/s")
+    parser.add_argument("--vx", type=float, default=0.0, help="控制 x 速度 m/s（左移为负）")
+    parser.add_argument("--vy", type=float, default=0.0, help="控制 y 速度 m/s（前进为负）")
     parser.add_argument("--wz", type=float, default=0.0, help="机体逆时针角速度 rad/s")
     parser.add_argument("--wheel-rad-s", nargs=3, type=float, metavar=("W1", "W2", "W3"), help="给三个轮输出轴 rad/s，随后乘减速比")
     parser.add_argument("--motor-rad-s", nargs=3, type=float, metavar=("M1", "M2", "M3"), help="直接给协议所需的三个电机轴 rad/s")
-    parser.add_argument("--radius-m", type=float, default=0.1015, help="轮半径 m")
-    parser.add_argument("--center-distance-m", type=float, default=0.32256, help="底盘中心到轮心距离 m")
-    parser.add_argument("--wheel-sign", nargs=3, type=int, choices=(-1, 1), metavar=("S1", "S2", "S3"), help="三个轮的物理正方向符号")
     parser.add_argument("--reduction-ratio", type=float, default=19.0, help="轮输出轴到电机轴的减速比")
     parser.add_argument("--enable", action="store_true", help="允许发送非零目标；未指定时强制零速")
     parser.add_argument("--raw-hex", help="原始十六进制帧；提供后跳过命令编码器")
@@ -296,10 +283,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.motor_rad_s:
             motor_targets = tuple(args.motor_rad_s)
         else:
-            wheels = tuple(args.wheel_rad_s) if args.wheel_rad_s else kiwi_inverse(
-                args.vx, args.vy, args.wz, args.radius_m, args.center_distance_m,
-                tuple(args.wheel_sign) if args.wheel_sign else (1, 1, 1)
-            )
+            wheels = tuple(args.wheel_rad_s) if args.wheel_rad_s else kiwi_inverse(args.vx, args.vy, args.wz)
             motor_targets = wheel_to_motor(wheels, args.reduction_ratio)
         frame = None
     if motor_targets is not None:

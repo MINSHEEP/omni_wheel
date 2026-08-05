@@ -196,8 +196,8 @@ bit    掩码          当前定义
 3..31  -             保留，发送 0
 ```
 
-上位机始终把 `fault_bits` 发布到 `/diagnostics`。默认直接下发模式只报警、不阻塞
-`0x3A`；启用 `require_feedback_for_motion` 后，任意非零故障位都会阻止非零目标。
+当前最小 `kiwi_base_node` 不发布 `/diagnostics`，也不使用 `fault_bits` 阻塞 `0x3A`；
+`fault_bits` 和 `flags` 仅作为后续安全层恢复时的预留字段。
 
 ### 6.3 flags
 
@@ -210,10 +210,9 @@ bit    掩码     名称           当前定义
 4..15  -        RESERVED       保留，发送 0
 ```
 
-启动时即使 `ENABLED=0`，MCU 也应持续发送 `WHEEL_STATE`。上位机默认配置
-`require_feedback_for_motion=false`，不等待 `USB_ONLINE`、`MOTOR_ONLINE` 或 `fault_bits`
-即可直接发送非零目标，这些字段只用于诊断。将该参数设为 `true` 后，上位机才要求
-`USB_ONLINE=1、MOTOR_ONLINE=1、fault_bits=0` 且反馈新鲜，作为非零命令的启动联锁。
+启动时即使 `ENABLED=0`，MCU 也应持续发送 `WHEEL_STATE`。当前最小上位机不等待
+`USB_ONLINE`、`MOTOR_ONLINE` 或 `fault_bits`，收到有效 `/cmd_vel_safe` 即发送 `0x3A`；
+这些字段留给后续安全层。
 
 ### 6.4 Golden frame
 

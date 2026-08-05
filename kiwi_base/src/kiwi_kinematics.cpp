@@ -1,9 +1,8 @@
 /**
  * @file kiwi_kinematics.cpp
- * @brief 实现三轮全向底盘的 Jacobian 构建、逆运动学和正运动学。
+ * @brief 实现三轮全向底盘的固定三行逆/正运动学公式。
  */
 #include "kiwi_base/kiwi_kinematics.hpp"
-#include <algorithm>
 #include <cmath>
 namespace kiwi_base
 {
@@ -16,21 +15,22 @@ namespace kiwi_base
     // 它是项目标定系数，不是轮半径或减速比；减速比在 kiwi_base_node 中单独处理。
     constexpr double kMotorCommandScale = 3.0;
 
-    // 固定轮序 [轮1, 轮2, 轮3] 的底盘控制输入映射：列依次为 [u_x, u_y, u_wz]。
-    // 当前固件的方向约定是 u_x=-ROS vy、u_y=-ROS vx、u_wz=ROS wz。
-    // w = kMotorCommandScale * K * [u_x, u_y, u_wz].
+    // 旧的矩阵写法保留在此处供对照；当前 inverse() 直接写出三行公式。
+#if 0
     constexpr double kCommandMap[3][3] = {
       {-0.5, -kSin60, -1.0},
       {1.0, 0.0, -1.0},
       {-0.5, kSin60, -1.0}};
+#endif
   }
 
-  /**
-   * 校验轮心位置、滚动切向、轮半径和方向符号。
-   * 当前固定控制矩阵不依赖物理 Jacobian，构造函数不执行满秩检查。
-   */
-  KiwiKinematics::KiwiKinematics(const std::array<WheelGeometry, 3> &wheels) : wheels_(wheels)
+#if 0
+  /** 历史几何构造函数，仅保留供物理 Jacobian 恢复时参考。 */
+  KiwiKinematics::KiwiKinematics(const std::array<WheelGeometry, 3> &wheels)
   {
+    (void)wheels;
+#if 0
+    // 旧版本的几何参数校验和 Jacobian 计算保留在此处，不参与当前固定公式控制。
     for (const auto &w : wheels_)
       if (!std::isfinite(w.x) || !std::isfinite(w.y) || !std::isfinite(w.tangent_angle_rad) ||
           !(w.radius > 0.0) || !std::isfinite(w.radius) || !std::isfinite(w.sign) ||
@@ -96,64 +96,63 @@ namespace kiwi_base
         for (int k = 0; k < 3; ++k)
           pinv_[r][c] += inv[r][k] * j_[c][k];
 #endif
+#endif
+    // 当前控制方向和比例已经由底盘联调确定，不依赖 WheelGeometry。
     valid_ = true;
   }
+#endif
   /**
    * 将机体速度转换为三个轮子的联调目标速度。
    *
-   * 输入：ROS base_link 坐标系的 vx/vy（m/s）和 wz（rad/s）。
+   * 输入：当前已标定控制坐标的 vx/vy（m/s）和 wz（rad/s）；前进为 vy<0、左移为 vx<0。
    * 输出：轮 1/2/3 的归一化输出轴速度，随后由 kiwi_base_node 乘以 19:1
    *       减速比编码为 C 板所需的电机转子轴 rad/s。
    *
-   * 先按固件约定换轴：u_x=-vy、u_y=-vx、u_wz=wz；再代入固定矩阵：
+   * 直接使用当前实车确认的方向公式，不再经过换轴变量或矩阵循环：
    *   w1 = 3 * ( sin60*vx + 0.5*vy - wz)
    *   w2 = 3 * (-vy              - wz)
    *   w3 = 3 * (-sin60*vx + 0.5*vy - wz)
-   * `wheel_sign[i]` 是该路电机/编码器的整体方向修正，只能取 +1 或 -1。
    */
   std::array<double, 3> KiwiKinematics::inverse(const Twist2D &t) const
   {
     std::array<double, 3> out{};
-    if (!valid_ || !std::isfinite(t.vx) || !std::isfinite(t.vy) || !std::isfinite(t.wz))
+#if 0
+    // 联调阶段不做输入限幅/有限值门控；恢复保护时在节点统一处理。
+    if (!std::isfinite(t.vx) || !std::isfinite(t.vy) || !std::isfinite(t.wz))
       return out;
-    // 不在键盘节点或 MCU 再做一次换轴，轴变换只在这里发生一次。
-    const double control_velocity[3] = {-t.vy, -t.vx, t.wz};
-    for (size_t i = 0; i < 3; ++i)
-    {
-      double command = 0.0;
-      for (size_t k = 0; k < 3; ++k)
-        command += kCommandMap[i][k] * control_velocity[k];
-      out[i] = wheels_[i].sign * kMotorCommandScale * command;
-    }
+#endif
+    // 公式直接对应当前底盘控制坐标；不再额外执行 control_velocity 换轴。
+    out[0] = kMotorCommandScale * (kSin60 * t.vx + 0.5 * t.vy - t.wz);
+    out[1] = kMotorCommandScale * (-t.vy - t.wz);
+    out[2] = kMotorCommandScale * (-kSin60 * t.vx + 0.5 * t.vy - t.wz);
     return out;
   }
 
   /**
    * 将三个轮子的实测速度恢复为机体速度。
-   * 该函数使用 inverse() 同一套固定矩阵的解析逆变换；先撤销 wheel_sign，
-   * 因此“电机反向”只会影响对应一路，不会改变其它两路的符号。
+   * 该函数使用 inverse() 同一套固定公式的解析逆变换。
    */
   Twist2D KiwiKinematics::forward(const std::array<double, 3> &w) const
   {
     Twist2D t;
-    if (!valid_ || !std::isfinite(w[0]) || !std::isfinite(w[1]) || !std::isfinite(w[2]))
+#if 0
+    // 联调阶段不做反馈有限值门控；协议层仍负责 CRC 和帧长度。
+    if (!std::isfinite(w[0]) || !std::isfinite(w[1]) || !std::isfinite(w[2]))
       return t;
-    const double signed_w0 = wheels_[0].sign * w[0];
-    const double signed_w1 = wheels_[1].sign * w[1];
-    const double signed_w2 = wheels_[2].sign * w[2];
+#endif
     const double denominator = 3.0 * kMotorCommandScale;
-    // 先求固件控制坐标 [u_x,u_y,u_wz]，再还原到 ROS [vx,vy,wz]。
-    const double control_x = (2.0 * signed_w1 - signed_w0 - signed_w2) / denominator;
-    const double control_y = (signed_w2 - signed_w0) / (2.0 * kSin60 * kMotorCommandScale);
-    t.vx = -control_y;
-    t.vy = -control_x;
-    t.wz = -(signed_w0 + signed_w1 + signed_w2) / denominator;
+    // 与上面三行逆解公式对应的解析正解。
+    t.vx = (w[0] - w[2]) / (2.0 * kSin60 * kMotorCommandScale);
+    t.vy = (w[0] + w[2] - 2.0 * w[1]) / denominator;
+    t.wz = -(w[0] + w[1] + w[2]) / denominator;
     return t;
   }
-  /** 取逆解后三个轮速绝对值的最大值，用于主机命令限幅。 */
+#if 0
+  /** 历史限幅接口，当前阶段不参与运行。 */
   double KiwiKinematics::max_wheel_speed(const Twist2D &t) const
   {
     const auto w = inverse(t);
     return std::max({std::abs(w[0]), std::abs(w[1]), std::abs(w[2])});
   }
+#endif
 } // namespace kiwi_base
