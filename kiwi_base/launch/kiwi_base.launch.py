@@ -31,8 +31,8 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "log_serial_frames",
-                default_value="false",
-                description="是否在终端逐帧打印 USB TX/RX 十六进制数据",
+                default_value="true",
+                description="是否在终端逐帧打印 USB TX/RX 十六进制数据，默认开启",
             ),
             Node(
                 package="kiwi_base",

@@ -86,7 +86,8 @@ public:
   {
     device_ = declare_parameter<std::string>("device", "/dev/robomaster_c");
     publish_rate_ = declare_parameter<double>("publish_rate", 50.0);
-    log_serial_frames_ = declare_parameter<bool>("log_serial_frames", false);
+    // 默认开启串口帧日志；仍保留参数以便高频运行时显式关闭。
+    log_serial_frames_ = declare_parameter<bool>("log_serial_frames", true);
     feedback_scale_ = declare_parameter<double>("feedback_motor_scale_to_rad_s", 1.0);
 
     const auto ratios = declare_parameter<std::vector<double>>(
@@ -220,15 +221,15 @@ private:
   /** 将三个电机转子轴速度组装为 18 字节 0x3A 帧并写入 USB。 */
   void send_command(const CommandFrame &command)
   {
+    const auto frame = encode_command(command);
+    // 先打印组装后的完整 TX 帧，即使串口尚未打开也能检查协议内容。
+    log_frame("TX", frame);
     if (fd_ < 0)
       return;
-    const auto frame = encode_command(command);
     const ssize_t written = write(fd_, frame.data(), frame.size());
     if (written == static_cast<ssize_t>(frame.size()))
-    {
-      log_frame("TX", frame);
       return;
-    }
+    RCLCPP_WARN(get_logger(), "USB CDC partial write: %zd/%zu", written, frame.size());
     close_serial();
   }
 
@@ -339,7 +340,7 @@ private:
   int fd_{-1};
   double publish_rate_{50.0};
   double feedback_scale_{1.0};
-  bool log_serial_frames_{false};
+  bool log_serial_frames_{true};
   std::array<double, 3> motor_ratio_{{19.0, 19.0, 19.0}};
   std::vector<std::string> wheel_names_;
   KiwiKinematics kinematics_;

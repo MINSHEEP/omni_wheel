@@ -43,6 +43,7 @@ w3 =      -0.8660254 * vx + 0.5 * vy - wz
 | --- | --- |
 | `device` | USB CDC 设备路径 |
 | `publish_rate` | 发送和串口读取周期，Hz |
+| `log_serial_frames` | 是否打印 CMD/TX/RX 帧；默认 `true` |
 | `motor_reduction_ratio` | 三路轮输出轴速度到电机轴速度的乘数 |
 | `feedback_motor_scale_to_rad_s` | C 板反馈数值的单位倍率 |
 | `cmd_vel_topic` | 底盘订阅的 `geometry_msgs/msg/Twist` 话题 |

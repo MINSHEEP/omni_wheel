@@ -125,9 +125,11 @@ colcon build --symlink-install --packages-select kiwi_base
 source install/setup.bash
 ros2 launch kiwi_base kiwi_base.launch.py \
   params_file:=src/kiwi_base/config/kiwi_base.yaml \
-  device:=/dev/robomaster_c \
-  log_serial_frames:=true
+  device:=/dev/robomaster_c
 ```
+
+日志默认开启，会自动打印 `CMD`、`TX[18]` 和 `RX[54]`；不需要再传
+`log_serial_frames:=true`。高频运行需要降噪时，才显式设置 `log_serial_frames:=false`。
 
 另一个终端启动键盘：
 
@@ -152,7 +154,7 @@ python3 src/kiwi_base/tools/kiwi_feedback_receiver.py \
   --port /dev/robomaster_c --print-hex
 ```
 
-启动 `log_serial_frames:=true` 后，节点逐帧显示目标映射、`TX[18] ...` 和 `RX[54] ...`：
+节点默认逐帧显示目标映射、`TX[18] ...` 和 `RX[54] ...`：
 
 ```text
 键盘命令 vx=0.0000 vy=-0.2500 wz=0.0000 -> 轮子转速=[-0.1250 0.2500 -0.1250] 电机转速=[-2.3750 4.7500 -2.3750]
