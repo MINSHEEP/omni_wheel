@@ -1,7 +1,7 @@
 # ROS 2 Humble + Ubuntu 22.04 三轮全向底盘建图导航实施方案
 
 > 版本：2026-08-05
-> Git 基线：`src` 子仓库 `823d820`（统一 0x3B 反馈链路）；`standard-robot-pro` 仍为独立固件工作区，未纳入本次 ROS 提交。
+> Git 基线：`src` 子仓库 `2a600dc`（统一 0x3B 反馈链路并对齐命令日志）；`standard-robot-pro` 仍为独立固件工作区，未纳入本次 ROS 提交。
 > 目标平台：Ubuntu 22.04 LTS + ROS 2 Humble
 > 激光雷达：Pacecat LDS-E110-R，依据本地 V1.5 手册
 > 底盘控制器：DJI RoboMaster 开发板 C 型（STM32F407）
