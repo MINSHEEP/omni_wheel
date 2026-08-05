@@ -95,8 +95,8 @@ gyro_x, gyro_y, gyro_z,
 accel_x, accel_y, accel_z
 ```
 
-解码入口：`FrameParser::feed()` -> `KiwiBaseNode::on_frame()` ->
-`decode_motor_imu_feedback()`。历史 `0x80/0x81/0x82` 解析保留兼容。
+解码入口：`FrameParser::feed()` -> `KiwiBaseNode::on_feedback()` ->
+`decode_feedback()`。当前不再兼容其它反馈 ID，避免把旧数据结构误当作实机数据。
 
 ## ROS 话题和消息格式
 
@@ -107,7 +107,6 @@ cmd_vel_topic       geometry_msgs/msg/Twist        默认 /cmd_vel_safe（订阅
 wheel_odom_topic    nav_msgs/msg/Odometry         默认 /wheel/odom（发布）
 imu_topic           sensor_msgs/msg/Imu           默认 /imu/data_raw（发布）
 joint_states_topic  sensor_msgs/msg/JointState    默认 /joint_states（发布）
-battery_topic       sensor_msgs/msg/BatteryState  默认 /battery_state（发布）
 ```
 
 `/wheel/odom` 只发布消息，不发布 TF；后续由 `robot_localization` EKF 发布
@@ -165,7 +164,7 @@ RX[54] 33 30 3b 5b ...
 ```text
 src/kiwi_teleop_keyboard.cpp  键盘 -> Twist
 src/kiwi_kinematics.cpp       Twist -> w1/w2/w3 固定公式
-src/robomaster_protocol.cpp   0x3A 组帧、0x3B/0x80/0x81/0x82 解码、CRC
+src/robomaster_protocol.cpp   0x3A 组帧、0x3B 解码、CRC
 src/kiwi_base_node.cpp        USB 读写、反馈转 ROS 消息、轮速积分
 config/kiwi_base.yaml         唯一参数入口
 test/test_kinematics.cpp      固定公式测试

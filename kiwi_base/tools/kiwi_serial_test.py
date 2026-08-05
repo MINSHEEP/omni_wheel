@@ -13,14 +13,11 @@ import math
 import struct
 import sys
 import time
-from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 
 
 SOF = 0x33
 CMD_MOTOR_SPEED = 0x3A
-STATE_WHEEL = 0x80
-STATE_IMU = 0x81
 SIN60 = 0.866025403784
 MOTOR_COMMAND_SCALE = 3.0
 
@@ -106,93 +103,6 @@ def encode_wheel_command(
     return encode_motor_command(seq, motor_rad_s, enable, timestamp_ms)
 
 
-@dataclass
-class FeedbackFrame:
-    """当前反馈适配格式解析出的完整帧。"""
-
-    message_id: int
-    payload: bytes
-
-
-class ProvisionalParser:
-    """解析当前 0x33 反馈帧，并在协议未知时保留原始字节输出能力。"""
-
-    _PAYLOAD_LENGTHS = {STATE_WHEEL: 46, STATE_IMU: 34}
-
-    def __init__(self) -> None:
-        """初始化半帧缓存和联调统计计数器。"""
-        self.buffer = bytearray()
-        self.crc_errors = 0
-        self.dropped_bytes = 0
-
-    def feed(self, data: bytes) -> List[FeedbackFrame]:
-        """追加任意长度数据并返回本次解析出的完整帧。"""
-        self.buffer.extend(data)
-        if len(self.buffer) > 4096:
-            # 异常输入不能无限占用内存，只保留最后一段用于重新同步。
-            del self.buffer[:-1024]
-        frames: List[FeedbackFrame] = []
-        while len(self.buffer) >= 4:
-            if self.buffer[0] != SOF:
-                del self.buffer[0]
-                self.dropped_bytes += 1
-                continue
-            payload_len = self.buffer[1]
-            message_id = self.buffer[2]
-            expected_payload_len = self._PAYLOAD_LENGTHS.get(message_id)
-            if expected_payload_len is None or payload_len != expected_payload_len:
-                del self.buffer[0]
-                self.dropped_bytes += 1
-                continue
-            if crc8_dji(bytes(self.buffer[:3])) != self.buffer[3]:
-                del self.buffer[0]
-                self.crc_errors += 1
-                continue
-            total = 4 + payload_len + 2
-            if len(self.buffer) < total:
-                break
-            frame = bytes(self.buffer[:total])
-            expected_crc = struct.unpack_from("<H", frame, total - 2)[0]
-            if crc16_dji(frame[:-2]) != expected_crc:
-                del self.buffer[0]
-                self.crc_errors += 1
-                continue
-            frames.append(FeedbackFrame(message_id, frame[4:-2]))
-            del self.buffer[:total]
-        return frames
-
-
-def describe_feedback(frame: FeedbackFrame) -> str:
-    """把当前轮速/IMU反馈转换为便于台架观察的一行中文文本。"""
-    if frame.message_id == STATE_WHEEL and len(frame.payload) == 46:
-        values = struct.unpack("<HHI3f3f3hHIH", frame.payload)
-        position = values[3:6]
-        velocity = values[6:9]
-        battery_mv = values[12]
-        fault_bits = values[13]
-        flags = values[14]
-        return (
-            "WHEEL pos(rad)={} vel(rad/s)={} battery={:.3f}V fault=0x{:08x} flags=0x{:04x}"
-            .format(
-                ",".join(f"{value:.4f}" for value in position),
-                ",".join(f"{value:.4f}" for value in velocity),
-                battery_mv / 1000.0,
-                fault_bits,
-                flags,
-            )
-        )
-    if frame.message_id == STATE_IMU and len(frame.payload) == 34:
-        values = struct.unpack("<HI7f", frame.payload)
-        gyro = values[2:5]
-        accel = values[5:8]
-        return "IMU gyro(rad/s)={} accel(m/s2)={} temp={:.2f}C".format(
-            ",".join(f"{value:.4f}" for value in gyro),
-            ",".join(f"{value:.4f}" for value in accel),
-            values[8],
-        )
-    return f"未知反馈 msg_id=0x{frame.message_id:02x} payload={frame.payload.hex(' ')}"
-
-
 def parse_hex_bytes(text: str) -> bytes:
     """解析用户提供的十六进制原始帧，允许空格、冒号和逗号。"""
     cleaned = text.replace("0x", "").replace("0X", "")
@@ -207,7 +117,7 @@ def parse_hex_bytes(text: str) -> bytes:
 
 
 def run_self_test() -> None:
-    """运行无硬件自检：CRC、18 字节命令向量、运动学几何和反馈解析。"""
+    """运行无硬件自检：CRC、18 字节命令向量和运动学公式。"""
     golden = bytes.fromhex(
         "33 0c 3a 65 00 00 00 00 00 00 00 00 00 00 00 00 02 fd"
     )
@@ -221,15 +131,6 @@ def run_self_test() -> None:
     expected = -MOTOR_COMMAND_SCALE
     assert all(abs(value - expected) < 1e-9 for value in wheels)
     assert wheel_to_motor(wheels) == tuple(value * 19.0 for value in wheels)
-    parser = ProvisionalParser()
-    wheel_payload = struct.pack(
-        "<HHI3f3f3hHIH", 1, 1, 2, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 0, 0, 0, 24000, 0, 0x0C
-    )
-    wheel_header = bytes((SOF, len(wheel_payload), STATE_WHEEL))
-    wheel_frame = wheel_header + bytes((crc8_dji(wheel_header),)) + wheel_payload
-    wheel_frame += struct.pack("<H", crc16_dji(wheel_frame))
-    parsed = parser.feed(wheel_frame[:7]) + parser.feed(wheel_frame[7:])
-    assert len(parsed) == 1 and "WHEEL" in describe_feedback(parsed[0])
     print("kiwi_serial_test self-test: PASS")
 
 
@@ -260,12 +161,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--raw-hex", help="原始十六进制帧；提供后跳过命令编码器")
     parser.add_argument("--dry-run", action="store_true", help="只打印计算结果，不打开串口")
     parser.add_argument("--print-hex", action="store_true", help="打印每次发送的十六进制")
-    parser.add_argument("--read-timeout", type=float, default=0.02, help="每次发送后的读取窗口 s")
     return parser
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """执行一次安全的电机速度发送循环，并打印可识别的反馈帧。"""
+    """执行 0x3A 电机速度发送循环；反馈帧由 kiwi_feedback_receiver.py 接收。"""
     args = build_argument_parser().parse_args(argv)
     if args.self_test:
         run_self_test()
@@ -296,8 +196,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("发送帧: " + frame.hex(" "))
         return 0
 
-    serial_port = open_serial(args.port, args.baudrate, args.read_timeout)
-    parser = ProvisionalParser()
+    serial_port = open_serial(args.port, args.baudrate, 0.5)
     sequence = 0
     period = 1.0 / args.rate
     deadline = time.monotonic() + args.duration
@@ -314,14 +213,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             serial_port.flush()
             if args.print_hex:
                 print("TX " + outgoing.hex(" "))
-            read_deadline = time.monotonic() + max(0.0, args.read_timeout)
-            while time.monotonic() < read_deadline:
-                waiting = getattr(serial_port, "in_waiting", 0)
-                data = serial_port.read(waiting or 1)
-                if not data:
-                    break
-                for feedback in parser.feed(data):
-                    print("RX " + describe_feedback(feedback))
             sequence = (sequence + 1) & 0xFFFF
             if args.duration == 0.0:
                 break
@@ -337,7 +228,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             except Exception as exc:  # 关闭阶段不能掩盖原始异常
                 print(f"发送停止帧失败: {exc}", file=sys.stderr)
         serial_port.close()
-    print(f"解析统计: crc_errors={parser.crc_errors}, dropped_bytes={parser.dropped_bytes}")
     return 0
 
 

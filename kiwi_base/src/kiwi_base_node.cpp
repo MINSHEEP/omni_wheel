@@ -13,7 +13,6 @@
 #include <geometry_msgs/msg/twist.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <sensor_msgs/msg/imu.hpp>
-#include <sensor_msgs/msg/battery_state.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 
 #include <fcntl.h>
@@ -80,8 +79,8 @@ public:
   KiwiBaseNode()
   : Node("kiwi_base_node"),
     parser_(
-      [this](uint8_t version, FrameType type, const std::vector<uint8_t> &payload)
-      { on_frame(version, type, payload); },
+      [this](uint8_t version, const std::vector<uint8_t> &payload)
+      { on_feedback(version, payload); },
       [this](const std::vector<uint8_t> &frame)
       { log_frame("RX", frame); })
   {
@@ -100,7 +99,6 @@ public:
     wheel_odom_topic_ = declare_parameter<std::string>("wheel_odom_topic", "/wheel/odom");
     imu_topic_ = declare_parameter<std::string>("imu_topic", "/imu/data_raw");
     joint_topic_ = declare_parameter<std::string>("joint_states_topic", "/joint_states");
-    battery_topic_ = declare_parameter<std::string>("battery_topic", "/battery_state");
     odom_frame_ = declare_parameter<std::string>("odom_frame_id", "odom");
     base_frame_ = declare_parameter<std::string>("base_frame_id", "base_footprint");
     imu_frame_ = declare_parameter<std::string>("imu_frame_id", "imu_link");
@@ -110,8 +108,6 @@ public:
     wheel_odom_pub_ = create_publisher<nav_msgs::msg::Odometry>(wheel_odom_topic_, 10);
     imu_pub_ = create_publisher<sensor_msgs::msg::Imu>(imu_topic_, 10);
     joint_pub_ = create_publisher<sensor_msgs::msg::JointState>(joint_topic_, 10);
-    battery_pub_ = create_publisher<sensor_msgs::msg::BatteryState>(battery_topic_, 10);
-
     cmd_sub_ = create_subscription<geometry_msgs::msg::Twist>(
       cmd_topic_, 10,
       [this](const geometry_msgs::msg::Twist::SharedPtr msg)
@@ -213,7 +209,7 @@ private:
     {
       RCLCPP_INFO(
         get_logger(),
-        "CMD vx=%.4f vy=%.4f wz=%.4f -> wheel=[%.4f %.4f %.4f] motor=[%.4f %.4f %.4f]",
+        "twist vx=%.4f vy=%.4f wz=%.4f -> wheel=[%.4f %.4f %.4f] motor=[%.4f %.4f %.4f]",
         command_.vx, command_.vy, command_.wz,
         wheel_speed[0], wheel_speed[1], wheel_speed[2],
         frame.motor_rad_s[0], frame.motor_rad_s[1], frame.motor_rad_s[2]);
@@ -243,66 +239,30 @@ private:
       RCLCPP_INFO(get_logger(), "%s[%zu] %s", direction, frame.size(), to_hex(frame).c_str());
   }
 
-  /** 按协议 ID 分发反馈帧。 */
-  void on_frame(uint8_t version, FrameType type, const std::vector<uint8_t> &payload)
+  /** 解码 C 板唯一的 0x3B/48 字节反馈，并发布轮速和 IMU。 */
+  void on_feedback(uint8_t version, const std::vector<uint8_t> &payload)
   {
     if (version != kProtocolVersion)
       return;
 
-    if (type == FrameType::MotorImuFeedback)
-    {
-      MotorImuFeedbackFrame state{};
-      if (!decode_motor_imu_feedback(payload, state))
-        return;
-      const auto now = Clock::now();
-      const double dt = have_feedback_time_ ?
-        std::chrono::duration<double>(now - last_feedback_time_).count() : 0.0;
-      for (size_t i = 0; i < 3; ++i)
-      {
-        wheel_velocity_[i] = state.motor_actual[i] * feedback_scale_ / motor_ratio_[i];
-        if (dt > 0.0 && dt < 1.0)
-          wheel_position_[i] += wheel_velocity_[i] * dt;
-      }
-      last_feedback_time_ = now;
-      have_feedback_time_ = true;
-      publish_odom();
-      publish_joints();
-      publish_imu(state);
+    FeedbackFrame state{};
+    if (!decode_feedback(payload, state))
       return;
-    }
 
-    if (type == FrameType::WheelState)
+    const auto now = Clock::now();
+    const double dt = have_feedback_time_ ?
+      std::chrono::duration<double>(now - last_feedback_time_).count() : 0.0;
+    for (size_t i = 0; i < 3; ++i)
     {
-      WheelStateFrame state{};
-      if (!decode_wheel_state(payload, state))
-        return;
-      for (size_t i = 0; i < 3; ++i)
-      {
-        wheel_position_[i] = state.position[i];
-        wheel_velocity_[i] = state.velocity[i];
-      }
-      publish_odom();
-      publish_joints();
-      PowerStateFrame battery{};
-      battery.battery_mv = state.battery_mv;
-      publish_battery(battery);
-      return;
+      wheel_velocity_[i] = state.motor_actual[i] * feedback_scale_ / motor_ratio_[i];
+      if (dt > 0.0 && dt < 1.0)
+        wheel_position_[i] += wheel_velocity_[i] * dt;
     }
-
-    if (type == FrameType::ImuState)
-    {
-      ImuStateFrame state{};
-      if (decode_imu_state(payload, state))
-        publish_imu(state);
-      return;
-    }
-
-    if (type == FrameType::PowerState)
-    {
-      PowerStateFrame state{};
-      if (decode_power_state(payload, state))
-        publish_battery(state);
-    }
+    last_feedback_time_ = now;
+    have_feedback_time_ = true;
+    publish_odom();
+    publish_joints();
+    publish_imu(state);
   }
 
   /** 用反馈轮速积分并发布 /wheel/odom；不发布 TF。 */
@@ -347,25 +307,8 @@ private:
     joint_pub_->publish(message);
   }
 
-  /** 发布不带姿态的原始 IMU 数据。 */
-  void publish_imu(const ImuStateFrame &state)
-  {
-    sensor_msgs::msg::Imu message;
-    message.header.stamp = now();
-    message.header.frame_id = imu_frame_;
-    message.angular_velocity.x = state.gyro[0];
-    message.angular_velocity.y = state.gyro[1];
-    message.angular_velocity.z = state.gyro[2];
-    message.linear_acceleration.x = state.accel[0];
-    message.linear_acceleration.y = state.accel[1];
-    message.linear_acceleration.z = state.accel[2];
-    // 原始 0x81 没有姿态，按 sensor_msgs 约定用 -1 表示 orientation 无效。
-    message.orientation_covariance[0] = -1.0;
-    imu_pub_->publish(message);
-  }
-
   /** 发布 0x3B 中带欧拉角的 IMU 数据。 */
-  void publish_imu(const MotorImuFeedbackFrame &state)
+  void publish_imu(const FeedbackFrame &state)
   {
     const auto quaternion = rpy_to_quaternion(state.euler[0], state.euler[1], state.euler[2]);
     sensor_msgs::msg::Imu message;
@@ -385,22 +328,11 @@ private:
     imu_pub_->publish(message);
   }
 
-  /** 发布电池电压，输入单位为 mV。 */
-  void publish_battery(const PowerStateFrame &state)
-  {
-    sensor_msgs::msg::BatteryState message;
-    message.header.stamp = now();
-    message.voltage = static_cast<float>(state.battery_mv) / 1000.0F;
-    message.present = true;
-    battery_pub_->publish(message);
-  }
-
   std::string device_;
   std::string cmd_topic_;
   std::string wheel_odom_topic_;
   std::string imu_topic_;
   std::string joint_topic_;
-  std::string battery_topic_;
   std::string odom_frame_;
   std::string base_frame_;
   std::string imu_frame_;
@@ -427,7 +359,6 @@ private:
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr wheel_odom_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::BatteryState>::SharedPtr battery_pub_;
 };
 }  // namespace kiwi_base
 

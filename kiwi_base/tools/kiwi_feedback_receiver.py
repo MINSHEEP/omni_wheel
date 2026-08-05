@@ -24,7 +24,6 @@ FEEDBACK_ID = 0x3B
 PAYLOAD_FORMAT = "<12f"
 PAYLOAD_LENGTH = struct.calcsize(PAYLOAD_FORMAT)
 FRAME_LENGTH = 4 + PAYLOAD_LENGTH + 2
-MAX_PAYLOAD_LENGTH = 64
 
 
 def crc8_dji(data: bytes) -> int:
@@ -48,8 +47,8 @@ def crc16_dji(data: bytes) -> int:
 
 
 @dataclass(frozen=True)
-class MotorImuFeedback:
-    """一帧已通过长度、CRC 和有限值检查的 0x3B 实机反馈。"""
+class FeedbackFrame:
+    """一帧已通过长度、CRC 和有限值检查的唯一 0x3B 实机反馈。"""
 
     motor_actual: tuple[float, float, float]
     euler: tuple[float, float, float]
@@ -65,13 +64,12 @@ class FeedbackParser:
         """初始化接收缓存和诊断计数器。"""
         self.buffer = bytearray()
         self.valid_frames = 0
-        self.ignored_frames = 0
         self.crc_errors = 0
         self.length_errors = 0
         self.payload_errors = 0
         self.dropped_bytes = 0
 
-    def feed(self, data: bytes) -> List[MotorImuFeedback]:
+    def feed(self, data: bytes) -> List[FeedbackFrame]:
         """追加任意长度串口数据，返回本次解析出的所有有效 0x3B 帧。"""
         self.buffer.extend(data)
         if len(self.buffer) > 4096:
@@ -80,7 +78,7 @@ class FeedbackParser:
             del self.buffer[:removed]
             self.dropped_bytes += removed
 
-        feedback_frames: List[MotorImuFeedback] = []
+        feedback_frames: List[FeedbackFrame] = []
         while len(self.buffer) >= 4:
             sof_index = self.buffer.find(SOF)
             if sof_index < 0:
@@ -94,7 +92,7 @@ class FeedbackParser:
                 break
 
             payload_length = self.buffer[1]
-            if payload_length > MAX_PAYLOAD_LENGTH:
+            if self.buffer[2] != FEEDBACK_ID or payload_length != PAYLOAD_LENGTH:
                 del self.buffer[0]
                 self.length_errors += 1
                 continue
@@ -114,20 +112,12 @@ class FeedbackParser:
                 continue
             del self.buffer[:total_length]
 
-            message_id = raw_frame[2]
-            if message_id != FEEDBACK_ID:
-                self.ignored_frames += 1
-                continue
-            if payload_length != PAYLOAD_LENGTH:
-                self.length_errors += 1
-                continue
-
             values = struct.unpack(PAYLOAD_FORMAT, raw_frame[4:-2])
             if not all(math.isfinite(value) for value in values):
                 self.payload_errors += 1
                 continue
             feedback_frames.append(
-                MotorImuFeedback(
+                FeedbackFrame(
                     motor_actual=values[0:3],
                     euler=values[3:6],
                     gyro=values[6:9],
@@ -139,17 +129,17 @@ class FeedbackParser:
         return feedback_frames
 
 
-def encode_test_frame(values: Sequence[float], message_id: int = FEEDBACK_ID) -> bytes:
+def encode_test_frame(values: Sequence[float]) -> bytes:
     """仅供无硬件自检构造合法帧，不用于向真实下位机发送。"""
     if len(values) != 12 or not all(math.isfinite(float(value)) for value in values):
         raise ValueError("测试帧必须包含十二个有限浮点数")
     payload = struct.pack(PAYLOAD_FORMAT, *(float(value) for value in values))
-    header = bytes((SOF, len(payload), message_id))
+    header = bytes((SOF, len(payload), FEEDBACK_ID))
     frame_without_crc16 = header + bytes((crc8_dji(header),)) + payload
     return frame_without_crc16 + struct.pack("<H", crc16_dji(frame_without_crc16))
 
 
-def describe_feedback(feedback: MotorImuFeedback) -> str:
+def describe_feedback(feedback: FeedbackFrame) -> str:
     """将一帧反馈格式化为便于串口联调观察的单行文本。"""
     return "motor_actual=[{}] euler_rpy=[{}] gyro_xyz=[{}] accel_xyz=[{}]".format(
         ", ".join(f"{value:.6f}" for value in feedback.motor_actual),
@@ -240,13 +230,13 @@ def run_self_test() -> None:
     parser = FeedbackParser()
     parsed = parser.feed(b"\x00\xff" + frame[:11])
     assert not parsed
-    parsed = parser.feed(frame[11:] + encode_test_frame(values, message_id=0x7F))
+    parsed = parser.feed(frame[11:])
     assert len(parsed) == 1
     assert parsed[0].motor_actual == values[0:3]
     assert parsed[0].euler == values[3:6]
     assert parsed[0].gyro == values[6:9]
     assert parsed[0].accel == values[9:12]
-    assert parser.valid_frames == 1 and parser.ignored_frames == 1
+    assert parser.valid_frames == 1
     assert parser.dropped_bytes == 2
 
     broken = bytearray(frame)
@@ -301,13 +291,12 @@ def receive_feedback(args: argparse.Namespace) -> int:
         serial_port.close()
         elapsed = max(time.monotonic() - started_at, 1e-9)
         print(
-            "统计: valid={} rate={:.2f}Hz ignored={} crc_errors={} "
-            "length_errors={} payload_errors={} dropped_bytes={}".format(
+        "统计: valid={} rate={:.2f}Hz length_errors={} crc_errors={} "
+                "payload_errors={} dropped_bytes={}".format(
                 parser.valid_frames,
                 parser.valid_frames / elapsed,
-                parser.ignored_frames,
-                parser.crc_errors,
                 parser.length_errors,
+                parser.crc_errors,
                 parser.payload_errors,
                 parser.dropped_bytes,
             )

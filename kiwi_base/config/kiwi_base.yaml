@@ -17,7 +17,6 @@ kiwi_base_node:
     wheel_odom_topic: /wheel/odom
     imu_topic: /imu/data_raw
     joint_states_topic: /joint_states
-    battery_topic: /battery_state
 
     # ROS 坐标和关节名称。
     odom_frame_id: odom

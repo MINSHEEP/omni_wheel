@@ -46,7 +46,7 @@ w3 = 3 * (-0.8660254 * vx + 0.5 * vy - wz)
 | `motor_reduction_ratio` | 三路轮输出轴速度到电机轴速度的乘数 |
 | `feedback_motor_scale_to_rad_s` | C 板反馈数值的单位倍率 |
 | `cmd_vel_topic` | 底盘订阅的 `geometry_msgs/msg/Twist` 话题 |
-| `wheel_odom_topic` / `imu_topic` / `joint_states_topic` / `battery_topic` | 节点发布话题 |
+| `wheel_odom_topic` / `imu_topic` / `joint_states_topic` | 节点发布话题 |
 | `odom_frame_id` / `base_frame_id` / `imu_frame_id` | 消息 frame_id |
 | `wheel_names` | 三个 `JointState.name`，顺序必须和电机 1/2/3 一致 |
 
@@ -79,15 +79,14 @@ gyro_x, gyro_y, gyro_z,
 accel_x, accel_y, accel_z
 ```
 
-解码位于 `decode_motor_imu_feedback()`；`FrameParser` 负责 SOF、长度、CRC8、CRC16 和
-半帧/粘包。历史 `0x80/0x81/0x82` 解析仍保留，收到时分别发布轮状态、IMU、电池。
+解码位于 `decode_feedback()`；`FrameParser` 负责 SOF、长度、CRC8、CRC16 和半帧/粘包。
+当前只接受 `0x3B/48`，因此反馈字段和 C 板实际发送内容始终一一对应。
 
 ## ROS 输出格式
 
 - `wheel_odom_topic`：`nav_msgs/msg/Odometry`，只发布消息，不发布 `odom -> base` TF。
 - `imu_topic`：`sensor_msgs/msg/Imu`，0x3B 的欧拉角转四元数，角速度和加速度原样发布。
 - `joint_states_topic`：`sensor_msgs/msg/JointState`，位置为积分角度，速度为轮输出轴 rad/s。
-- `battery_topic`：`sensor_msgs/msg/BatteryState`，电压由 mV 转 V。
 
 消息类型、字段和话题默认值集中在 `src/kiwi_base/src/kiwi_base_node.cpp` 构造函数；
 正常只需改 YAML 参数，不需改协议代码。
@@ -95,8 +94,8 @@ accel_x, accel_y, accel_z
 ## 键盘按键
 
 ```text
-w / s : +vx / -vx，前进 / 后退
-a / d : +vy / -vy，左移 / 右移
+w / s : linear.y=-/+speed，前进 / 后退
+a / d : linear.x=-/+speed，左移 / 右移
 q / e : +wz / -wz，逆时针 / 顺时针
 空格或 x：清零
 ```
