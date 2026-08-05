@@ -1,0 +1,294 @@
+# USB CDC 底盘通信最小改动实施方案
+
+> 适用范围：`standard-robot-pro` STM32F407 固件与 `/home/ym/ros2_ws` ROS 2 Humble 工作空间。
+> 文档目的：在不破坏竞赛版本的前提下，用 RoboMaster C 型板的 micro USB CDC 打通 ROS 上位机和三轮底盘。
+> 当前状态（2026-08-04）：已完成第一版代码实现。ROS `src/kiwi_base`、MCU `ros_bridge/kiwi_base`、CDC 接收环形缓冲和 Keil 宏接入均已落地；主机安全限速/斜坡/软件急停与 Python 无硬件自检已加入。USB 命令联调格式已按 `0x33/len=12/id=0x3A/三 float 电机轴 rad/s/CRC16` 落地；反馈帧布局、CAN ID、方向和电流换算仍待台架确认，尚未完成 Keil/ARM 实际链接、烧录、USB 枚举和电机台架验证。
+
+当前实现入口：
+
+- ROS：`/home/ym/ros2_ws/src/kiwi_base`，节点 50 Hz 发送命令，单调时钟安全超时，USB 断线按 1 s 重连。
+- MCU：`standard-robot-pro/application/communication/ros_bridge.c`、`application/kiwi_base/kiwi_base.c`；Kiwi 模式由 `ROBOT_CONTROL_KIWI=1` 选择。
+- Keil：当前没有新增独立 target，而是在 `StandardRobotPro` 的 C 编译宏中启用 Kiwi；移除该宏即可回到旧 profile。
+
+## 1. 目标和原则
+
+最终闭环应满足：
+
+```text
+ROS 速度命令 -> USB CDC -> C 型板三路速度闭环 -> CAN1 -> 三个电调/电机
+                                      ^
+                         编码器、BMI088、ADC、电源和故障反馈
+```
+
+改造遵循以下边界：
+
+1. 保留现有 DJI CAN、电机反馈、PID、BMI088、ADC、CRC 和 FreeRTOS 底层能力。
+2. 新建 Kiwi 专用固件模块；当前通过 `StandardRobotPro` target 的宏隔离，旧 profile 可通过移除宏回退。
+3. 不改造现有 `src/base` 雷达接口包，不引入 `ros2_control` 或第三方全向控制器。
+4. USB codec 集中在 `ros_bridge` 和 ROS `robomaster_protocol` 适配层；命令帧按 `0x33/0x0C/0x3A` 和三个电机轴 float32 实现，反馈格式仍可独立调整。未知/非法帧必须丢弃。
+5. 上电默认零输出；命令帧没有线上 `enable`，主机禁能发送三个零速值，MCU 以合法帧 watchdog 和超时停机保护；硬件急停不依赖 ROS。
+
+## 2. 改造前工程审计
+
+当前实际控制链是竞赛链路，而不是 ROS 链路：
+
+```text
+DT7 -> ChassisReference -> ChassisConsole 逆解 -> 速度 PID
+    -> CanManager/CAN1 -> 电调/电机
+```
+
+实际 FreeRTOS 调度在 `application/chassis/chassis_task.c:62-74` 每 2 ms 执行 Observer、Reference、Console、SendCmd；旧底盘只把电流写入 `CanManager`，真正的 CAN flush 由 `communication_task.c:18-22` 完成。Kiwi target 将这两个所有权合并到 `kiwi_base_task`，避免 RC/演示任务与 USB 控制并行写同一缓冲区。
+
+`chassis_omni.c:230` 起已经有三路 Kiwi 形式的 `vx/vy/wz` 公式，但它不能直接作为已完成的底盘接口：
+
+- `chassis_omni.c:149-157` 仍从 DT7 读取目标，USB/上位机分支被注释。
+- `chassis_omni.c:67-79、97-105、234-261` 初始化、反馈、PID 和 CAN 发送均按四个电机处理；只有 `set[0..2]` 被计算。
+- 公式含未标定的 `0.55f`、`WHEEL_CENTER_DISTANCE` 和 `WHEEL_RADIUS`，不能把示例参数当作实物参数。
+- `CAN_receive.c:370-378` 的 DJI 速度是电机轴 `rad/s`，编码器位置只有单圈角度，尚未累计跨圈或换算为轮输出轴。
+
+以下 USB 条目描述的是改造前基线；当前实现已在后文落地：
+
+- `robot_param.h:41-43` 将调参模式设为 `TUNING_F00T=12`，`usb_task.c:227-239` 实际发送 52 字节 VOFA 调试流，模式 12 的数据赋值在 `usb_task.c:557-569` 全部注释，基本为零。
+- 定义的 32 字节状态帧只有姿态，编码器和电源字段在 `usb_task.c:203-209、396-409` 为零或未接入。
+- 旧 23 字节命令帧只有 `pitch/yaw/fire/vx/vy`，没有 `wz、seq、timestamp、enable`；`usb_task.c:624-635` 只返回 pitch/yaw。
+- `Src/usbd_cdc_if.c:263-269` 忽略 CDC 回调的 `Buf/Len`，`usb_task.c:248-255` 又把固定容量当作收件长度，必须先修复接收路径。
+
+改造前 ROS 工作空间只有雷达相关包。当前已新增 `src/kiwi_base`；`src/base` 和 `bluesea-ros2` 仍保持原边界，底盘没有修改它们。
+
+## 3. 目标控制链和所有权
+
+目标链路采用 plan 中的主机逆解方案；USB 命令编码已经固定，反馈编码仍保留为可替换适配层：
+
+```text
+/cmd_vel
+  -> velocity_smoother
+  -> collision_monitor
+  -> /cmd_vel_safe (Twist: vx, vy, wz)
+  -> kiwi_base_node 的 Kiwi Jacobian
+  -> CMD_MOTOR_SPEED（主机逆解后三个电机轴 rad/s）
+  -> /dev/robomaster_c（USB CDC）
+  -> MCU ros_bridge 帧解析和命令快照
+  -> kiwi_base_task（三路 PID、看门狗、急停仲裁）
+  -> CAN1 -> 三个电调
+
+CAN/DJI + BMI088 + ADC
+  -> MCU STATE_WHEEL/STATE_IMU（电池嵌入 WHEEL；POWER 仅保留解码扩展）
+  -> kiwi_base_node
+  -> /wheel/odom、/joint_states、/imu/data_raw、/battery_state、/diagnostics
+  -> robot_localization EKF
+```
+
+控制所有权必须唯一：ROS 运行 target 不再读取 DT7，也不与旧竞赛 `chassis_omni` 同时链接；RC、USB 和急停只能通过明确的模式仲裁进入 `kiwi_base_task`。
+
+## 4. USB CDC 命令协议（当前冻结格式）
+
+> 重要：下面的命令格式按你提供的 `ReceiveDataRobotCmd_s` 解析流程用于当前联调；C 型板手册本身不定义项目应用层。若后续协议评审修改，只替换 `ros_bridge.c/.h`、`robomaster_protocol.cpp/.hpp` 和 Python codec，运动学、ROS 话题及安全门控保持不变。
+
+### 4.1 帧格式和编码
+
+为减少固件改动，沿用工程已有 DJI CRC 工具，不复用旧 pitch/yaw/vx/vy 消息语义：
+
+```text
+header = sof | payload_len | msg_id | header_crc8
+frame  = header | payload[payload_len] | crc16_le
+```
+
+- `sof=0x33` 是版本/同步字节；未知值直接丢弃。
+- `payload_len` 是 payload 字节数；命令帧固定为 `12`，解析前检查上限和完整长度。
+- 所有整数小端，浮点为 IEEE-754 `float32` 小端；禁止直接发送 C 结构体内存布局。
+- CRC8 计算 header 前 3 字节，初值 `0xFF`；CRC16 计算 header 加 payload，初值 `0xFFFF`，尾部低字节在前。实现参考 `components/support/CRC8_CRC16.c:116-148、194-227`。
+- 命令 ID 固定为 `0x3A`；旧 USB 任务/VOFA 流在 Kiwi target 下不消费该 CDC ring。
+
+当前两端共享的零速命令固定向量为：
+
+```text
+33 0c 3a 65 00 00 00 00 00 00 00 00 00 00 00 00 02 fd
+```
+
+### 4.2 命令帧：主机逆解后发送电机轴速度
+
+`CMD_MOTOR_SPEED` 使用 `msg_id=0x3A`，总长 18 字节：
+
+```text
+完整帧：4 字节 header + 12 字节 payload + 2 字节 CRC16
+
+payload offset  size  field
+0               4     motor_target_rad_s[0]:f32  电机轴 rad/s
+4               4     motor_target_rad_s[1]:f32  电机轴 rad/s
+8               4     motor_target_rad_s[2]:f32  电机轴 rad/s
+```
+
+完整字节偏移为：`sof@0`、`len@1`、`id@2`、`crc8@3`、`motor1@4`、`motor2@8`、`motor3@12`、`crc16_le@16`。映射固定为 ROS `wheel_joint_1/2/3` -> payload `[0/1/2]` -> MCU CAN ID `1/2/3`。
+
+线上没有 seq、timestamp、enable 或 clear_fault。主机先将轮输出轴逆解结果乘 `motor_reduction_ratio=19`，再发送电机轴 rad/s；
+MCU 只执行 PID 和量程/watchdog 校验，不再重复乘减速比。`wheel_sign` 由主机统一负责，Kiwi MCU 方向宏保持 `+1`，避免双重翻转。
+
+这里的“电机轴”特指 M3508 CAN 反馈 `speed_rpm` 经 `RPM_TO_OMEGA` 转换后的转子轴 `rad/s`，与当前 PID 反馈一致。若双方以后约定为 `rpm` 或减速箱输出轴速度，必须同步修改两端单位转换并升级协议说明，18 字节布局本身无需改变。
+
+### 4.3 反馈帧
+
+当前固件把 `STATE_WHEEL=0x80` 编为 payload 46 字节、整帧 52 字节，把 `STATE_IMU=0x81` 编为 payload 34 字节、整帧 40 字节；反馈协议仍待抓包确认：
+
+```text
+payload offset  size  field
+0               2     state_seq:u16
+2               2     accepted_count:u16 MCU 本地接受计数（不是线上主机序号）
+4               4     mcu_time_ms:u32    单调递增
+8               12    wheel_position_rad[3]:f32
+20              12    wheel_velocity_rad_s[3]:f32
+32              6     motor_current_raw[3]:i16
+38              2     battery_mV:u16
+40              4     fault_bits:u32
+44              2     flags:u16           bit0=enabled，bit1=estop，bit2=usb_online，bit3=motor_online
+```
+
+电流先传 DJI 原始反馈量，避免在没有实测标定系数时伪造安培值。IMU payload 字段为 `seq:u16@0`、`mcu_time_ms:u32@2`、`gyro[3]:f32@6`、`accel[3]:f32@18`、`temperature:f32@30`；底层已有温度读取函数，但尚未接入 IMU 任务快照，当前协议发送 0。MCU 实际发送 WHEEL 和 IMU，电池值嵌入 WHEEL；`STATE_POWER=0x82` 仅由 ROS 解码器预留。轮位置以首个有效 CAN 反馈建立基线，并用相邻 `ecd` 差值处理跨圈回绕；掉线恢复只重建基线并保留历史累计位置，掉线期间真实位移不可观测。
+
+### 4.4 时序和安全
+
+```text
+主机命令       50-100 Hz
+轮状态反馈     50-200 Hz
+IMU反馈        100-200 Hz
+MCU电机闭环    v1 保持 500 Hz/2 ms（与现有 PID 标定一致）
+命令 watchdog  100 ms
+```
+
+现有 PID 积分项按固定周期累加，若改为 1 kHz 必须重新标定 `Ki`。速度 PID 在电机轴坐标下比较：主机已完成减速比和 `wheel_sign` 转换，
+MCU 直接比较电机轴反馈；对外发布轮反馈时只除以有效减速比。
+
+只有 CRC、版本、ID、长度、有限值和量程均有效的帧才刷新 watchdog。看门狗为 100 ms；USB 未完成枚举/掉线时在下一个 2 ms 控制周期立即清零，命令超时或电机离线时也会归零。
+零速帧仍是协议上的有效帧，不等于切断电调使能；物理急停 GPIO 尚未接入，必须独立切断动力回路。
+
+## 5. 固件最小改动和隔离方案
+
+### 5.1 构建边界
+
+不要删除旧竞赛代码。当前采用单 target 的最小接入方式，未复制出独立 `KiwiBase` target：
+
+```text
+旧 target StandardRobotPro
+  保留 DT7、云台、发射、旧底盘和 VOFA，作为回滚版本
+
+StandardRobotPro（Kiwi 配置）
+  定义 ROBOT_CONTROL_KIWI=1
+  隔离旧 communication_task、usb_task 和旧底盘任务
+  加入 application/kiwi_base/*.c 和 ros_bridge.c
+  创建 kiwi_base_task；保留工程中未参与 CAN 控制的通用任务
+```
+
+新增文件已加入 `.uvprojx`；当前目标仍名为 `StandardRobotPro`。切回旧竞赛固件的最小操作是移除 `ROBOT_CONTROL_KIWI=1`，并恢复原参数 profile；后续若需要正式发布，再复制 target 做独立构建配置。
+
+新增 `application/typedef_robot/robot_param_kiwi.h`，使用独立 include guard；`robot_param.h` 按 target 宏选择 profile。`freertos.c` 中 Kiwi 任务独占 USB 初始化、CAN 缓冲区和发送；旧 `communication_task`、`usb_task` 在 Kiwi 宏下不创建。
+
+配置选择应保持单一入口：
+
+```c
+#if defined(ROBOT_CONTROL_KIWI)
+#include "robot_param_kiwi.h"
+#else
+#include "robot_param_water.h"
+#endif
+```
+
+### 5.2 新模块职责
+
+```text
+application/kiwi_base/kiwi_base.c/.h
+  三个 Motor_s、轮速单位转换、三路 PID、CAN 电流输出、反馈快照
+
+application/communication/ros_bridge.c/.h
+  CDC ring buffer、帧状态机、CRC、命令快照、状态序列化、watchdog 时间戳
+
+Src/usbd_cdc_if.c
+  只负责 USB 类回调、接收字节入队和非阻塞发送；不做业务解析
+```
+
+CDC 回调中复制实际 `Buf[0..*Len)` 到 SPSC ring buffer 后立即重臂；业务任务按字节流解析半帧和粘包，并拒绝零长度/超长帧。USB 初始化/反初始化会清空 ring，避免旧半帧跨会话。旧 `USB_Receive()` 保留为 ring 读取兼容包装。发送端检查 CDC 已配置和 `pClassData` 非空，在提交区间屏蔽 USB 断开中断，并复制到静态 `UserTxBufferFS` 后异步发送，避免悬空上下文和任务栈帧；没有 TX 队列，CDC `BUSY` 时状态帧会丢弃，后续周期继续发送。
+
+保留 `CAN_receive.c`、`CAN_cmd_dji.c`、`motor.c`、`components/controller/pid.c`、BMI088、ADC 和 CRC；补充 DJI 电机反馈超时更新 `offline`，并把单圈编码器转换为连续轮位置。`communication_task.c:24-25` 的 `Hello World` 和竞赛板间发送只在旧 target 保留。
+
+新底盘首轮联调先直接使用速度 PID 到电流输出，不复制旧 `LowPassFilter`；确认轮序、方向和单位后再单独评估滤波器，避免把竞赛调参变量和通信安全问题混在一起。
+
+Kiwi 模式由 `kiwi_base_task` 独占 CAN 输出：它完成 `CanManagerAddMotor` 后直接调用 `CanManagerSendAll`，不创建旧 `communication_task`。只有通过 CRC、长度、ID、有限值和量程检查的新命令才更新 `last_valid_cmd_time`；本地接受计数会回显到 WHEEL 状态。当前默认 M3508、CAN1、ID 1/2/3、方向 `+1`、减速比 19、几何半径 0.1015 m、中心到轮心 0.32256 m、最大轮输出 30 rad/s、电机轴命令上限 570 rad/s、软件电流 raw 上限 8192 均为台架起点；规格值已记录，但 CAN ID、有效轮半径和电流换算仍待实测。
+
+## 6. ROS 侧最小改动
+
+新增 `src/kiwi_base`，不修改 `src/base` 或 `src/bluesea-ros2`：
+
+```text
+src/kiwi_base/
+├── include/kiwi_base/{kiwi_kinematics,robomaster_protocol}.hpp
+├── src/{kiwi_base_node,kiwi_kinematics,robomaster_protocol,kiwi_teleop_keyboard}.cpp
+├── config/kiwi_base.yaml
+└── test/test_{kinematics,protocol}.cpp
+```
+
+节点订阅 `/cmd_vel_safe` 和 `/kiwi/estop`，在 wall timer 中用非阻塞 `termios/read/write` 读写 `/dev/robomaster_c`；USB CDC 不使用波特率。主机执行速度/加速度限幅、命令和反馈 watchdog，软件急停或链路故障立即发送三个零速电机值；串口错误后按固定周期重连并清零旧命令；当前没有独立 I/O 线程或 TX 队列。
+
+键盘联调由 `kiwi_teleop_keyboard -> /cmd_vel_safe -> kiwi_base_node -> USB` 串联完成。键盘节点不直接打开 CDC；这样串口、运动学、限幅和停机状态始终只有一个所有者。完整运行命令见 `src/kiwi_base/config/README.md`，运行 ROS 节点时不得并行启动 Python 直连发送。
+
+现有描述符在 `Src/usbd_desc.c:66-72`，主机预期看到 CDC 虚拟串口（通常为 `/dev/ttyACM*`）；设备名通过 udev 固定为 `/dev/robomaster_c`，不在节点中硬编码临时 `ttyACM0`。
+
+节点发布 `/wheel/odom`、`/joint_states`、`/imu/data_raw`、`/battery_state` 和 `/diagnostics`，不发布 `odom -> base_footprint` TF。参数至少包括三轮位置、切向角、轮半径、方向符号、最大轮速、设备名、50-100 Hz 发送频率和 100 ms 超时。
+
+## 7. 两种逆解方案对比
+
+```text
+维度             上位机逆解（plan 首选）                 MCU 逆解（台架兼容）
+USB payload      motor_target_rad_s[3] (rad/s)           vx/vy/wz
+ROS 改动         中：新增 Jacobian、YAML、单测          低：发送 Twist 即可
+固件改动         中：解析轮速、3 路 PID、安全状态机     中高：还要重写矩阵、参数和模式仲裁
+参数维护         集中在 ROS YAML，可版本化              固化在固件，换底盘需重刷
+测试             C++ 矩阵测试和 CI 容易                需 MCU/主机双端一致性测试
+实时性能         足够，主机 50-100 Hz                  无实质优势，F407/FPU 可胜任
+脱离 ROS 运行    需要另加本地模式                      更方便
+生产推荐         是                                     未来若脱离 ROS 再评估机体速度协议
+```
+
+选择上位机逆解并不意味着业务层要发送轮速：Nav2、遥控和任务层仍只发布 `/cmd_vel_safe`；轮速转换只发生在 `kiwi_base_node` 内部。选择 MCU 逆解时，不能直接复用 `chassis_omni.c:230-232`，必须先解决四轮数组、DT7 覆盖、硬编码比例和单位问题。
+
+## 8. 分阶段实施和验收
+
+### 阶段 0：协议评审与参数确认
+
+命令字段和 CRC golden vector 已按本轮协议冻结；仍需确认三个电机/电调 CAN ID、减速比、轮半径、轮心坐标、切向方向、编码器单位、反馈帧和急停接线，并在实物联调记录中签字。
+
+### 阶段 1：固件空载通信（代码完成，实物待验）
+
+已完成 CDC ring/parser、CMD_MOTOR_SPEED、STATE_WHEEL、STATE_IMU 和 watchdog；当前通过 `StandardRobotPro` target 的 `ROBOT_CONTROL_KIWI=1` 启用。上电保持零输出，USB 枚举、完整帧、拔线和电机台架仍待验证。
+
+### 阶段 2：电机闭环（代码完成，台架待验）
+
+代码已具备三路 PID、连续编码器、离线归零、超时 100 ms 和反馈序号回显；仍需单轮零速/低速及三轮纯 `+x`、`+y`、`+wz` 实测。物理急停尚未接入。
+
+### 阶段 3：ROS 链路（第一版完成）
+
+实现 `kiwi_base` 的 0x3A 三 float 命令协议、运动学、轮里程计和标准话题；执行：
+
+```bash
+source /opt/ros/humble/setup.bash
+cd /home/ym/ros2_ws
+colcon build --base-paths /home/ym/ros2_ws/src --packages-select kiwi_base
+colcon test --base-paths /home/ym/ros2_ws/src --packages-select kiwi_base --event-handlers console_direct+
+```
+
+已在临时构建目录完成 ROS Humble 构建和协议/运动学测试；最新用例数量以本节验证记录为准。rosbag 回放、EKF、TF 唯一发布者和 Nav2 速度链路仍是下一阶段。
+
+## 9. 必须记录的风险
+
+- 当前 USB 描述符可枚举为 CDC，但必须用实物确认 VID/PID、`/dev/ttyACM*` 和数据线。
+- 电调 CAN 协议、编码器输出单位、轮半径和方向尚未由实测冻结。
+- 连续位置已由相邻 `ecd` 累计；CAN 离线超过 100 ms 后恢复会重建编码器基线，断线期间真实位移不可观测，必须由上层定位重新约束。
+- 当前 PID 参数按 2 ms 控制周期使用，改变闭环频率前必须重新标定积分项。
+- 硬件急停、MCU watchdog 和 ROS `collision_monitor` 是三层不同安全机制，不能互相替代。
+- `src` 是独立 Git 子模块；ROS 包和 `standard-robot-pro` 固件应分开提交，最后只更新子模块指针。
+
+## 10. 本次验证记录
+
+```text
+ROS：Ubuntu 22.04 环境 source /opt/ros/humble/setup.bash；colcon build 成功。
+ROS 测试：test_kinematics 4/4，test_protocol 11/11，共 15/15 通过。
+固件：`ros_bridge.c`、`kiwi_base.c` 在当前头文件环境下预处理通过；当前环境没有 Keil/ARM 链接器，未执行固件完整编译、烧录和实机测试。
+工程：MDK-ARM/StandardRobotPro.uvprojx XML 解析通过；当前环境没有 Keil/ARM 链接器，未执行固件链接、烧录和实机测试。
+```
