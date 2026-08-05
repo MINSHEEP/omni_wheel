@@ -1,7 +1,7 @@
 # ROS 2 Humble + Ubuntu 22.04 三轮全向底盘建图导航实施方案
 
-> 版本：2026-08-04
-> Git 基线：`src` 子仓库 `bc45017`（kiwi_base 通信与反馈工具）；`standard-robot-pro` 仍为独立固件工作区，未纳入本次 ROS 提交。
+> 版本：2026-08-05
+> Git 基线：`src` 子仓库 `877f3f6`（kiwi_base 最小联调链路）；`standard-robot-pro` 仍为独立固件工作区，未纳入本次 ROS 提交。
 > 目标平台：Ubuntu 22.04 LTS + ROS 2 Humble
 > 激光雷达：Pacecat LDS-E110-R，依据本地 V1.5 手册
 > 底盘控制器：DJI RoboMaster 开发板 C 型（STM32F407）
@@ -9,7 +9,7 @@
 > 文档定位：从电机/编码器、MCU、ROS 2 驱动，到建图、定位、导航和任务层的落地设计。
 > 说明：这是从零搭建的独立工程方案。开源仓库只作为协议、接口和算法参考，不假定现有工程可以直接使用。
 
-> 当前实现状态（2026-08-04）：已完成 `kiwi_base` 第一版底盘通信骨架和 MCU 最小改动链路。ROS 节点/键盘、上位机三轮逆运动学、主机限速/斜坡/软件急停、`0x33/len=12/id=0x3A` 三电机 float 命令编解码、轮里程计/IMU/电池/诊断发布、单调时钟安全超时和 USB 断线重连已实现；MCU CDC ring、`ros_bridge`、三路 M3508 速度 PID、连续编码器、100 ms watchdog、WHEEL/IMU 状态帧已实现。M3508/C620/轮子规格已录入，CAN ID、轮符号、速度单位实物确认、物理急停和电流换算仍待实机确认。ROS Humble 构建和无硬件 Python 自检通过；当前仍待 Keil/ARM 实际链接、烧录、USB 枚举、CAN 电机台架、EKF/SLAM/Nav2 联调。
+> 当前实现状态（2026-08-05）：`kiwi_base` 已收敛为最小联调链路。键盘直接发布已标定的底盘控制坐标，主机用三行固定公式完成逆解，乘 19:1 后通过 `0x33/len=12/id=0x3A` 发送三个 float32 电机轴速度；C 板 `0x3B` 反馈的三电机实际速度、欧拉角、角速度和加速度已可解析并发布。当前暂不启用主机速度限幅、斜坡、命令超时、反馈联锁、软件急停和物理 Jacobian 检查；CRC8/CRC16 仍用于帧完整性。ROS Humble 构建、C++ 单测和无硬件 Python 自检通过，仍待实机电机轮序/方向、反馈单位、EKF/SLAM/Nav2 联调。
 
 ## 1. 先给结论
 
@@ -22,7 +22,7 @@
 5. 里程计由轮编码器计算，轮里程计和 IMU 用 robot_localization EKF 融合；EKF 唯一发布 odom 到 base_footprint 的 TF。
 6. 建图使用 SLAM Toolbox；保存地图后，定位使用 AMCL，并明确使用 Humble 的 OmniMotionModel。
 7. Nav2 第一阶段使用 DWBLocalPlanner，显式打开 Y 方向速度采样；后续可评估 Humble 的 MPPI Omni 模型。
-8. 速度链路固定为：Nav2 → velocity_smoother → collision_monitor → `kiwi_base_node`（限速/斜坡/软件急停）→ C 型板 → 外置电调。硬件急停和通信看门狗独立于这条链路。
+8. 速度链路固定为：Nav2 → velocity_smoother → collision_monitor → 控制坐标转换 → `kiwi_base_node` → C 型板 → 外置电调。当前最小联调键盘直接使用已标定的控制坐标；正式接 Nav2 时再启用标准 `vx/vy` 到控制坐标的转换。
 9. LDS-E110-R 直接接主机 USB-UART，并使用独立 5.1 V 电源；不要从 C 型板标注 100 mA 的接口给雷达供电，也不要把雷达 frame_id 写成 map。
 
 最终验收不是“能启动几个 launch”，而是以下闭环都成立：
@@ -332,7 +332,9 @@ LaserScan 标称时间起点为 scan_time≈0.142857 s、time_increment≈0.0002
 
 ### 7.1 约定
 
-采用 REP-103 机体坐标：x 向前、y 向左、z 向上；角速度 wz 逆时针为正。以轮 1 的几何角 gamma 和轮的正转方向定义运动学，所有正负号必须与 URDF 和电机编码器实测一致。
+物理模型参考 REP-103 机体坐标：x 向前、y 向左、z 向上；角速度 wz 逆时针为正。当前
+已验证的 C 板控制坐标则约定前进为输入 `-y`、左移为输入 `-x`，键盘节点直接发布这套
+坐标；正式接 Nav2 时必须先做一次 `control_x=-nav_vy、control_y=-nav_vx` 转换。
 
 不要把某个开源仓库的三行公式当作通用运动学。自研控制器统一使用轮接触点和驱动切向方向生成 Jacobian。以第 i 个轮的轮心位置
 `p_i=(x_i,y_i)`、驱动滚动方向单位向量 `t_i=(tix,tiy)`、轮半径 `r_i` 和编码器符号 `s_i` 表示：
@@ -345,52 +347,39 @@ omega = J * [vx, vy, wz]^T
 twist = (J^T J)^-1 J^T * omega       # 3 轮满秩时的正向解
 ~~~
 
-三轮 120° 对称布置只是该矩阵的一种特例。当前运行代码只校验几何参数有限、轮半径为正和方向符号合法，
-不执行 Jacobian 满秩检查，也不使用该 Jacobian 做控制。正向运动学、逆向运动学和轮符号仍必须用纯 `+x/+y/+wz` 测试验证。
+三轮 120° 对称布置只是该矩阵的一种特例。物理 Jacobian 只作为后续标定参考，当前运行代码不读取这些几何字段、
+不做有限值或满秩检查，也不使用该 Jacobian 做控制。当前轮序和方向由下面三行固定公式冻结，实车点动后再调整公式。
 
 当前 `src/kiwi_base` 为兼容已经冻结的 C 板联调量，实际发送采用固定的归一化矩阵：
 
 ~~~text
-u_x = -vy, u_y = -vx, u_wz = wz
-w1 = 3 * (-0.5*u_x - 0.8660254*u_y - u_wz)
-w2 = 3 * ( u_x              - u_wz)
-w3 = 3 * (-0.5*u_x + 0.8660254*u_y - u_wz)
+w1 = 3 * ( 0.8660254*vx + 0.5*vy - wz)
+w2 = 3 * (-vy                    - wz)
+w3 = 3 * (-0.8660254*vx + 0.5*vy - wz)
 ~~~
 
-这里的 `3` 是联调标定比例，不是轮半径；轮半径、轮心距当前只用于几何有效性检查，
-不参与上述固定映射的幅值计算。完成轮序、有效接触半径和低速运动标定后，才能切换为
-上面的物理 Jacobian，并同步修改正解、测试和速度单位，避免只替换一侧公式。
+这里的 `3` 是联调标定比例，不是轮半径；轮半径和轮心距当前不参与映射。若未来切换为
+物理 Jacobian，必须同步修改正解、测试、配置和 MCU 速度单位，不能只替换一侧公式。
 
 ### 7.2 `kiwi_base_node` 参数和职责
 
 `kiwi_base_node` 当前负责四件事：
 
-1. 将 `/cmd_vel_safe` 的机体速度通过当前固定 Kiwi 映射转成三个轮子的目标速度；逆解只在上位机执行，C 型板不重复逆解；
-2. 按 `0x3A` 命令 codec 向 C 型板发送三个电机轴速度，并接收实际轮速与 IMU；反馈字段仍待协议抓包确认；
+1. 将 `/cmd_vel_safe` 的已标定控制坐标通过当前固定 Kiwi 映射转成三个轮子的目标速度；逆解只在上位机执行，C 型板不重复逆解；
+2. 按 `0x3A` 命令 codec 向 C 型板发送三个电机轴速度，并接收 `0x3B` 实际轮速与 IMU；
 3. 从三个轮子的 position/velocity state 计算 `/wheel/odom` 和 `/joint_states`，不发布 odom TF；
-4. 执行速度/加速度限幅、`/kiwi/estop` 软件急停、单调时钟命令超时、断线重连和 MCU 电机故障门控；当前 I/O 在单个 wall timer 内完成，没有独立 I/O 线程或 TX 队列。
+4. 在单个 wall timer 内完成 USB 读写和反馈发布；速度/加速度限幅、软件急停、命令超时和反馈门控暂时注释，不进入本阶段运行路径。
 
 参数骨架：
 
 ~~~yaml
 kiwi_base_node:
   ros__parameters:
-    transport: usb_cdc
     device: /dev/robomaster_c
-    protocol_version: 51       # 0x33，命令联调版本字节
-    command_timeout_ms: 100
-    feedback_timeout_ms: 150
-    reconnect_interval_ms: 1000
     publish_rate: 50.0
-    max_wheel_speed_rad_s: 30.0
-    max_linear_speed_m_s: 0.6
-    max_lateral_speed_m_s: 0.6
-    max_angular_speed_rad_s: 1.5
-    max_accel_m_s2: 0.8
-    max_decel_m_s2: 1.2
-    max_yaw_accel_rad_s2: 2.0
-    max_yaw_decel_rad_s2: 3.0
-    estop_topic: /kiwi/estop
+    log_serial_frames: false
+    feedback_motor_scale_to_rad_s: 1.0
+    motor_reduction_ratio: [19.0, 19.0, 19.0]
     wheel_names: [wheel_joint_1, wheel_joint_2, wheel_joint_3]
     # 几何参数已合并到 config/kiwi_base.yaml；同名参数可由自定义文件覆盖。
     odom_frame_id: odom
@@ -402,7 +391,9 @@ kiwi_base_node:
     joint_states_topic: /joint_states
 ~~~
 
-已覆盖：固定控制矩阵正逆解回环、协议 golden vector、半帧/粘包、CRC 错误、IMU 时间戳和 WHEEL 字段偏移。待补：命令超时/断线重连的节点级测试、rosbag odom 连续性、实机故障/急停测试。该节点不依赖 `omnidirectional_controllers` 或 `standard-robot-pro` 头文件。
+已覆盖：固定控制矩阵正逆解回环、协议 golden vector、半帧/粘包、CRC 错误和 `0x3B` 十二浮点解码。
+待补：实机轮序/方向和单位标定、EKF/SLAM/Nav2 联调，以及后续重新启用安全保护后的节点级测试。
+该节点不依赖 `omnidirectional_controllers` 或 `standard-robot-pro` 头文件。
 
 ### 7.3 符号与标定
 
@@ -492,6 +483,10 @@ MCU 对每个 CRC、长度、有限值和量程合法的新帧刷新 100 ms watc
 MCU 时间戳单位为 `ms`；当前 ROS 消息 header 使用接收时刻，尚未实现 MCU 到 ROS 的偏移估计，后续 EKF 联调前必须补齐。`STATE_POWER=0x82` 仅保留解码接口，当前 MCU 不发送。所有整数小端、float32 IEEE-754 小端，未知版本/长度/CRC 直接丢弃。
 
 ### 8.4 上位机与底盘安全保护
+
+以下是正式运行阶段的目标保护设计；当前 `kiwi_base` 最小联调版已将上位机限幅、超时、
+反馈联锁和软件急停从运行路径中注释，暂只保留 CRC 帧校验和退出时清零，便于先确认
+电机方向与通信。MCU watchdog/物理急停仍应独立保留。
 
 安全链路必须逐层失效安全，任何一层失效都不能让电机保持上一条有效速度：
 
@@ -660,13 +655,13 @@ kiwi_base_node:
 
 | 文件 | 函数 | 责任与安全边界 |
 |---|---|---|
-| `src/kiwi_base/src/kiwi_base_node.cpp` | `KiwiBaseNode::KiwiBaseNode` | 读取参数、检查 Jacobian、建立话题和定时器；配置错误保持禁能 |
-| 同上 | `open_serial` / `close_serial` / `read_serial` | USB CDC raw 非阻塞 I/O、断线重连、清空半帧和在线状态 |
-| 同上 | `limit_command` / `update` | 速度/加速度限幅、命令/反馈 watchdog、软件急停、上位机逆解和发送门控 |
-| 同上 | `send_command` / `on_frame` | 发送三电机轴速度命令；接收实际轮速、IMU、电池和故障状态 |
+| `src/kiwi_base/src/kiwi_base_node.cpp` | `KiwiBaseNode::KiwiBaseNode` | 读取最小参数、建立话题和定时器；不做物理几何检查 |
+| 同上 | `open_serial` / `close_serial` / `read_serial` | USB CDC raw 非阻塞 I/O、重连和半帧缓存处理 |
+| 同上 | `update` | 读取当前 Twist、固定逆解、乘减速比并发送命令 |
+| 同上 | `send_command` / `on_frame` | 发送 0x3A；接收 0x3B/0x80/0x81/0x82 并发布反馈 |
 | 同上 | `publish_odom` / `publish_joints` / `publish_imu` / `publish_battery` | 发布原始轮里程计、关节、IMU 和电池话题；不发布 odom TF |
 | 同上 | `publish_diagnostics` | 汇总配置、USB、反馈、MCU、急停和 CRC 计数 |
-| `src/kiwi_base/src/kiwi_teleop_keyboard.cpp` | `tick` / `publish_zero` | 键盘速度、250 ms 死手超时和退出安全停车 |
+| `src/kiwi_base/src/kiwi_teleop_keyboard.cpp` | `tick` / `publish_zero` | 键盘到 Twist 的映射、空格清零和退出清零；死手超时暂时注释 |
 | `src/kiwi_base/src/kiwi_kinematics.cpp` | `inverse` / `forward` | 主机 Twist↔三个轮输出轴角速度；不访问硬件 |
 | `src/kiwi_base/src/robomaster_protocol.cpp` | `encode_command` / `FrameParser` / `decode_*` | 0x3A 三 float 命令与反馈 codec；协议变化时替换此层 |
 
