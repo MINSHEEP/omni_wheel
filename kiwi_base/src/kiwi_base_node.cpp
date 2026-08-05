@@ -227,7 +227,7 @@ private:
     const ssize_t written = write(fd_, frame.data(), frame.size());
     if (written == static_cast<ssize_t>(frame.size()))
     {
-      log_frame("TX", frame);
+      // log_frame("TX", frame);
       return;
     }
     close_serial();
