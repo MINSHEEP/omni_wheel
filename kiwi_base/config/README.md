@@ -10,6 +10,8 @@ ros2 launch kiwi_base kiwi_base.launch.py \
   params_file:=src/kiwi_base/config/kiwi_base.yaml
 ```
 
+节点参数统一从 `params_file` 指定的 YAML 读取；launch 不再用 `device` 或日志默认值覆盖 YAML。
+
 ## 运行链路
 
 ```text
@@ -41,9 +43,9 @@ w3 =      -0.8660254 * vx + 0.5 * vy - wz
 
 | 参数 | 作用 |
 | --- | --- |
-| `device` | USB CDC 设备路径 |
+| `device` | USB CDC 设备路径；只在 YAML 中修改 |
 | `publish_rate` | 发送和串口读取周期，Hz |
-| `log_serial_frames` | 是否打印 CMD/TX/RX 帧；默认 `true` |
+| `log_serial_frames` | 是否打印 CMD/TX/RX 帧；由 YAML 控制，默认 `true` |
 | `motor_reduction_ratio` | 三路轮输出轴速度到电机轴速度的乘数 |
 | `feedback_motor_scale_to_rad_s` | C 板反馈数值的单位倍率 |
 | `cmd_vel_topic` | 底盘订阅的 `geometry_msgs/msg/Twist` 话题 |

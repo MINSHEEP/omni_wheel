@@ -2,7 +2,7 @@
 # 需要修改设备、话题、默认减速比或发布格式时，只改本文件。
 kiwi_base_node:
   ros__parameters:
-    # USB CDC 设备。串口帧日志默认开启；需要降噪时可改为 false。
+    # USB CDC 设备。没有硬件时节点仍可启动，但不会产生 TX 日志。
     device: /dev/robomaster_c
     publish_rate: 50.0
     log_serial_frames: true
