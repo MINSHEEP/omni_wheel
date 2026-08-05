@@ -29,13 +29,13 @@ ros2 launch kiwi_base kiwi_base.launch.py \
 `linear.x<0`，`wz=angular.z` 逆时针为正。轮序固定为 1、2、3：
 
 ```text
-w1 = 3 * ( 0.8660254 * vx + 0.5 * vy - wz)
-w2 = 3 * (-vy                         - wz)
-w3 = 3 * (-0.8660254 * vx + 0.5 * vy - wz)
+w1 =       0.8660254 * vx + 0.5 * vy - wz
+w2 =                         -vy         - wz
+w3 =      -0.8660254 * vx + 0.5 * vy - wz
 ```
 
 公式位于 `src/kiwi_kinematics.cpp` 的 `KiwiKinematics::inverse()`。代码不读取轮半径、
-轮心距或 `wheel_sign`；`3.0` 是当前实车联调标定比例，`19` 才是 M3508 套装减速比。
+轮心距或 `wheel_sign`；当前不再使用临时放大比例，`19` 是 M3508 套装减速比。
 
 ## 参数在哪里改
 
@@ -55,7 +55,7 @@ w3 = 3 * (-0.8660254 * vx + 0.5 * vy - wz)
 
 ```bash
 ros2 run kiwi_base kiwi_teleop_keyboard --ros-args \
-  -p speed_m_s:=0.10 -p yaw_rad_s:=0.30
+  -p speed_m_s:=0.10 -p yaw_rad_s:=0.30 -p deadman_timeout_ms:=250
 ```
 
 ## USB 帧格式
@@ -102,3 +102,5 @@ q / e : +wz / -wz，逆时针 / 顺时针
 
 键盘直接发布这套控制坐标，因此 `w` 产生 `linear.y<0`，`a` 产生 `linear.x<0`。
 `control_velocity={-t.vy,-t.vx,t.wz}` 已经代数展开到固定公式，不再在运行代码重复换轴。
+终端没有按键释放事件，键盘节点在 `deadman_timeout_ms`（默认 250 ms）内没有收到新的
+运动按键时自动发布零速；SSH 环境下可根据终端自动重复延迟把该值调大。

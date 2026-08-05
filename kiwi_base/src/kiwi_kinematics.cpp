@@ -11,10 +11,6 @@ namespace kiwi_base
     // 0/120/240 度布置中的 sin(60°)。保留足够精度，避免正逆解出现可见偏差。
     constexpr double kSin60 = 0.866025403784;
 
-    // 当前 C 板联调已经冻结的“归一化轮速”比例。
-    // 它是项目标定系数，不是轮半径或减速比；减速比在 kiwi_base_node 中单独处理。
-    constexpr double kMotorCommandScale = 3.0;
-
     // 旧的矩阵写法保留在此处供对照；当前 inverse() 直接写出三行公式。
 #if 0
     constexpr double kCommandMap[3][3] = {
@@ -105,13 +101,13 @@ namespace kiwi_base
    * 将机体速度转换为三个轮子的联调目标速度。
    *
    * 输入：当前已标定控制坐标的 vx/vy（m/s）和 wz（rad/s）；前进为 vy<0、左移为 vx<0。
-   * 输出：轮 1/2/3 的归一化输出轴速度，随后由 kiwi_base_node 乘以 19:1
+   * 输出：轮 1/2/3 的输出轴角速度，随后由 kiwi_base_node 乘以 19:1
    *       减速比编码为 C 板所需的电机转子轴 rad/s。
    *
    * 直接使用当前实车确认的方向公式，不再经过换轴变量或矩阵循环：
-   *   w1 = 3 * ( sin60*vx + 0.5*vy - wz)
-   *   w2 = 3 * (-vy              - wz)
-   *   w3 = 3 * (-sin60*vx + 0.5*vy - wz)
+   *   w1 =  sin60*vx + 0.5*vy - wz
+   *   w2 = -vy              - wz
+   *   w3 = -sin60*vx + 0.5*vy - wz
    */
   std::array<double, 3> KiwiKinematics::inverse(const Twist2D &t) const
   {
@@ -122,9 +118,9 @@ namespace kiwi_base
       return out;
 #endif
     // 公式直接对应当前底盘控制坐标；不再额外执行 control_velocity 换轴。
-    out[0] = kMotorCommandScale * (kSin60 * t.vx + 0.5 * t.vy - t.wz);
-    out[1] = kMotorCommandScale * (-t.vy - t.wz);
-    out[2] = kMotorCommandScale * (-kSin60 * t.vx + 0.5 * t.vy - t.wz);
+    out[0] = kSin60 * t.vx + 0.5 * t.vy - t.wz;
+    out[1] = -t.vy - t.wz;
+    out[2] = -kSin60 * t.vx + 0.5 * t.vy - t.wz;
     return out;
   }
 
@@ -140,11 +136,10 @@ namespace kiwi_base
     if (!std::isfinite(w[0]) || !std::isfinite(w[1]) || !std::isfinite(w[2]))
       return t;
 #endif
-    const double denominator = 3.0 * kMotorCommandScale;
     // 与上面三行逆解公式对应的解析正解。
-    t.vx = (w[0] - w[2]) / (2.0 * kSin60 * kMotorCommandScale);
-    t.vy = (w[0] + w[2] - 2.0 * w[1]) / denominator;
-    t.wz = -(w[0] + w[1] + w[2]) / denominator;
+    t.vx = (w[0] - w[2]) / (2.0 * kSin60);
+    t.vy = (w[0] + w[2] - 2.0 * w[1]) / 3.0;
+    t.wz = -(w[0] + w[1] + w[2]) / 3.0;
     return t;
   }
 #if 0

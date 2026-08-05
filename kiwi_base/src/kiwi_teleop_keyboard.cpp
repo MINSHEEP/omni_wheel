@@ -9,8 +9,10 @@
 #include <unistd.h>
 #include <fcntl.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cerrno>
+#include <cstdint>
 #include <cstring>
 #include <string>
 
@@ -28,11 +30,9 @@ public:
     const auto topic = declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel_safe");
     speed_ = declare_parameter("speed_m_s", 0.25);
     yaw_ = declare_parameter("yaw_rad_s", 0.8);
-#if 0
-    // 联调阶段暂不启用死手超时；恢复时取消此段注释并在 tick() 中启用对应逻辑。
+    // SSH 终端没有按键释放事件，以最后一次有效运动按键的时间作为停车依据。
     deadman_timeout_ms_ = static_cast<int>(declare_parameter<int>("deadman_timeout_ms", 250));
     deadman_timeout_ms_ = std::max(1, deadman_timeout_ms_);
-#endif
     pub_ = create_publisher<geometry_msgs::msg::Twist>(topic, 10);
 
     terminal_ready_ = isatty(STDIN_FILENO) == 1 && tcgetattr(STDIN_FILENO, &old_) == 0;
@@ -66,7 +66,9 @@ public:
                                { tick(); });
     RCLCPP_INFO(
         get_logger(),
-        "keyboard: w=forward s=backward a=left d=right q=ccw e=cw, space/x=stop, Ctrl-C=quit");
+        "keyboard: w=forward s=backward a=left d=right q=ccw e=cw, "
+        "space/x=stop, timeout=%d ms, Ctrl-C=quit",
+        deadman_timeout_ms_);
   }
 
   /** 发布多帧零速度并恢复终端属性，防止退出后底盘继续保持运动命令。 */
@@ -86,6 +88,7 @@ private:
   /** 读取所有待处理按键、更新速度状态并发布 Twist。 */
   void tick()
   {
+    bool refreshed = false;
     if (terminal_ready_)
     {
       char key = 0;
@@ -99,34 +102,44 @@ private:
           {
             vy_ = -speed_;
             vx_ = wz_ = 0.0;
+            refreshed = true;
           }
           else if (key == 's')
           {
             vy_ = speed_;
             vx_ = wz_ = 0.0;
+            refreshed = true;
           }
           else if (key == 'a')
           {
             vx_ = -speed_;
             vy_ = wz_ = 0.0;
+            refreshed = true;
           }
           else if (key == 'd')
           {
             vx_ = speed_;
             vy_ = wz_ = 0.0;
+            refreshed = true;
           }
           else if (key == 'q')
           {
             wz_ = yaw_;
             vx_ = vy_ = 0.0;
+            refreshed = true;
           }
           else if (key == 'e')
           {
             wz_ = -yaw_;
             vx_ = vy_ = 0.0;
+            refreshed = true;
           }
           else if (key == ' ' || key == 'x')
+          {
             vx_ = vy_ = wz_ = 0.0;
+            have_key_ = false;
+            refreshed = false;
+          }
           else
             continue;
         }
@@ -141,12 +154,11 @@ private:
               get_logger(), *get_clock(), 2000, "keyboard read failed: %s", std::strerror(errno));
           terminal_ready_ = false;
           vx_ = vy_ = wz_ = 0.0;
+          have_key_ = false;
           break;
         }
       }
     }
-#if 0
-    // 联调阶段暂不启用“按键超时自动清零”；底盘停止请按空格或 x。
     if (refreshed)
     {
       last_key_steady_ = std::chrono::steady_clock::now();
@@ -157,8 +169,10 @@ private:
                                      .count()
                                : static_cast<int64_t>(deadman_timeout_ms_) + 1;
     if (age > deadman_timeout_ms_)
+    {
       vx_ = vy_ = wz_ = 0.0;
-#endif
+      have_key_ = false;
+    }
 
     geometry_msgs::msg::Twist message;
     message.linear.x = vx_;
@@ -181,22 +195,16 @@ private:
   rclcpp::TimerBase::SharedPtr timer_;
   termios old_{};
   int flags_{-1};
-#if 0
   int deadman_timeout_ms_{250};
-#endif
   bool terminal_ready_{false};
   bool termios_changed_{false};
-#if 0
   bool have_key_{false};
-#endif
   double speed_{0.25};
   double yaw_{0.8};
   double vx_{0.0};
   double vy_{0.0};
   double wz_{0.0};
-#if 0
   std::chrono::steady_clock::time_point last_key_steady_{};
-#endif
 };
 
 /** ROS 2 进程入口：运行键盘节点，退出时由析构函数负责安全停车。 */

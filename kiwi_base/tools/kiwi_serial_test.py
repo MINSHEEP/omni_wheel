@@ -19,7 +19,6 @@ from typing import Optional, Sequence, Tuple
 SOF = 0x33
 CMD_MOTOR_SPEED = 0x3A
 SIN60 = 0.866025403784
-MOTOR_COMMAND_SCALE = 3.0
 
 
 def crc8_dji(data: bytes) -> int:
@@ -49,7 +48,7 @@ def kiwi_inverse(
 ) -> Tuple[float, float, float]:
     """使用与 C++ ``KiwiKinematics`` 相同的三行固定公式计算三路轮速。
 
-    当前公式不读取轮半径、轮心距和轮符号；3.0 是已经冻结的联调比例。
+    当前公式不读取轮半径、轮心距和轮符号；输出直接是轮输出轴角速度。
     """
     values = (vx, vy, wz)
     if not all(math.isfinite(value) for value in values):
@@ -57,9 +56,9 @@ def kiwi_inverse(
 
     # 这里直接对应已标定控制坐标：vy<0 前进、vx<0 左移、wz>0 逆时针旋转。
     return (
-        MOTOR_COMMAND_SCALE * (SIN60 * vx + 0.5 * vy - wz),
-        MOTOR_COMMAND_SCALE * (-vy - wz),
-        MOTOR_COMMAND_SCALE * (-SIN60 * vx + 0.5 * vy - wz),
+        SIN60 * vx + 0.5 * vy - wz,
+        -vy - wz,
+        -SIN60 * vx + 0.5 * vy - wz,
     )
 
 
@@ -128,7 +127,7 @@ def run_self_test() -> None:
     )
     assert encode_motor_command(1, (1.0, -2.0, 3.0), False)[4:-2] == bytes(12)
     wheels = kiwi_inverse(0.0, 0.0, 1.0)
-    expected = -MOTOR_COMMAND_SCALE
+    expected = -1.0
     assert all(abs(value - expected) < 1e-9 for value in wheels)
     assert wheel_to_motor(wheels) == tuple(value * 19.0 for value in wheels)
     print("kiwi_serial_test self-test: PASS")
