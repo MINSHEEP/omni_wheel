@@ -1,7 +1,7 @@
 # ROS 2 Humble + Ubuntu 22.04 三轮全向底盘建图导航实施方案
 
 > 版本：2026-08-05
-> Git 基线：`src` 子仓库 `2a600dc`（统一 0x3B 反馈链路并对齐命令日志）；`standard-robot-pro` 仍为独立固件工作区，未纳入本次 ROS 提交。
+> Git 基线：`src` 子仓库 `345a73d`（键盘死手超时和无临时放大运动学）；`standard-robot-pro` 仍为独立固件工作区，未纳入本次 ROS 提交。
 > 目标平台：Ubuntu 22.04 LTS + ROS 2 Humble
 > 激光雷达：Pacecat LDS-E110-R，依据本地 V1.5 手册
 > 底盘控制器：DJI RoboMaster 开发板 C 型（STM32F407）
@@ -349,15 +349,15 @@ twist = (J^T J)^-1 J^T * omega       # 3 轮满秩时的正向解
 三轮 120° 对称布置只是该矩阵的一种特例。物理 Jacobian 只作为后续标定参考，当前运行代码不读取这些几何字段、
 不做有限值或满秩检查，也不使用该 Jacobian 做控制。当前轮序和方向由下面三行固定公式冻结，实车点动后再调整公式。
 
-当前 `src/kiwi_base` 为兼容已经冻结的 C 板联调量，实际发送采用固定的归一化矩阵：
+当前 `src/kiwi_base` 使用已经实车确认方向的固定 Kiwi 矩阵：
 
 ~~~text
-w1 = 3 * ( 0.8660254*vx + 0.5*vy - wz)
-w2 = 3 * (-vy                    - wz)
-w3 = 3 * (-0.8660254*vx + 0.5*vy - wz)
+w1 =       0.8660254*vx + 0.5*vy - wz
+w2 =                         -vy - wz
+w3 =      -0.8660254*vx + 0.5*vy - wz
 ~~~
 
-这里的 `3` 是联调标定比例，不是轮半径；轮半径和轮心距当前不参与映射。若未来切换为
+当前公式不再使用临时放大比例；轮半径和轮心距当前不参与映射。若未来切换为
 物理 Jacobian，必须同步修改正解、测试、配置和 MCU 速度单位，不能只替换一侧公式。
 
 ### 7.2 `kiwi_base_node` 参数和职责
@@ -648,7 +648,7 @@ kiwi_base_node:
 | 同上 | `update` | 读取当前 Twist、固定逆解、乘减速比并发送命令 |
 | 同上 | `send_command` / `on_feedback` | 发送 0x3A；接收唯一 0x3B/48 帧并解码反馈 |
 | 同上 | `publish_odom` / `publish_joints` / `publish_imu` | 发布原始轮里程计、关节和 IMU 话题；不发布 odom TF |
-| `src/kiwi_base/src/kiwi_teleop_keyboard.cpp` | `tick` / `publish_zero` | 键盘到 Twist 的映射、空格清零和退出清零；死手超时暂时注释 |
+| `src/kiwi_base/src/kiwi_teleop_keyboard.cpp` | `tick` / `publish_zero` | 键盘到 Twist 的映射、250 ms 默认死手超时、空格清零和退出清零 |
 | `src/kiwi_base/src/kiwi_kinematics.cpp` | `inverse` / `forward` | 主机 Twist↔三个轮输出轴角速度；不访问硬件 |
 | `src/kiwi_base/src/robomaster_protocol.cpp` | `encode_command` / `FrameParser` / `decode_*` | 0x3A 三 float 命令与反馈 codec；协议变化时替换此层 |
 
