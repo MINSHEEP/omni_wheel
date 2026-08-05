@@ -1,7 +1,7 @@
 # ROS 2 Humble + Ubuntu 22.04 三轮全向底盘建图导航实施方案
 
-> 版本：2026-08-03
-> Git 基线：899a0a4（硬件手册适配前）
+> 版本：2026-08-04
+> Git 基线：`src` 子仓库 `bc45017`（kiwi_base 通信与反馈工具）；`standard-robot-pro` 仍为独立固件工作区，未纳入本次 ROS 提交。
 > 目标平台：Ubuntu 22.04 LTS + ROS 2 Humble
 > 激光雷达：Pacecat LDS-E110-R，依据本地 V1.5 手册
 > 底盘控制器：DJI RoboMaster 开发板 C 型（STM32F407）
@@ -9,23 +9,49 @@
 > 文档定位：从电机/编码器、MCU、ROS 2 驱动，到建图、定位、导航和任务层的落地设计。
 > 说明：这是从零搭建的独立工程方案。开源仓库只作为协议、接口和算法参考，不假定现有工程可以直接使用。
 
+> 当前实现状态（2026-08-04）：已完成 `kiwi_base` 第一版底盘通信骨架和 MCU 最小改动链路。ROS 节点/键盘、上位机三轮逆运动学、主机限速/斜坡/软件急停、`0x33/len=12/id=0x3A` 三电机 float 命令编解码、轮里程计/IMU/电池/诊断发布、单调时钟安全超时和 USB 断线重连已实现；MCU CDC ring、`ros_bridge`、三路 M3508 速度 PID、连续编码器、100 ms watchdog、WHEEL/IMU 状态帧已实现。M3508/C620/轮子规格已录入，CAN ID、轮符号、速度单位实物确认、物理急停和电流换算仍待实机确认。ROS Humble 构建和无硬件 Python 自检通过；当前仍待 Keil/ARM 实际链接、烧录、USB 枚举、CAN 电机台架、EKF/SLAM/Nav2 联调。
+
 ## 1. 先给结论
 
 推荐采用下面的基线：
 
 1. 主机运行 Ubuntu 22.04 和 ROS 2 Humble，所有 Humble 软件包固定在同一发行版。
 2. RoboMaster C 型板负责底盘实时控制，通过 CAN1 连接三个外置电调；该开发板不是电机功率驱动器。
-3. 第一版让 C 型板通过 USB CDC 与主机通信；若实测抗干扰不足，再使用隔离 USB-CAN 接 CAN2。应用协议必须有序号、时间戳、CRC、使能位和看门狗。
-4. 用 ros2_control 的自定义 SystemInterface 管理三路轮子的命令与反馈，再接一个三轮全向控制器。
+3. 第一版让 C 型板通过 USB CDC 与主机通信；若实测抗干扰不足，再使用隔离 USB-CAN 接 CAN2。当前联调命令协议为 `0x33/len=12/id=0x3A/三个电机轴 float32/CRC16`；反馈帧和物理单位仍需抓包确认，watchdog 与硬件急停独立保留。
+4. 不采用 `omnidirectional_controllers`，也不把标准控制器管理器放进第一版；新建单一 `kiwi_base_node`，负责三轮逆运动学、上/下位机协议、编码器/IMU解析和原始轮里程计。
 5. 里程计由轮编码器计算，轮里程计和 IMU 用 robot_localization EKF 融合；EKF 唯一发布 odom 到 base_footprint 的 TF。
 6. 建图使用 SLAM Toolbox；保存地图后，定位使用 AMCL，并明确使用 Humble 的 OmniMotionModel。
 7. Nav2 第一阶段使用 DWBLocalPlanner，显式打开 Y 方向速度采样；后续可评估 Humble 的 MPPI Omni 模型。
-8. 速度链路固定为：Nav2 → velocity_smoother → collision_monitor → 全向控制器 → C 型板 → 外置电调。硬件急停和通信看门狗独立于这条链路。
+8. 速度链路固定为：Nav2 → velocity_smoother → collision_monitor → `kiwi_base_node`（限速/斜坡/软件急停）→ C 型板 → 外置电调。硬件急停和通信看门狗独立于这条链路。
 9. LDS-E110-R 直接接主机 USB-UART，并使用独立 5.1 V 电源；不要从 C 型板标注 100 mA 的接口给雷达供电，也不要把雷达 frame_id 写成 map。
 
 最终验收不是“能启动几个 launch”，而是以下闭环都成立：
 
-主机发目标速度 → 三轮实际运动 → 编码器/IMU 回传 → EKF 输出连续 odom/TF → 雷达扫描与 TF 对齐 → SLAM 生成地图 → AMCL 在地图中定位 → Nav2 发全向速度 → 任务层可取消、重试和恢复。
+底盘闭环：Nav2/遥控速度 → `kiwi_base_node` → C 型板三轮闭环 → 编码器/IMU → EKF 输出 `odom→base_footprint`；建图模式再由 SLAM Toolbox 输出 `/map` 和 `map→odom`，回环后由 TF 组合出 `map→base_link`。导航模式关闭 SLAM Toolbox，改用 map_server + AMCL，再由 Nav2 发全向速度。
+
+### 1.1 框架候选与最终组合
+
+“换一个框架”不等于把 Nav2 全部替换掉。对本项目，最稳妥的做法是保留 Humble 的 Nav2 导航服务器，只替换底盘适配层，并按需要替换规划插件：
+
+| 能力 | 首选 | 备选 | 本项目决策 |
+|---|---|---|---|
+| 导航编排 | Nav2 Humble | 自研导航状态机 | 保留 Nav2；任务层通过 BT/Simple Commander 调用 |
+| 2D 建图 | SLAM Toolbox | RTAB-Map ROS2、Cartographer ROS2 | E110 纯 2D 激光首选 SLAM Toolbox；RTAB-Map 仅在增加相机/3D 激光后启用 |
+| 已知地图定位 | Nav2 AMCL | SLAM Toolbox localization mode | 按用户要求使用 AMCL；两者不能同时发布 `map→odom` |
+| 全局规划 | SmacPlanner2D | NavFn、SmacPlannerLattice | 首选 SmacPlanner2D；非圆形外壳或需要运动学可行路径时评估 Lattice |
+| 局部控制 | DWB | MPPI Omni、RPP | 先 DWB 做可观测基线，稳定后切换 MPPI Omni 做性能对比 |
+| 底盘接口 | 自研 `kiwi_base_node` | 标准硬件接口适配层 | 第一版用单节点降低通信和调试复杂度；未来需要统一硬件接口时再拆分 |
+| 复杂任务 | Nav2 BT + Simple Commander | PlanSys2 | 当前航点/动作任务不引入 PlanSys2，任务复杂到需要 PDDL 时再评估 |
+
+官方依据：
+
+- [Nav2 Smac Planner](https://docs.nav2.org/configuration/packages/configuring-smac-planner.html) 明确支持圆形全向机器人使用 `SmacPlanner2D`，并提供面向全向车的 Lattice 控制集。
+- [Nav2 MPPI](https://docs.nav2.org/configuration/packages/configuring-mppic.html) 支持 `mppi::OmniMotionModel`，并提供 `vy` 与横向加速度约束。
+- [Nav2 AMCL](https://docs.nav2.org/configuration/packages/configuring-amcl.html) 提供 `nav2_amcl::OmniMotionModel`。
+- [SLAM Toolbox](https://github.com/SteveMacenski/slam_toolbox) 是当前维护的 ROS 2 2D SLAM 方案，并有 mapping/localization 两种模式。
+- [RTAB-Map ROS2](https://github.com/introlab/rtabmap_ros) 支持 Humble，但主要价值在视觉、3D 激光和多传感器闭环；对当前 E110 单雷达方案属于更重的备选。
+
+暂不选 `slam_gmapping`、`hector_slam` 作为 Humble 基线，也不把 Cartographer 作为第一阶段依赖：前者的 Humble 发布支持不足，后者配置和维护成本更高。若后续需要 3D/视觉建图，单独建立 RTAB-Map 实验分支，不改变 AMCL + Nav2 主链路。
 
 ## 2. 系统边界与架构
 
@@ -39,12 +65,12 @@
 +------------------------------- 定位建图层 ---------------------------+
 | AMCL（定位） / SLAM Toolbox（建图） | robot_localization EKF       |
 +------------------------------- ROS 2 设备层 --------------------------+
-| pacecat_lds_e110_driver | kiwi_hardware | kiwi_omni_controller      |
-| robot_state_publisher  | diagnostics | ros2_control/controller_mgr |
+| pacecat_lds_e110_driver | kiwi_base_node | diagnostics             |
+| robot_state_publisher   | robot_localization/ekf | Nav2 |
 +------------------------------- 传输层 -------------------------------+
-| USB CDC（首版）或隔离 USB-CAN：命令、反馈、故障、急停状态            |
+| USB CDC（首版）或隔离 USB-CAN：命令、反馈、故障、预留急停状态        |
 +------------------------------- MCU/执行层 ---------------------------+
-| RoboMaster C 板：闭环、BMI088、ADC、电调通信、看门狗、急停状态       |
+| RoboMaster C 板：闭环、BMI088、ADC、电调通信、看门狗、急停 GPIO（待接入）|
 +---------------------------------------------------------------------+
 | 三个外置电调 + 电机/编码器 | LDS-E110-R | 电源/BMS/硬件急停         |
 ~~~
@@ -72,7 +98,7 @@ LDS-E110-R 保持直连主机，不经过 C 型板转发。若 USB CDC 抗干扰
 - Nav2、任务层不直接写 GPIO、PWM 或电机寄存器。
 - AMCL 不替代里程计；它依赖 map、odom、base 和 scan 的 TF 链。
 - collision_monitor 不等于功能安全急停；急停必须切断执行器使能或动力回路。
-- 示例中的尺寸、轮半径、串口设备名和速度限制均不是实物定值，必须在参数文件中替换。
+- 203 mm 轮径和 322.56 mm 中心到轮心已按项目输入写入初始参数；轮符号、有效接触半径、设备名和速度限值仍需实物验证。
 
 ## 3. 约束、待确认输入和命名
 
@@ -92,22 +118,40 @@ LDS-E110-R 保持直连主机，不经过 C 型板转发。若 USB CDC 抗干扰
 | 建图 | SLAM Toolbox |
 | 任务接口 | ROS 2 action，内部用 Nav2 Simple Commander |
 
-### 3.2 开工前必须填写的实物数据
+### 3.2 已提供的底盘规格与当前工程解释
+
+| 部件/数据 | 当前记录值 | 用途与边界 |
+|---|---:|---|
+| M3508 减速电机套装额定电压 | 24 V | 电机/电调母线额定值，不等于 C 板 USB/逻辑电源 |
+| M3508 空载转速 | 482 rpm | 配减速箱输出轴规格；不能再除以 19 |
+| M3508 3 N·m 时最大转速 | 469 rpm | 配减速箱输出轴规格；需结合负载、轮胎和供电实测 |
+| M3508 持续最大扭矩 | 3 N·m | 机械/热约束，不是可长期忽略的控制电流上限 |
+| M3508 使用温度 | 0–50 °C | 需在整机封装后做温升验证 |
+| 减速比 | 工程标称 19:1（资料机构比约 19.203，最终按轮速/编码器实测校正） | 主机将轮输出轴目标换算为电机轴目标，MCU 不重复相乘 |
+| C620 信号 | CAN/PWM（二者不可同时接入） | 当前工程使用 CAN；具体电流帧仍需抓包确认 |
+| C620 最大持续电流 | 20 A | 电调能力上限；电池、保险丝、线束和接插件需另行核算 |
+| C620 线长 | 344±15 mm | 布线与应力释放参考 |
+| C620 额定电压/重量/尺寸 | 24 V / 35 g / 49.4×25.8×11.5 mm | 机械与供电设计参考 |
+| 轮直径/半径 | 203 mm / 0.1015 m | 轮速与 URDF 初始值 |
+| 中心到轮心距离 | 322.56 mm / 0.32256 m | 本文暂按径向距离解释；若实际是三角形边长，应换算为 `边长/√3` |
+
+482/469 rpm 是带减速箱的输出轴数据。按当前 `r=0.1015 m、L=0.32256 m`，输出轴空载/额定扭矩角速度约为 50.475/49.114 rad/s；ROS 和 MCU 当前把 30 rad/s 作为保守运行上限，不能将其误写成电机规格极限。
+
+### 3.3 仍需在台架确认的数据
 
 | 数据 | 用途 | 当前状态 |
 |---|---|---|
-| 三轮中心到轮接触点距离 L | 逆/正运动学 | 待测量 |
-| 轮半径 r、轮宽 | 轮速和 URDF | 待测量 |
-| 三轮安装角 gamma、正方向 | 控制器参数 | 待测量 |
-| 电机、电调型号及 CAN 协议 | C 型板闭环和 kiwi_hardware | 待确认 |
-| 电机减速比、编码器线数/反馈单位 | 轮位置和轮速度 | 待确认 |
+| 三轮实际轮序、切向角和正方向 | Jacobian、URDF、编码器符号 | 待低速点动确认 |
+| 三个电机 CAN ID、CAN 总线和终端电阻 | C 型板闭环 | 待抓包/实测 |
+| C620 电流 raw 与安培换算、温度保护 | 电流限幅和诊断 | 待用电流计校准 |
+| USB 命令帧格式、版本和校验 | `ros_bridge` 与主机 codec | 命令格式已按 0x33/0x3A/三 float 冻结；反馈帧仍待确认 |
+| 编码器反馈单位、零点和掉线行为 | 轮位置/速度 | 待实测 |
 | BMI088 相对底盘安装方向 | IMU frame 和 EKF | 待测量 |
 | STM32F407 完整料号、主频和存储 | 固件资源预算 | 待从芯片丝印/固件工程确认 |
-| CAN1/CAN2 是否带终端电阻 | 总线布线 | 待实测 |
 | 底盘外轮廓 | costmap footprint、碰撞监测 | 待测量 |
 | 计算机型号与总线 | CPU 预算、设备名 | 待确认 |
 
-没有这些数据时，可以先做软件仿真和传感器单测，但不能声称运动学已经标定。
+没有这些台架数据时，可以先做软件自检和传感器单测，但不能声称运动学符号、电流安全或最终协议已经标定。
 
 ## 4. ROS 2 工作空间和包边界
 
@@ -117,8 +161,7 @@ LDS-E110-R 保持直连主机，不经过 C 型板转发。若 USB CDC 抗干扰
 ros2_ws/
 └── src/
     ├── kiwi_description/          # URDF/Xacro、TF、碰撞模型、传感器安装位
-    ├── kiwi_hardware/             # RoboMaster C SystemInterface、USB/CAN 协议、诊断
-    ├── kiwi_omni_controller/      # 三轮全向运动学、轮速、轮里程计
+    ├── kiwi_base/                 # 已实现：节点、键盘、三轮运动学、USB 协议、轮里程计
     ├── pacecat_lds_e110_driver/   # LDS-E110 生命周期节点、协议解析、LaserScan
     ├── kiwi_bringup/              # 硬件、传感器、状态发布、参数组合启动
     ├── kiwi_localization/         # EKF、AMCL 参数和定位启动
@@ -126,12 +169,24 @@ ros2_ws/
     ├── kiwi_navigation/           # Nav2 参数、地图、速度和安全层启动
     ├── kiwi_mission_interfaces/   # ExecuteMission.action 等接口
     ├── kiwi_mission/              # 任务状态机、BasicNavigator 封装
-    └── kiwi_tests/                # 运动学、协议、TF、launch、回放测试
+    └── kiwi_tests/                # 目标：运动学、协议、TF、launch、回放测试
 firmware/
 └── robomaster_c_base/             # C 型板固件：CAN 电调、BMI088、协议和安全
 ~~~
 
 每个包只拥有自己的参数和启动入口；不要把所有参数塞进一个巨大的 bringup 文件。建议用 git 子模块或 vendor 目录锁定外部参考代码，并在 README 记录上游 commit 和许可证。
+
+`kiwi_base` 建议先按通信和运动学职责拆成可单测的内部模块，不再拆成控制器插件：
+
+~~~text
+kiwi_base/（当前已存在）
+├── include/kiwi_base/{kiwi_kinematics,robomaster_protocol}.hpp
+├── src/{kiwi_base_node,kiwi_kinematics,robomaster_protocol,kiwi_teleop_keyboard}.cpp
+├── config/kiwi_base.yaml
+└── test/{test_kinematics,test_protocol}.cpp
+~~~
+
+`kiwi_base_node` 的单元测试输入输出不依赖实际串口；硬件联调只替换 transport 层，便于在没有 C 型板时先完成运动学、协议和 EKF 数据链路验证。
 
 ## 5. TF、坐标系和消息契约
 
@@ -148,10 +203,11 @@ base_link ──> wheel_link_1/2/3
 
 规则：
 
-- 建图运行时只让 SLAM Toolbox 发布 map→odom；定位运行时只让 AMCL 发布 map→odom。
-- EKF 发布 odom→base_footprint，控制器的原始 odom 可以发布话题，但配置 enable_odom_tf: false。
+- 建图运行时只让 SLAM Toolbox 发布 `map→odom`；定位运行时只让 AMCL 发布 `map→odom`。
+- `kiwi_base_node` 只发布 `/wheel/odom` 话题，不发布 odom TF；EKF 唯一发布 `odom→base_footprint`。
 - Nav2、AMCL、SLAM Toolbox 统一使用 base_footprint；base_link 只表示机体几何参考。
 - lidar_link 的原点和旋转方向必须按安装实测填写，不能靠 RViz 中“看起来差不多”。
+- SLAM Toolbox 的回环优化会更新 `map→odom`，不会直接发布 `map→base_link`；后者由 TF 自动组合 `map→odom→base_footprint→base_link` 得到。
 - 启动后用 tf2_tools 检查每条链只有一个发布者，不能出现 map→base_link 直连和重复 odom TF。
 
 ### 5.2 核心话题
@@ -159,18 +215,17 @@ base_link ──> wheel_link_1/2/3
 | 话题 | 类型 | 发布者 | 订阅者/用途 |
 |---|---|---|---|
 | /scan | sensor_msgs/msg/LaserScan | LDS-E110 驱动 | SLAM、AMCL、costmap、collision_monitor |
-| /imu/data_raw | sensor_msgs/msg/Imu | C 型板 BMI088 bridge | EKF |
-| /battery_state | sensor_msgs/msg/BatteryState | C 型板 ADC_BAT bridge | diagnostics、任务前置检查 |
-| /wheel/odom | nav_msgs/msg/Odometry | 全向控制器 | EKF、调试 |
+| /imu/data_raw | sensor_msgs/msg/Imu | `kiwi_base_node` BMI088 bridge | EKF |
+| /battery_state | sensor_msgs/msg/BatteryState | `kiwi_base_node` ADC_BAT bridge | diagnostics、任务前置检查 |
+| /wheel/odom | nav_msgs/msg/Odometry | `kiwi_base_node` | EKF、调试 |
 | /odometry/filtered | nav_msgs/msg/Odometry | EKF | Nav2、调试 |
-| /joint_states | sensor_msgs/msg/JointState | controller_manager | robot_state_publisher |
+| /joint_states | sensor_msgs/msg/JointState | `kiwi_base_node` | robot_state_publisher |
 | /cmd_vel | geometry_msgs/msg/Twist | Nav2/遥控 | velocity_smoother |
 | /cmd_vel_smoothed | geometry_msgs/msg/Twist | velocity_smoother | collision_monitor |
-| /cmd_vel_safe | geometry_msgs/msg/Twist | collision_monitor | 全向控制器 |
-| /omnidirectional_controller/cmd_vel_unstamped | geometry_msgs/msg/Twist | 速度桥/重映射 | 全向控制器 |
+| /cmd_vel_safe | geometry_msgs/msg/Twist | collision_monitor | `kiwi_base_node` |
 | /diagnostics | diagnostic_msgs/msg/DiagnosticArray | 各驱动 | 监控和任务前置检查 |
 
-Humble 基线统一使用 geometry_msgs/msg/Twist（非 stamped）。若后续切换 TwistStamped，必须在所有 remap 和控制器参数中同时切换，不能只改 Nav2 一端。
+Humble 基线统一使用 geometry_msgs/msg/Twist（非 stamped）。`kiwi_base_node` 订阅 `/cmd_vel_safe`；若后续切换 TwistStamped，必须在 Nav2、安全层和底盘节点三端同时切换。
 
 ## 6. LDS-E110-R：硬件、协议和驱动实现
 
@@ -279,43 +334,61 @@ LaserScan 标称时间起点为 scan_time≈0.142857 s、time_increment≈0.0002
 
 采用 REP-103 机体坐标：x 向前、y 向左、z 向上；角速度 wz 逆时针为正。以轮 1 的几何角 gamma 和轮的正转方向定义运动学，所有正负号必须与 URDF 和电机编码器实测一致。
 
-参考 Humble 三轮控制器使用轮半径 r、底盘中心到轮的距离 L、几何角 gamma（配置单位为度）：
+不要把某个开源仓库的三行公式当作通用运动学。自研控制器统一使用轮接触点和驱动切向方向生成 Jacobian。以第 i 个轮的轮心位置
+`p_i=(x_i,y_i)`、驱动滚动方向单位向量 `t_i=(tix,tiy)`、轮半径 `r_i` 和编码器符号 `s_i` 表示：
 
 ~~~text
-wm1 = (-vy + L*wz) / r
-wm2 = ( vx*cos(gamma) + vy*sin(gamma) + L*wz ) / r
-wm3 = (-vx*cos(gamma) + vy*sin(gamma) + L*wz ) / r
+omega_i = s_i / r_i * [ tix*vx + tiy*vy
+                         + (x_i*tiy - y_i*tix)*wz ]
 
-vx = r/(2*cos(gamma)) * (wm2 - wm3)
-vy = r/(sin(gamma)+1) * (-wm1 + 0.5*(wm2+wm3))
-wz = r/L * [ sin(gamma)/(sin(gamma)+1)*wm1
-             + 0.5/(sin(gamma)+1)*(wm2+wm3) ]
+omega = J * [vx, vy, wz]^T
+twist = (J^T J)^-1 J^T * omega       # 3 轮满秩时的正向解
 ~~~
 
-这组公式是参考实现的坐标约定，不是所有三轮布置的通用公式。若三轮以 120° 对称安装但轮 1 不在同一位置，应从轮接触点切向方向重新推导矩阵，或用实测的 3×3 矩阵替换。
+三轮 120° 对称布置只是该矩阵的一种特例。`kiwi_base_node` 在启动时检查矩阵满秩、轮半径为正、轮心不重合；缺参数或条件不满足时拒绝运行。正向运动学、逆向运动学和轮符号都必须用纯 `+x/+y/+wz` 测试验证。
 
-### 7.2 控制器参数
+### 7.2 `kiwi_base_node` 参数和职责
 
-三轮控制器可从 mateusmenezes95/omnidirectional_controllers 的 Humble 分支开始 fork，保留 MIT 署名；生产包建议命名为 kiwi_omni_controller。需要声明和验证：
+`kiwi_base_node` 当前负责四件事：
+
+1. 将 `/cmd_vel_safe` 的机体速度通过 Jacobian 转成三个轮子的目标角速度；逆解只在上位机执行，C 型板不重复逆解；
+2. 按 `0x3A` 命令 codec 向 C 型板发送三个电机轴速度，并接收实际轮速与 IMU；反馈字段仍待协议抓包确认；
+3. 从三个轮子的 position/velocity state 计算 `/wheel/odom` 和 `/joint_states`，不发布 odom TF；
+4. 执行速度/加速度限幅、`/kiwi/estop` 软件急停、单调时钟命令超时、断线重连和 MCU 电机故障门控；当前 I/O 在单个 wall timer 内完成，没有独立 I/O 线程或 TX 队列。
+
+参数骨架：
 
 ~~~yaml
-omnidirectional_controller:
+kiwi_base_node:
   ros__parameters:
+    transport: usb_cdc
+    device: /dev/robomaster_c
+    protocol_version: 51       # 0x33，命令联调版本字节
+    command_timeout_ms: 100
+    feedback_timeout_ms: 150
+    reconnect_interval_ms: 1000
+    publish_rate: 50.0
+    max_wheel_speed_rad_s: 30.0
+    max_linear_speed_m_s: 0.6
+    max_lateral_speed_m_s: 0.6
+    max_angular_speed_rad_s: 1.5
+    max_accel_m_s2: 0.8
+    max_decel_m_s2: 1.2
+    max_yaw_accel_rad_s2: 2.0
+    max_yaw_decel_rad_s2: 3.0
+    estop_topic: /kiwi/estop
     wheel_names: [wheel_joint_1, wheel_joint_2, wheel_joint_3]
-    # robot_radius、wheel_radius、gamma 尚未测量。
-    # 在三项真实值写入前，bringup 必须拒绝激活该控制器。
+    # 几何参数已合并到 config/kiwi_base.yaml；同名参数可由自定义文件覆盖。
     odom_frame_id: odom
     base_frame_id: base_footprint
-    odom_numeric_integration_method: runge_kutta2
-    open_loop: false
-    enable_odom_tf: false     # TF 交给 EKF
-    cmd_vel_timeout: 0.10
-    velocity_rolling_window_size: 10
-    use_stamped_vel: false
-    publish_rate: 50.0
+    imu_frame_id: imu_link
+    cmd_vel_topic: /cmd_vel_safe
+    wheel_odom_topic: /wheel/odom
+    imu_topic: /imu/data_raw
+    joint_states_topic: /joint_states
 ~~~
 
-参考仓库的 publish_rate 声明和参数生命周期需要在 fork 时重新检查；不要未经编译和参数转储验证就直接复制。
+已覆盖：Jacobian 满秩/回环、协议 golden vector、半帧/粘包、CRC 错误、IMU 时间戳和 WHEEL 字段偏移。待补：命令超时/断线重连的节点级测试、rosbag odom 连续性、实机故障/急停测试。该节点不依赖 `omnidirectional_controllers` 或 `standard-robot-pro` 头文件。
 
 ### 7.3 符号与标定
 
@@ -350,7 +423,8 @@ omnidirectional_controller:
 
 - CAN1：2-pin，1=CANL、2=CANH；STM32 映射 PD1/TX、PD0/RX。
 - CAN2：4-pin，1=5V、2=GND、3=CANH、4=CANL；STM32 映射 PB6/TX、PB5/RX。
-- 手册未说明板载 CAN 终端电阻，CAN1/CAN2 都必须断电测量，再按总线两端各 120 Ω 的实际拓扑配置。
+- C620 的 CAN/PWM 只能选一种输入，切换前断电；C620 终端开关按总线拓扑只在两端开启，不能把三个电调都并联成终端。
+- CAN1/CAN2 仍需按实际线束断电测量，再确认总线两端 120 Ω 终端配置。
 - 外壳丝印 UART1 实际对应 STM32 UART6（PG14/PG9），丝印 UART2 实际对应 STM32 UART1（PA9/PB7）；固件和线束表必须同时写丝印名与 MCU 外设名。
 - VCC_5V_M 是 PWM 外设 5 V 电源，总上限 5 A；VCC_5V 是板载器件 5 V 电源，总上限 1 A。UART2、CAN2 和独立 5 V 接口在电源框图中标为 5 V@100 mA，不能给 LDS-E110-R 供电。
 - 手册没有定义专用正交编码器接口，也没有三相电机功率级。三个电机必须使用带反馈的外置电调，或者后续增加独立编码器采集硬件。
@@ -369,62 +443,142 @@ Ubuntu 22.04 / ROS 2 Humble 主机
 备选：隔离 USB-CAN → CAN2；CAN1 仍只连接电调
 ~~~
 
-手册只确认 USB 具备通信能力，不提供本项目需要的 CDC 应用协议；USB 描述符、收发缓冲和 CRC 协议均由 robomaster_c_base 固件实现。USB 给板载 STM32/部分器件供电时，不能同时假定它给 PWM 外设电源供电。
+手册只确认 USB 具备通信能力，不提供本项目需要的 CDC 应用协议；USB 描述符、收发缓冲和项目 CRC codec 均由 `ros_bridge`/ROS 适配层实现。USB 给板载 STM32/部分器件供电时，不能同时假定它给 PWM 外设电源供电。
 
-### 8.3 主机与 C 型板协议
+### 8.3 主机与 C 型板协议（命令帧冻结格式）
 
-应用层帧建议：
-
-~~~text
-命令帧：
-SOF | version | type=CMD | seq | timestamp_ms | enable
-    | wheel_target_1_rad_s | wheel_target_2_rad_s | wheel_target_3_rad_s
-    | reserved | CRC16
-
-反馈帧：
-SOF | version | type=STATE | seq | timestamp_ms
-    | wheel_position_1/2/3 | wheel_velocity_1/2/3
-    | current/voltage | fault_bits | estop | CRC16
-~~~
-
-字段编码、字节序和量程在接口文档中固定；收到未知版本或 CRC 错误时丢弃并计数。
-
-反馈帧建议至少增加 BMI088 和电池字段；若单帧过长，可拆为同一时间戳下的 WHEEL_STATE、IMU_STATE、POWER_STATE 和 FAULT_STATE：
+命令帧按你提供的 C 型板解析流程实现；反馈帧布局仍按当前固件结构保留，后续抓包后可只替换反馈 codec，
+不改变“上位机逆解、C 板执行速度闭环”的所有权：
 
 ~~~text
-WHEEL_STATE: seq | mcu_time_us | pos[3] | vel[3] | current[3] | fault[3]
-IMU_STATE:   seq | mcu_time_us | gyro[3] | accel[3] | temperature
-POWER_STATE: seq | mcu_time_us | battery_voltage | estop | enable
+header = sof(0x33) | payload_len | msg_id | header_crc8
+frame  = header | payload | crc16_le
+
+CMD_MOTOR_SPEED(0x3A): payload 12 字节、整帧 18 字节：
+motor_target_rad_s[0]:f32@0、motor_target_rad_s[1]:f32@4、
+motor_target_rad_s[2]:f32@8。三个值是电机轴 rad/s，小端 IEEE-754 float32。
+
+字节顺序：33 | 0c | 3a | 65 | motor1:f32 | motor2:f32 | motor3:f32 | crc16_le。
+轮/电机映射：wheel_joint_1/2/3 -> payload[0/1/2] -> CAN ID 1/2/3。
+
+STATE_WHEEL(0x80): payload 46 字节，state_seq、last_cmd_seq、mcu_time_ms、
+position[3]、velocity[3]、current_raw[3]、battery_mV、fault_bits、flags。
+STATE_IMU(0x81): payload 34 字节，seq:u16@0、mcu_time_ms:u32@2、
+gyro[3]:f32@6、accel[3]:f32@18、temperature:f32@30。
 ~~~
 
-MCU 时间戳要单调递增，主机节点维护 MCU 时间到 ROS 时间的偏移估计。所有消息使用固定字节序和明确的缩放单位，协议版本变化必须可检测。
+命令帧没有 seq、timestamp、enable 或 clear_fault 字段。主机安全门控在发送前把禁能/超时目标写成三个零速值；
+MCU 对每个 CRC、长度、有限值和量程合法的新帧刷新 100 ms watchdog。`STATE_WHEEL.last_cmd_seq` 是 MCU 本地接受计数，
+不是线上回显的主机序号。
 
-### 8.4 频率与看门狗
+本版依据 `CAN_receive.c` 的 M3508 反馈和速度 PID，把三个 float 冻结为电机转子轴 `rad/s`。若后续双方改为 `rpm` 或减速箱输出轴速度，只修改 ROS/MCU 的单位转换层，不能在不升协议版本的情况下改变含义。
+
+收到未知版本、ID、长度或 CRC 错误时必须丢弃并计数；命令速度量程按 `KIWI_MAX_MOTOR_RAD_S` 检查。
+
+MCU 时间戳单位为 `ms`；当前 ROS 消息 header 使用接收时刻，尚未实现 MCU 到 ROS 的偏移估计，后续 EKF 联调前必须补齐。`STATE_POWER=0x82` 仅保留解码接口，当前 MCU 不发送。所有整数小端、float32 IEEE-754 小端，未知版本/长度/CRC 直接丢弃。
+
+### 8.4 上位机与底盘安全保护
+
+安全链路必须逐层失效安全，任何一层失效都不能让电机保持上一条有效速度：
+
+| 层级 | 已实现/要求 | 触发后的动作 |
+|---|---|---|
+| 上位机输入 | 拒绝 NaN/Inf；`max_*_speed` 绝对限幅；`max_accel/max_decel` 斜坡 | 只允许受限速度进入逆解 |
+| 上位机命令 | 100 ms `cmd_vel` 超时；`/kiwi/estop=true` | 立即清零并发送三个零速 float |
+| USB/反馈 | 打开失败、拔线、部分写入、150 ms 反馈超时 | 清在线状态、停止发送有效使能帧并重连 |
+| MCU 接收 | SOF/长度/ID/CRC/有限值/电机轴速度量程检查 | 非法帧不刷新 watchdog、不更新命令快照 |
+| MCU 执行 | USB 未枚举、watchdog 100 ms、电机离线、故障位 | 三路目标归零、PID 清积分、CAN 输出 0 |
+| 电流/功率 | C620 命令能力上限 20 A；当前 `KIWI_MAX_COMMAND_RAW=8192` 是约 10 A 命令电流刻度的起始 raw 限制，不等同电调输入电流或电机额定连续电流 | 需用电源侧电流计和温度实测后再调整；16384 仅保留为峰值上限，不默认启用 |
+| 硬件层 | 物理急停 GPIO/电调使能/动力回路 | 必须独立切断执行器；尚未接入前项目验收不通过 |
+
+`KIWI_C620_COMMAND_RAW_PER_AMP=819.2` 只描述 C620 CAN 命令映射；`STATE_WHEEL.motor_current_raw` 是 DJI 反馈原始码，未完成标定前禁止在 ROS 中当作安培或据此做热保护。软件急停不是功能安全急停，硬件急停必须在 ROS、USB 和 MCU 全部失效时仍有效。
+
+### 8.5 频率与看门狗
 
 - C 型板到电调的控制与反馈：工程目标 500 Hz–1 kHz，最终由电调 CAN 协议决定。
 - 主机命令：50–100 Hz。
 - 编码器反馈：50–200 Hz。
 - ROS 控制器命令超时起点：100 ms。
-- C 型板命令看门狗：建议 100 ms 内没有有效新命令则将三轮目标降为零并关闭电调使能（具体值由制动距离和风险评估确定）。
-- 急停输入必须由 C 型板/电调硬件优先处理，ROS 节点掉线不能阻止急停。
-- 上电默认禁能；清故障和重新使能需要明确状态转换，不能靠第一帧速度命令隐式开启。
+- C 型板命令看门狗：当前固定为 100 ms 内没有有效新命令则三路目标归零并清 PID；零速帧不等于硬件断能。
+- 物理急停输入尚未接入 C 型板 GPIO；当前只能保证上电禁能、通信 watchdog、电流 raw 限制和电机离线归零，不能把软件状态位当作硬件急停。
+- 上电默认零输出；有效帧和三个电机在线后才运行 PID，协议没有线上 enable/clear_fault 位；物理急停另行处理。
 - BMI088 读取建议 500–1000 Hz，向主机发布 100–200 Hz；这些是工程目标，不是手册保证值。
 
-### 8.5 ros2_control 硬件插件
+### 8.6 ROS 2 底盘控制节点接口
 
-新建 kiwi_hardware，其中硬件类命名为 RoboMasterCSystem，实现 Humble 的 hardware_interface::SystemInterface 生命周期：
+第一版只实现一个 `kiwi_base_node`，不引入控制器管理器。当前实现是单节点 wall timer 内的非阻塞 I/O：
 
 ~~~text
-on_init → on_configure → on_activate
-       ↘ on_deactivate → on_cleanup → on_shutdown
-       ↘ on_error
-export_state_interfaces:  position/velocity（每轮）
-export_command_interfaces: velocity（每轮）
-read(): 读取 C 型板反馈、更新轮状态和故障
-write(): 发送轮速目标、enable、seq、CRC
+cmd_vel subscriber → Kiwi inverse kinematics → nonblocking write → USB CDC
+                                              ↑                    ↓
+wheel odom publisher ← encoder state ← framed RX parser ← C 型板 feedback
+imu publisher        ← BMI088 state   ← framed RX parser
+diagnostics          ← heartbeat/fault/timeout/estop
 ~~~
 
-插件 XML 使用 pluginlib 导出，controller_manager 只依赖接口。read/write 中不得阻塞等待 USB/CAN；传输线程使用有界队列、超时和重连状态机。BMI088 数据可由同一传输所有者发布 /imu/data_raw，避免两个节点同时打开 C 型板。增加协议 CRC/半帧/重连单测，以及“加载插件并完成 configure/activate/deactivate”的测试。
+节点接口固定为：
+
+- 订阅 `/cmd_vel_safe`（`geometry_msgs/msg/Twist`），只接受机体 `vx/vy/wz`；
+- 发布 `/wheel/odom`（`nav_msgs/msg/Odometry`）、`/joint_states`、`/imu/data_raw`、`/battery_state` 和 `/diagnostics`；
+- 不发布 `odom→base_footprint` TF，由 `robot_localization` EKF 独占；
+- USB I/O 使用 wall timer、非阻塞读写和 1 s 断线重连；USB 未配置时 MCU 下一个 2 ms 周期立即停机，重连会清除旧命令会话；当前没有独立线程、socketcan fallback 或 TX 队列；
+- 收到 CRC 正确且版本匹配的反馈才更新时间戳和在线状态，命令超时立即发送三个零速电机值。
+- `usb_cdc` 传输使用 Linux `termios` 读取 `/dev/robomaster_c`；其他 transport 当前拒绝启动。
+
+后续若需要接入仿真、控制器管理器或多种底盘，只把上述传输和运动学模块拆成标准硬件适配层，不改变协议和话题契约。
+
+### 8.7 `standard-robot-pro` 审计结论
+
+审计对象：`/home/ym/ros2_ws/standard-robot-pro`。结论是“复用底层驱动，重写上层接口与三轮控制”，不是直接接入 ROS 2，也不是把整个仓库推倒重写。
+
+#### 可以保留的底层能力
+
+- `application/robot_cmd/CAN_receive.c`、`CAN_cmd_dji.c`、`motor.h`：DJI 电调 CAN 反馈、当前值发送、通用电机状态结构和 ID/CAN 选择。
+- `application/robot_cmd` 下的 PID、故障和电机离线检测骨架；但必须重新确认电机轴/减速输出轴的单位和方向。
+- BMI088 SPI 读取、ADC_BAT、电源和急停 GPIO、FreeRTOS 周期任务、CRC8/CRC16 工具。
+- `bsp_can.c`、串口 DMA/IDLE 的硬件初始化思路；主机协议仍需单独定义，不能沿用板间竞赛协议。
+
+#### 必须隔离或重写的部分
+
+1. 这是 STM32F407/HAL/FreeRTOS/Keil 固件，本身不是 ROS 2 包；`standard-robot-pro` 没有供 `colcon` 构建的 `package.xml`、ROS 节点或 launch 文件。ROS 侧已在工作区新增 `src/kiwi_base`，通过 USB CDC 连接该固件。
+2. `application/typedef_robot/robot_param.h` 已按 `ROBOT_CONTROL_KIWI` 选择 `robot_param_kiwi.h`；未定义宏时仍回到竞赛 profile。M3508/C620/轮径规格宏已记录，CAN ID、方向、有效减速比、轮径和限流策略仍是台架起点。
+3. `application/chassis/chassis_omni.h:43-70` 和 `chassis_omni.c:65-79,97-105,253-261` 是四电机数组、初始化、观测和 CAN 发送；`chassis_omni.c:230-232` 只计算 `set[0..2]`，随后 `:234-242` 仍处理未赋值的 `set[3]`。这对三轮 Kiwi 是阻断性问题。
+4. 原 `chassis_omni.c:144-157` 的目标量来自 DT7 遥控器，面向上位机的 `GetBoardInfo` 分支被注释；`:212-218` 的离线保命也被注释。Kiwi 路径已新增 ROS 命令接收、本地接受计数、超时、急停和上电禁能，旧 DT7 路径仍不能与其并行写 CAN。
+5. `application/typedef/usb_typdef.h` 已新增 18 字节 `ReceiveDataKiwiMotorSpeed_s` 作为帧结构说明；旧 `ReceiveDataRobotCmd_s` 的 pitch/yaw/fire/vx/vy 仅供非 Kiwi 竞赛 USB 任务使用，不能承载底盘 `cmd_vel`。
+6. USB 接收路径已改为 CDC 回调写 ring buffer、任务解析完整帧，仅对 CRC 正确、版本/ID/长度匹配、有限值和量程合法的命令刷新 watchdog；旧 `usb_task` 在 Kiwi 宏下不创建。
+
+#### 源码中的硬编码只能作为待核对参考
+
+现有 `robot_param_omni_infantry.h`、`robot_param_omni_mini.h`、`robot_param_omni_sentry.h` 等示例包含 `WHEEL_RADIUS=0.08/0.15`、`WHEEL_CENTER_DISTANCE=0.245/0.295`、4 个 M3508 ID、减速比 19 和方向符号。这些是四轮竞赛底盘示例，且部分注释把半径写成“直径”；在实物轮半径、轮心坐标、切向方向、减速比和编码器单位确认前，不得复制到 YAML 或固件。
+
+#### 建议的抽取边界
+
+~~~text
+standard-robot-pro lower layer
+  CAN/DJI + PID + BMI088 + ADC + CRC + FreeRTOS
+                         │
+                         ▼
+new firmware/kiwi_base
+  3 motors + Kiwi Jacobian (or host wheel-speed mode)
+  USB CDC ring buffer + framed protocol + watchdog + estop
+                         │ USB CDC / isolated CAN
+                         ▼
+ROS 2 kiwi_base_node → /wheel/odom + /imu/data_raw → EKF → Nav2
+~~~
+
+第一版由 ROS 主机完成 Kiwi 逆运动学，发送三个电机转子轴目标角速度；C 型板只做三个电机的速度闭环、电流输出和反馈。这样可以在 ROS 侧单元测试矩阵，并让 MCU 协议保持稳定。若以后需要脱离 ROS 的遥控运行，再在固件中增加同一矩阵的可选模式。
+
+下位机改造建议在现有工程中新增独立目录，避免污染竞赛模块：
+
+~~~text
+standard-robot-pro/application/kiwi_base/kiwi_base.c/.h
+standard-robot-pro/application/communication/ros_bridge.c/.h
+  ├─ CDC/UART ring buffer 与帧解析
+  ├─ 三轮目标角速度仲裁、watchdog、estop
+  └─ CAN 电调反馈、BMI088、ADC_BAT 状态打包
+~~~
+
+该审计已转为实现记录：`standard-robot-pro` 已新增/修改 `ros_bridge.c`、`kiwi_base.c`、CDC ring、Kiwi 参数和 FreeRTOS 入口。当前 Keil 只有 `StandardRobotPro` target，通过 `ROBOT_CONTROL_KIWI=1` 启用；ARM/Keil 实际链接和烧录仍待执行。
 
 ## 9. URDF/Xacro、关节和机器人状态
 
@@ -436,8 +590,6 @@ kiwi_description/
 │   ├── kiwi.urdf.xacro
 │   ├── materials.xacro
 │   └── sensors.xacro
-├── config/
-│   └── ros2_control.yaml
 └── rviz/
     └── model.rviz
 ~~~
@@ -449,51 +601,79 @@ kiwi.urdf.xacro 至少包含：
 - wheel_joint_1/2/3 和对应 wheel_link；
 - lidar_link，原点为雷达旋转中心；
 - imu_link，方向与 IMU 驱动输出的 frame_id 一致；
-- ros2_control 标签，声明三路 velocity command interface、position/velocity state interface。
+- 惯量、碰撞几何和三轮关节的 axis/origin；`kiwi_base_node` 负责发布 joint state，不在 URDF 中嵌入控制器标签。
 
-轮关节的 axis、origin 和 rotation 必须与电机正转测试一致。连续旋转轮关节使用 continuous；如果控制器需要轮角位置，编码器零点在 MCU 或硬件插件中处理，不能在 URDF 中伪造。
+轮关节的 axis、origin 和 rotation 必须与电机正转测试一致。连续旋转轮关节使用 continuous；编码器零点在 MCU 或 `kiwi_base_node` 中处理，不能在 URDF 中伪造。
 
-### 9.2 ros2_control 配置骨架
+### 9.2 底盘节点配置骨架
 
 ~~~yaml
-controller_manager:
+kiwi_base_node:
   ros__parameters:
-    update_rate: 100
-    joint_state_broadcaster:
-      type: joint_state_broadcaster/JointStateBroadcaster
-    omnidirectional_controller:
-      type: kiwi_omni_controller/OmnidirectionalController
-
-kiwi_hardware:
-  ros__parameters:
-    hardware_plugin: kiwi_hardware/RoboMasterCSystem
     transport: usb_cdc
     device: /dev/robomaster_c
-    fallback_transport: socketcan
-    fallback_can_interface: can0
+    protocol_version: 51       # 0x33，命令联调版本字节
     command_timeout_ms: 100
-    wheel_joints: [wheel_joint_1, wheel_joint_2, wheel_joint_3]
-    protocol_version: 1
-    publish_imu_raw: true
-    publish_battery_state: true
-    # wheel_radius_m、robot_radius_m、gamma_deg 均待实测。
-    # 参数缺失时必须配置失败，禁止使用演示尺寸。
+    feedback_timeout_ms: 150
+    reconnect_interval_ms: 1000
+    publish_rate: 50.0
+    max_wheel_speed_rad_s: 30.0
+    max_linear_speed_m_s: 0.6
+    max_lateral_speed_m_s: 0.6
+    max_angular_speed_rad_s: 1.5
+    max_accel_m_s2: 0.8
+    max_decel_m_s2: 1.2
+    max_yaw_accel_rad_s2: 2.0
+    max_yaw_decel_rad_s2: 3.0
+    estop_topic: /kiwi/estop
+    wheel_names: [wheel_joint_1, wheel_joint_2, wheel_joint_3]
+    # 运行参数和几何参数统一放在 config/kiwi_base.yaml，正常只加载一个文件。
+    odom_frame_id: odom
+    base_frame_id: base_footprint
+    imu_frame_id: imu_link
+    cmd_vel_topic: /cmd_vel_safe
+    wheel_odom_topic: /wheel/odom
+    imu_topic: /imu/data_raw
 ~~~
 
-实际插件参数名称以实现代码为准，启动前用 ros2 param dump 和 controller_manager 的状态接口核对。
+启动前用 `ros2 param dump /kiwi_base_node` 核对参数，节点必须在串口/CAN不可用或运动学参数缺失时明确报错并保持禁能。
+
+运行参数、几何参数和安全限值统一位于 `src/kiwi_base/config/kiwi_base.yaml`；节点源码还提供同样的默认值，launch 默认通过包安装路径读取该文件。`kiwi_kinematics.yaml` 仅作历史兼容覆盖文件保留。MCU 侧的电机 ID、CAN 和电流 raw 限制位于 `standard-robot-pro/application/typedef_robot/robot_param_kiwi.h`；减速比为跨 ROS/Keil 的联调参数，必须保持两处一致，不能只改一端。
+
+### 9.3 ROS 包函数职责索引
+
+源码中的函数都带有中文注释，阅读顺序建议如下：
+
+| 文件 | 函数 | 责任与安全边界 |
+|---|---|---|
+| `src/kiwi_base/src/kiwi_base_node.cpp` | `KiwiBaseNode::KiwiBaseNode` | 读取参数、检查 Jacobian、建立话题和定时器；配置错误保持禁能 |
+| 同上 | `open_serial` / `close_serial` / `read_serial` | USB CDC raw 非阻塞 I/O、断线重连、清空半帧和在线状态 |
+| 同上 | `limit_command` / `update` | 速度/加速度限幅、命令/反馈 watchdog、软件急停、上位机逆解和发送门控 |
+| 同上 | `send_command` / `on_frame` | 发送三电机轴速度命令；接收实际轮速、IMU、电池和故障状态 |
+| 同上 | `publish_odom` / `publish_joints` / `publish_imu` / `publish_battery` | 发布原始轮里程计、关节、IMU 和电池话题；不发布 odom TF |
+| 同上 | `publish_diagnostics` | 汇总配置、USB、反馈、MCU、急停和 CRC 计数 |
+| `src/kiwi_base/src/kiwi_teleop_keyboard.cpp` | `tick` / `publish_zero` | 键盘速度、250 ms 死手超时和退出安全停车 |
+| `src/kiwi_base/src/kiwi_kinematics.cpp` | `inverse` / `forward` | 主机 Twist↔三个轮输出轴角速度；不访问硬件 |
+| `src/kiwi_base/src/robomaster_protocol.cpp` | `encode_command` / `FrameParser` / `decode_*` | 0x3A 三 float 命令与反馈 codec；协议变化时替换此层 |
+
+Python 台架工具为 `src/kiwi_base/tools/kiwi_serial_test.py`：`--self-test` 不接硬件，`--dry-run` 打印电机轴速度和 18 字节帧，`--enable` 才允许发送非零值，`--raw-hex` 用于反馈抓包/发送。
+
+键盘联调时，`kiwi_teleop_keyboard` 只发布 `/cmd_vel_safe`，`kiwi_base_node` 是唯一 USB 所有者并负责逆解、减速比转换、安全门控和 0x3A 帧发送。两个终端的完整命令见 `src/kiwi_base/config/README.md`，不要同时运行 Python 直连脚本和 `kiwi_base_node` 抢占同一 CDC 设备。
 
 ## 10. 里程计、IMU 和 EKF
 
 ### 10.1 数据流
 
 ~~~text
-C 型板 CAN 电调反馈 → kiwi_hardware → kiwi_omni_controller → /wheel/odom
-C 型板 BMI088 ─────→ kiwi_hardware/bridge ─────────────────→ /imu/data_raw
+C 型板 CAN 电调反馈 → kiwi_base_node → /wheel/odom
+C 型板 BMI088 ─────→ kiwi_base_node ───→ /imu/data_raw
 /wheel/odom + /imu/data_raw → robot_localization/ekf → /odometry/filtered
                                                           └→ odom→base_footprint TF
 ~~~
 
 轮里程计保留原始值，便于诊断；Nav2 使用 /odometry/filtered。EKF 参数示例：
+
+EKF 只解决局部连续运动估计，不生成 `map`。建图时 SLAM Toolbox 读取 `/scan` 和 `odom→base_footprint`，发布 `/map`（OccupancyGrid）及 `map→odom`；回环检测后更新 `map→odom`，通过 TF 链自动得到 `map→base_link`。保存地图后关闭 SLAM Toolbox，导航模式改由 map_server + AMCL 发布 `map→odom`。
 
 ~~~yaml
 ekf_filter_node_odom:
@@ -529,15 +709,15 @@ ekf_filter_node_odom:
 
 C 型板手册说明 BMI088 通过最高 10 MHz SPI 连接，并提供 PF6/TIM10_CH1 加热控制。加热恒温点建议高于正常板温 15–20 ℃，但控制参数必须结合实际安装和温升测试；温度、加热占空比和传感器异常均进入 diagnostics。
 
-检查点：
+当前实现限制和检查点：
 
-- IMU 时间戳必须来自消息采样时刻，不能每帧写当前时间掩盖延迟。
+- 当前 `kiwi_base_node` 暂用 USB 接收时刻作为 ROS header 时间戳，未做 MCU 时间偏移估计；接入 EKF 前必须用实测延迟和 MCU 时间戳修正。
 - orientation 未计算时将 orientation_covariance[0] 设为 -1，不能发布单位四元数冒充有效航向。
-- covariance 不能全为零；未知量填 -1 或按驱动约定。
+- wheel odom 已填保守的非零协方差；IMU orientation 未计算并将 `orientation_covariance[0]` 设为 -1，具体噪声仍需实测标定。
 - wheel odom 和 IMU 的 frame_id、child_frame_id 与 TF 拓扑一致。
 - /odometry/filtered 在机器人静止时速度应接近零，转向时不能出现持续漂移。
 
-## 11. 建图：SLAM Toolbox
+## 11. 建图与回环：SLAM Toolbox
 
 ### 11.1 建图模式
 
@@ -548,6 +728,17 @@ C 型板手册说明 BMI088 通过最高 10 MHz SPI 连接，并提供 PF6/TIM10
 3. 启动 SLAM Toolbox synchronous 或 asynchronous 节点。
 4. 低速遥控机器人覆盖环境，先闭环再保存地图。
 5. 用 map_saver_cli 保存 .yaml 与 .pgm；记录分辨率、原点和版本。
+
+建图时的变换和话题关系如下：
+
+~~~text
+kiwi_base_node + EKF  ──发布──> odom→base_footprint
+SLAM Toolbox      ──发布──> /map + map→odom
+TF2 自动组合      ──得到──> map→odom→base_footprint→base_link
+回环检测          ──修正──> map→odom（不改写 odom→base_footprint）
+~~~
+
+因此，SLAM Toolbox 不负责发布 `odom→base_link`，也不应与 EKF 争抢这条 TF；它通过里程计和激光匹配建立/优化地图坐标系。需要查看机器人在地图中的位姿时，查询 `map` 到 `base_link` 的 TF 即可。
 
 SLAM Toolbox 参数起点：
 
@@ -579,7 +770,7 @@ slam_toolbox:
 
 E110-R 标称只有 7 Hz，应降低机器人平移/旋转速度，避免两帧之间运动过大。地图质量主要受 TF、时间戳、轮里程计和雷达安装刚度影响，不是单纯提高分辨率就能改善。若底盘或外壳遮挡 0.05 m 近场数据，应做明确的角度/自体过滤并记录，而不是随意修改驱动额定量程。
 
-建图期间不要同时启动 AMCL。保存地图前让机器人停止，等待最后一帧 scan 和 map 更新完成。
+建图期间不要同时启动 AMCL。保存地图前让机器人停止，等待最后一帧 scan、回环优化和 map 更新完成；确认 `/map` 已稳定后再执行 `map_saver_cli`。
 
 ## 12. 定位：AMCL（Humble）
 
@@ -673,17 +864,20 @@ controller_server:
 
 速度限制必须同时满足电机、轮胎打滑、地面摩擦、急停距离和雷达更新率。上面数值只是安全的低速起点。
 
-### 13.2 Planner 与 costmap
+### 13.2 全局 Planner 与 costmap
+
+三轮 Kiwi 能够任意方向平移，第一阶段全局规划器使用 `SmacPlanner2D`。它对圆形全向机器人提供代价感知的 2D A*；如果实测底盘外形不是近似圆形且需要考虑运动学可行性，再评估 `SmacPlannerLattice`。`NavFn` 保留为依赖缺失或调试时的回退方案。
 
 ~~~yaml
 planner_server:
   ros__parameters:
     planner_plugins: ["GridBased"]
     GridBased:
-      plugin: "nav2_navfn_planner/NavfnPlanner"
+      plugin: "nav2_smac_planner/SmacPlanner2D"
       tolerance: 0.5
-      use_astar: false
       allow_unknown: true
+      downsample_costmap: false
+      cost_travel_multiplier: 2.0
 
 global_costmap:
   global_costmap:
@@ -788,7 +982,7 @@ MPPI 参数集较大，先用官方 Humble 示例，再逐步加入全向速度�
 ### 14.1 启动文件职责
 
 ~~~text
-kiwi_bringup/launch/hardware.launch.py       # controller_manager、硬件、joint_state
+kiwi_bringup/launch/hardware.launch.py       # kiwi_base_node、传感器、joint_state
 kiwi_bringup/launch/sensors.launch.py        # E110、IMU、robot_state_publisher
 kiwi_localization/launch/ekf.launch.py        # robot_localization
 kiwi_slam/launch/mapping.launch.py            # SLAM Toolbox + RViz（可选）
@@ -902,8 +1096,6 @@ sudo apt install \
   ros-humble-nav2-bringup \
   ros-humble-slam-toolbox \
   ros-humble-robot-localization \
-  ros-humble-ros2-control \
-  ros-humble-ros2-controllers \
   ros-humble-xacro \
   ros-humble-joint-state-publisher \
   ros-humble-robot-state-publisher \
@@ -915,6 +1107,8 @@ sudo apt install \
 ~~~
 
 velocity smoother、collision monitor 和 MPPI 的包名可能随 Humble 补丁仓库拆分，使用 apt-cache policy 或 rosdep 确认后安装。不要混装 Jazzy/Rolling 二进制包。
+
+第一版不安装 `ros-humble-ros2-control`/`ros-humble-ros2-controllers` 作为运行依赖；`kiwi_base_node` 直接发布 joint states 和轮里程计。未来若需要接入 controller manager，再单独增加适配包并回归验证。
 
 ### 16.2 构建
 
@@ -962,27 +1156,27 @@ sudo udevadm trigger
 
 ## 17. 分阶段实施计划
 
-### 阶段 0：冻结接口和安全（1–2 天）
+### 阶段 0：命令接口和安全基线（代码已完成，反馈协议/实物待验）
 
-- 在 /home/ym/ros2_ws 建立 firmware 工程和持续集成。
-- 确认三个电机/电调型号、CAN 协议、编码器单位、供电和急停。
-- 写出 CAN/UART 协议、版本号、CRC 和故障码。
-- 机械测量 L、r、gamma、底盘 footprint，并拍照记录坐标方向。
-- 验收：急停断能、上电默认禁能、协议文档可供两端独立实现。
+- 已在 `/home/ym/ros2_ws` 保留 ROS 包和固件嵌套仓库；Keil 当前通过 `ROBOT_CONTROL_KIWI=1` 选择 Kiwi profile。
+- 命令 codec 已按 `0x33/len=12/id=0x3A/三个电机轴 float32/CRC16` 对齐；反馈帧仍待协议评审和实物抓包确认。
+- M3508/C620、203 mm 轮径和 322.56 mm 中心到轮心初值已录入；仍需确认 L 的语义、轮序/符号、CAN ID、有效接触半径和电流反馈单位。
+- 主机限速/斜坡/软件急停、MCU watchdog/电流 raw 限制代码已具备；物理急停断能尚未验收，未接入前不能宣称安全完成。
 
-### 阶段 1：硬件和传感器单测（2–4 天）
+### 阶段 1：硬件和传感器单测（代码骨架已完成，台架待验）
 
-- RoboMaster C 固件完成 CAN 电调控制、BMI088、ADC_BAT、看门狗、急停和反馈帧。
+- RoboMaster C 固件已接入 CAN 电调控制、BMI088 快照、ADC_BAT、watchdog 和 WHEEL/IMU 反馈帧；物理急停尚未接入。
+- USB CDC 回调已写入环形缓冲区，旧 USB 任务在 Kiwi 模式下不创建；ROS 侧 golden vector、半帧/粘包/CRC/WHEEL 偏移测试已通过。
 - E110 接主机，验证 230400 8N1、帧头、校验、角度方向和帧率。
 - IMU 发布正确 frame_id、时间戳和 covariance。
-- 验收：雷达连续运行 10 分钟无校验错误；急停和拔线都能安全停机。
+- 验收：雷达连续运行、USB 枚举、CAN 电机、急停和拔线安全停机均待实物测试。
 
-### 阶段 2：ros2_control 和运动学（3–5 天）
+### 阶段 2：底盘控制节点和运动学（ROS 代码已完成，实物标定待验）
 
-- 完成 kiwi_hardware 生命周期和插件加载测试。
-- 接入全向控制器、joint_state_broadcaster 和轮里程计。
+- 已完成 `kiwi_base_node` 的 USB CDC 0x3A 三 float 命令收发、上位机三轮逆运动学、安全门控、joint states、轮里程计、IMU/电池/诊断发布和断线重连代码；不引入第三方全向控制器。
+- CRC/半帧/粘包/WHEEL 偏移测试已通过；节点级超时/重连测试和实物 +x/+y/+wz 标定待补。
 - 完成 +x、+y、+wz 三组纯运动标定，保存参数版本。
-- 验收：无重复 TF；轮速命令限幅、超时归零；横向串扰小于目标的 5%。
+- 验收：无重复 TF；轮速/机体速度限幅、斜坡、超时归零和软件急停有效；物理急停、横向串扰和电流温升达到目标。
 
 ### 阶段 3：EKF 和 TF（1–2 天）
 
@@ -999,7 +1193,7 @@ sudo udevadm trigger
 ### 阶段 5：AMCL + Nav2（3–5 天）
 
 - 加载地图，使用 OmniMotionModel，验证初始位姿和重定位。
-- 先 DWB，再 velocity_smoother 和 collision_monitor；最后才评估 MPPI。
+- 全局规划先用 SmacPlanner2D，局部控制先 DWB，再 velocity_smoother 和 collision_monitor；最后才评估 MPPI Omni。
 - 验收：固定测试点导航成功率、横向移动、障碍物停止和急停均达标。
 
 ### 阶段 6：任务层和回归（2–4 天）
@@ -1023,13 +1217,15 @@ sudo udevadm trigger
 □ 10 分钟校验错误=0、帧率稳定、拔插可重连
 
 底盘
-□ C 型板 USB CDC/CAN 链路、协议版本和 CRC 已验证
+□ C 型板 USB CDC/CAN 链路、USB 枚举和 0x3A 三 float 命令已完成实物验证（反馈帧仍待确认）
 □ CAN1 三个电调在线，CAN1/CAN2 终端电阻已实测
-□ BMI088 安装方向、时间戳、温度和 covariance 已验证
+□ BMI088 安装方向、时间戳、温度和 covariance 已完成实物验证（当前温度帧为 0、ROS 用接收时刻）
 □ 三个 wheel_joint 名称唯一，r/L/gamma 与实物记录一致
 □ +x、+y、+wz 纯运动方向正确
-□ 命令超时和 C 型板 watchdog 都能归零
-□ 急停不依赖 ROS
+□ 主机限速/斜坡、命令超时、软件急停和 C 型板 watchdog 都能归零（代码已实现，待台架）
+□ 物理急停不依赖 ROS（尚未接入，当前不通过）
+□ C620 命令电流 raw/A、M3508 温升和保险/线束容量完成实测（当前不通过）
+□ 运行时不依赖四轮第三方全向控制器
 
 TF/定位
 □ map→odom 只有 AMCL 或 SLAM Toolbox 一个发布者
@@ -1054,14 +1250,16 @@ TF/定位
 2. **轮子正方向不一致**：运动学公式正确但电机符号错误，会表现为斜行、旋转串扰。
 3. **时间戳和 TF 错误**：SLAM/AMCL 的“漂移”经常是延迟或 frame 配错，而不是算法参数。
 4. **过度依赖软件安全层**：collision_monitor 或 Nav2 崩溃时，硬件急停和 C 型板 watchdog 仍需工作。
-5. **C 型板能力误读**：它没有三相功率驱动和手册定义的专用正交编码器接口；电调反馈协议未确定前无法完成闭环。
+5. **C 型板能力误读**：它没有三相功率驱动和手册定义的专用正交编码器接口；当前代码按 DJI 电调 CAN 反馈闭环，电机/电调型号和 CAN 接线仍需实物确认。
 6. **许可证和版本漂移**：参考雷达仓库许可证字段为 TODO；必须确认授权并固定 commit。
 7. **Humble 依赖环境**：conda Python 覆盖系统 Python 会导致 rosidl_adapter/colcon 构建异常。
+8. **底盘源码边界**：`standard-robot-pro` 的四轮竞赛配置和 USB 演示协议若未隔离，会把错误的轮数、单位和安全策略带入 ROS 链路。
+9. **反馈时序**：ROS 当前按反馈到达时刻更新在线状态和轮里程计，尚未基于 `state_seq/mcu_time_ms` 去重或校正批量积压帧；接入 EKF 前需补节点级时序测试与时间偏移处理。
 
 ### 19.2 建议的第一周交付物
 
 - LDS-E110-R 接线照片、原始串口抓包和 parser 单元测试；
-- 底盘尺寸/符号表、RoboMaster C 协议 v1、急停测试记录；
+- 底盘尺寸/符号表、命令 codec 与反馈协议评审记录、急停测试记录；
 - kiwi_description 能在 RViz 显示，TF 树无重复；
 - 三轮控制器可完成 +x/+y/+wz，输出 /wheel/odom；
 - 一份可复现的 Humble 安装和构建脚本；
@@ -1073,20 +1271,25 @@ TF/定位
 
 - 本地权威参数：/home/ym/ros2_ws/documents/LDS-E110-R-激光雷达使用说明书-V1.5.pdf
 - 本地权威参数：/home/ym/ros2_ws/documents/RoboMaster开发板C型用户手册.pdf
+- DJI RoboMaster M3508 产品页（含 C620 规格入口）：https://www.robomaster.com/en-US/products/components/general/M3508
+- DJI M3508 P19 Brushless DC Gear Motor V1.0：https://rm-static.djicdn.com/tem/17348/RoboMaster%20M3508%20P19%20Brushless%20DC%20Gear%20Motor%20V1.0.pdf
+- C620 User Guide：https://cdn-hz.robomaster.com/robomasters/public/document/RoboMaster%20C620%20Brushless%20DC%20Motor%20Speed%20Controller%20V1.0.pdf（重点核对 CAN 命令电流范围、终端电阻和热保护）
+- 项目输入参数：本轮用户提供的 203 mm 轮径、322.56 mm 中心到轮心距离；不是 DJI 雷达或开发板手册参数，需按 CAD/实测确认。
 - Pacecat LDS-E110 系列官方规格：https://www.pacecat.net/product/lds-e110-series-lidar-sensor/
 - Pacecat 中文规格页：https://www.pacecat.com/product/lds-e110-series-lidar-sensor/
 - Pacecat LDS-E110-R V1.5 使用说明书（接线与串口协议）：https://www.pacecat.com/shared-files/940/?LDS-E110-R-%E6%BF%80%E5%85%89%E9%9B%B7%E8%BE%BE%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E%E4%B9%A6-V1.5.pdf=
 - Pacecat 官方下载页：https://www.pacecat.net/downloads/
 - BlueSea ROS 2 雷达驱动参考：https://github.com/BlueSeaLidar/bluesea-ros2
-- 三轮全向 ROS 2 Humble 控制器参考（MIT）：https://github.com/mateusmenezes95/omnidirectional_controllers/tree/humble
-- ros2_control Humble 自定义硬件组件：https://control.ros.org/humble/doc/ros2_control/hardware_interface/doc/writing_new_hardware_component.html
 - ROS 2 Humble Ubuntu 安装：https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debians.html
 - Nav2 Humble 默认参数：https://github.com/ros-navigation/navigation2/blob/humble/nav2_bringup/params/nav2_params.yaml
+- Nav2 Smac Planner（2D/Hybrid/Lattice）：https://docs.nav2.org/configuration/packages/configuring-smac-planner.html
 - Nav2 AMCL 配置：https://docs.nav2.org/configuration/packages/configuring-amcl.html
+- Nav2 MPPI Omni 配置：https://docs.nav2.org/configuration/packages/configuring-mppic.html
 - Nav2 Humble MPPI（Omni）：https://github.com/ros-navigation/navigation2/tree/humble/nav2_mppi_controller
 - Nav2 Humble collision monitor：https://github.com/ros-navigation/navigation2/tree/humble/nav2_collision_monitor
 - collision monitor 参数样例：https://github.com/ros-navigation/navigation2/blob/humble/nav2_collision_monitor/params/collision_monitor_params.yaml
 - SLAM Toolbox Humble：https://github.com/SteveMacenski/slam_toolbox/tree/humble
+- RTAB-Map ROS2（Humble 备选）：https://github.com/introlab/rtabmap_ros/tree/ros2
 - Nav2 Simple Commander Humble：https://github.com/ros-navigation/navigation2/tree/humble/nav2_simple_commander
 - robot_localization Humble：https://github.com/cra-ros-pkg/robot_localization/tree/humble-devel
 
