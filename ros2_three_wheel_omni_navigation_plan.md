@@ -1,7 +1,7 @@
 # ROS 2 Humble + Ubuntu 22.04 三轮全向底盘建图导航实施方案
 
 > 版本：2026-08-05
-> Git 基线：`src` 子仓库 `345a73d`（键盘死手超时和无临时放大运动学）；`standard-robot-pro` 仍为独立固件工作区，未纳入本次 ROS 提交。
+> Git 基线：`src` 子仓库 `6f9772a`（YAML 参数优先级）；`standard-robot-pro` 仍为独立固件工作区，未纳入本次 ROS 提交。
 > 目标平台：Ubuntu 22.04 LTS + ROS 2 Humble
 > 激光雷达：Pacecat LDS-E110-R，依据本地 V1.5 手册
 > 底盘控制器：DJI RoboMaster 开发板 C 型（STM32F407）
@@ -376,7 +376,7 @@ kiwi_base_node:
   ros__parameters:
     device: /dev/robomaster_c
     publish_rate: 50.0
-    log_serial_frames: false
+    log_serial_frames: true       # 默认打印 CMD/TX/RX；需要降噪时改为 false
     feedback_motor_scale_to_rad_s: 1.0
     motor_reduction_ratio: [19.0, 19.0, 19.0]
     wheel_names: [wheel_joint_1, wheel_joint_2, wheel_joint_3]
@@ -635,7 +635,7 @@ kiwi_base_node:
 
 启动前用 `ros2 param dump /kiwi_base_node` 核对参数，节点必须在串口/CAN不可用或运动学参数缺失时明确报错并保持禁能。
 
-运行参数、几何参数和安全限值统一位于 `src/kiwi_base/config/kiwi_base.yaml`；节点源码还提供同样的默认值，launch 默认通过包安装路径读取该文件。`kiwi_kinematics.yaml` 仅作历史兼容覆盖文件保留。MCU 侧的电机 ID、CAN 和电流 raw 限制位于 `standard-robot-pro/application/typedef_robot/robot_param_kiwi.h`；减速比为跨 ROS/Keil 的联调参数，必须保持两处一致，不能只改一端。
+运行参数、几何参数和安全限值统一位于 `src/kiwi_base/config/kiwi_base.yaml`；节点源码还提供同样的默认值作为 YAML 缺失时的兜底，launch 只负责选择 `params_file`，不再覆盖节点参数。`kiwi_kinematics.yaml` 仅作历史兼容覆盖文件保留。MCU 侧的电机 ID、CAN 和电流 raw 限制位于 `standard-robot-pro/application/typedef_robot/robot_param_kiwi.h`；减速比为跨 ROS/Keil 的联调参数，必须保持两处一致，不能只改一端。
 
 ### 9.3 ROS 包函数职责索引
 
