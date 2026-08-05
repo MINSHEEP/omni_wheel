@@ -6,6 +6,77 @@ ROS 2 Humble 三轮 Kiwi 全向底盘驱动。上位机负责 `Twist` 安全门�
 
 参数说明：[config/README.md](config/README.md)
 
+## 运动学与电机控制链路
+
+### 1. 上位机逆运动学
+
+`kiwi_base_node` 只接收机体速度，不直接接收三个电机目标。输入来自
+`/cmd_vel_safe`：`linear.x=vx`（前进为正，m/s）、`linear.y=vy`（左移为正，m/s）、
+`angular.z=wz`（逆时针为正，rad/s）。节点在
+`src/kiwi_base/src/kiwi_base_node.cpp` 的 `update()` 中按以下顺序处理：
+
+```text
+/cmd_vel_safe
+    -> 命令超时检查（100 ms）
+    -> 机体 vx/vy/wz 限幅
+    -> 加速度/减速度斜坡
+    -> KiwiKinematics::inverse()
+    -> 三路轮速统一限幅（max_wheel_speed_rad_s）
+    -> 乘 19:1 减速比，得到电机转子轴 rad/s
+    -> encode_command() 组装 0x3A 帧
+```
+
+当前联调固定映射（轮序 1、2、3）为：
+
+```text
+w1 = 3 * (-0.5 * vx - 0.8660254 * vy - wz)
+w2 = 3 * ( vx              - wz)
+w3 = 3 * (-0.5 * vx + 0.8660254 * vy - wz)
+```
+
+`3` 是当前 C 板联调标定比例，不能当作轮半径或减速比；`motor_reduction_ratio`
+只在 `kiwi_base_node.cpp:465` 附近乘一次。`wheel_sign[i]` 会对对应一路整体乘以
+`+1/-1`，用于低速点动时修正电机正方向。轮半径和轮心距目前用于几何有效性检查，
+尚未参与这套冻结的归一化映射；完成实车标定后，如需切换为物理 Jacobian，应同时更新
+逆解、正解、测试和 MCU 目标单位，不能只改一行符号。
+
+### 2. USB 到电机的下发链路
+
+```text
+KiwiKinematics::inverse()
+    -> wheel_speed[0..2]（轮序 1/2/3）
+    -> * motor_reduction_ratio[0..2]（默认 19）
+    -> CommandFrame.motor_rad_s[0..2]
+    -> encode_command(): 0x33 / len=12 / id=0x3A / 3 个 little-endian float32 / CRC16
+    -> write(fd, 18 bytes) -> RoboMaster C 板 USB CDC
+    -> RosBridge_Process(): SOF、长度、ID、CRC8、CRC16、有限值和量程检查
+    -> command_snapshot.motor_target_rad_s[0..2]
+    -> KiwiBase_Update(): 每路速度 PID（实测速度 vs 目标速度）
+    -> KiwiBase_Send(): C620 CAN 电流命令
+    -> M3508 减速电机
+```
+
+协议没有线上 `enable` 字段。上位机禁能、命令超时、软件急停或串口断开时，
+`encode_command()` 将三个 float 全部编码为 0；C 板 100 ms watchdog、USB 未枚举、
+任一电机离线或 PID 故障时也会清零并清除积分。两端都做归零是为了防止任一层保留旧速度。
+
+### 3. 反馈和里程计回路
+
+```text
+M3508/C620 CAN 反馈 + BMI088
+    -> C 板编码器累计、速度和 IMU 快照
+    -> USB 0x3B（12 个 float32）
+    -> FrameParser + decode_motor_imu_feedback()
+    -> 电机轴速度 / 19 = 轮输出轴速度
+    -> KiwiKinematics::forward()
+    -> /wheel/odom、/joint_states、/imu/data_raw
+    -> robot_localization EKF（后续）
+```
+
+当前 C++ 节点的 `send_command()` 是 USB 唯一写入点；C 板的
+`RosBridge_Process()` 是 USB 唯一命令解析点，`KiwiBase_Update()` 是速度闭环入口，
+`KiwiBase_Send()` 是 CAN 输出入口。键盘节点只发布 `/cmd_vel_safe`，不应直接打开串口。
+
 ## 常用命令
 
 以下命令默认在 `/home/ym/ros2_ws` 执行。

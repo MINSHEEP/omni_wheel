@@ -45,12 +45,30 @@ TEST(KiwiKinematics, MatchesExplicitMotorFormula)
   EXPECT_NEAR(forward[2], -1.5, 1e-8);
 
   const auto lateral = k.inverse({0.0, 1.0, 0.0});
-  EXPECT_NEAR(lateral[0], -2.598075, 1e-8);
+  EXPECT_NEAR(lateral[0], -2.598076211352, 1e-10);
   EXPECT_NEAR(lateral[1], 0.0, 1e-8);
-  EXPECT_NEAR(lateral[2], 2.598075, 1e-8);
+  EXPECT_NEAR(lateral[2], 2.598076211352, 1e-10);
 
   const auto rotate = k.inverse({0.0, 0.0, 1.0});
   EXPECT_NEAR(rotate[0], -3.0, 1e-8);
   EXPECT_NEAR(rotate[1], -3.0, 1e-8);
   EXPECT_NEAR(rotate[2], -3.0, 1e-8);
+}
+
+// 方向修正必须在逆解和正解两侧成对使用，否则单路反向会污染机体速度估计。
+TEST(KiwiKinematics, AppliesWheelSignsSymmetrically)
+{
+  const double pi = std::acos(-1.0);
+  std::array<WheelGeometry, 3> wheels{{
+    {0.0, 0.2, 0.0, 0.05, -1.0},
+    {-0.1732, -0.1, 2.0 * pi / 3.0, 0.05, 1.0},
+    {0.1732, -0.1, 4.0 * pi / 3.0, 0.05, -1.0}}};
+  KiwiKinematics k(wheels);
+  ASSERT_TRUE(k.valid()) << k.error();
+
+  const Twist2D input{0.2, -0.1, 0.4};
+  const Twist2D output = k.forward(k.inverse(input));
+  EXPECT_NEAR(output.vx, input.vx, 1e-10);
+  EXPECT_NEAR(output.vy, input.vy, 1e-10);
+  EXPECT_NEAR(output.wz, input.wz, 1e-10);
 }

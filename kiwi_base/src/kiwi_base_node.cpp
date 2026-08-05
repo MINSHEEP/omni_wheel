@@ -411,7 +411,11 @@ namespace kiwi_base
       return limited_command_;
     }
 
-    /** 定时执行安全门控、逆运动学、限幅、USB 命令发送和诊断发布。 */
+    /**
+     * 50 Hz 控制主循环：读取反馈 -> 检查命令/反馈新鲜度 -> 机体限速和斜坡 ->
+     * Kiwi 逆解 -> 三轮统一限幅 -> 乘减速比 -> 编码 0x3A -> USB 写入 -> 诊断。
+     * 任一安全门未打开时，最终三路目标都会被置零。
+     */
     void update()
     {
       const auto steady_now = SteadyClock::now();
@@ -461,7 +465,7 @@ namespace kiwi_base
       frame.enable = enabled;
       for (size_t i = 0; i < 3; ++i)
       {
-        // 运动学输出是轮输出轴 rad/s；联调帧要求电机轴 rad/s，减速比只在主机转换一次。
+        // inverse() 输出的是当前联调矩阵的轮速量；乘一次 19:1 后才是电机转子轴 rad/s。
         frame.motor_rad_s[i] = static_cast<float>(wheels[i] * motor_reduction_ratio_[i]);
       }
       log_command(command, frame);

@@ -9,8 +9,19 @@ namespace kiwi_base
 {
   namespace
   {
-    constexpr double kSin60 = 0.866025;
+    // 0/120/240 度布置中的 sin(60°)。保留足够精度，避免正逆解出现可见偏差。
+    constexpr double kSin60 = 0.866025403784;
+
+    // 当前 C 板联调已经冻结的“归一化轮速”比例。
+    // 它是项目标定系数，不是轮半径或减速比；减速比在 kiwi_base_node 中单独处理。
     constexpr double kMotorCommandScale = 3.0;
+
+    // 固定轮序 [轮1, 轮2, 轮3] 的机体速度映射：列依次为 [vx, vy, wz]。
+    // w = kMotorCommandScale * K * [vx, vy, wz].
+    constexpr double kCommandMap[3][3] = {
+      {-0.5, -kSin60, -1.0},
+      {1.0, 0.0, -1.0},
+      {-0.5, kSin60, -1.0}};
   }
 
   /**
@@ -28,6 +39,8 @@ namespace kiwi_base
         return;
       }
     // J 的列依次对应 vx、vy、wz，输出单位为轮输出轴 rad/s。
+    // 这里仍按实物几何检查满秩，确保参数不是重复轮心或平行轮；
+    // 当前 USB 联调的数值映射使用下面的固定 K 矩阵，以兼容已烧录的 C 板。
     for (size_t i = 0; i < 3; ++i)
     {
       const auto &w = wheels_[i];
@@ -83,27 +96,52 @@ namespace kiwi_base
           pinv_[r][c] += inv[r][k] * j_[c][k];
     valid_ = true;
   }
-  /** 按固定轮序和当前联调比例，将机体 Twist 分别转换为三个电机速度。 */
+  /**
+   * 将机体速度转换为三个轮子的联调目标速度。
+   *
+   * 输入：base_link 坐标系的 vx/vy（m/s）和 wz（rad/s）。
+   * 输出：轮 1/2/3 的归一化输出轴速度，随后由 kiwi_base_node 乘以 19:1
+   *       减速比编码为 C 板所需的电机转子轴 rad/s。
+   *
+   * 当前固定映射为：
+   *   w1 = 3 * (-0.5*vx - sin60*vy - wz)
+   *   w2 = 3 * ( vx             - wz)
+   *   w3 = 3 * (-0.5*vx + sin60*vy - wz)
+   * `wheel_sign[i]` 是该路电机/编码器的整体方向修正，只能取 +1 或 -1。
+   */
   std::array<double, 3> KiwiKinematics::inverse(const Twist2D &t) const
   {
     std::array<double, 3> out{};
-    if (!valid_)
+    if (!valid_ || !std::isfinite(t.vx) || !std::isfinite(t.vy) || !std::isfinite(t.wz))
       return out;
-    out[0] = kMotorCommandScale * (-0.5 * -t.vx - kSin60 * t.vy - t.wz);
-    out[1] = kMotorCommandScale * (-t.vx - t.wz);
-    out[2] = kMotorCommandScale * (-0.5 * -t.vx + kSin60 * t.vy - t.wz);
+    const double body_velocity[3] = {t.vx, t.vy, t.wz};
+    for (size_t i = 0; i < 3; ++i)
+    {
+      double command = 0.0;
+      for (size_t k = 0; k < 3; ++k)
+        command += kCommandMap[i][k] * body_velocity[k];
+      out[i] = wheels_[i].sign * kMotorCommandScale * command;
+    }
     return out;
   }
-  /** 使用当前固定三轮公式的解析逆变换恢复机体速度；无效配置返回零。 */
+
+  /**
+   * 将三个轮子的实测速度恢复为机体速度。
+   * 该函数使用 inverse() 同一套固定矩阵的解析逆变换；先撤销 wheel_sign，
+   * 因此“电机反向”只会影响对应一路，不会改变其它两路的符号。
+   */
   Twist2D KiwiKinematics::forward(const std::array<double, 3> &w) const
   {
     Twist2D t;
-    if (!valid_)
+    if (!valid_ || !std::isfinite(w[0]) || !std::isfinite(w[1]) || !std::isfinite(w[2]))
       return t;
+    const double signed_w0 = wheels_[0].sign * w[0];
+    const double signed_w1 = wheels_[1].sign * w[1];
+    const double signed_w2 = wheels_[2].sign * w[2];
     const double denominator = 3.0 * kMotorCommandScale;
-    t.vx = (2.0 * w[1] - w[0] - w[2]) / denominator;
-    t.vy = (w[2] - w[0]) / (2.0 * kSin60 * kMotorCommandScale);
-    t.wz = -(w[0] + w[1] + w[2]) / denominator;
+    t.vx = (2.0 * signed_w1 - signed_w0 - signed_w2) / denominator;
+    t.vy = (signed_w2 - signed_w0) / (2.0 * kSin60 * kMotorCommandScale);
+    t.wz = -(signed_w0 + signed_w1 + signed_w2) / denominator;
     return t;
   }
   /** 取逆解后三个轮速绝对值的最大值，用于主机命令限幅。 */

@@ -21,6 +21,8 @@ SOF = 0x33
 CMD_MOTOR_SPEED = 0x3A
 STATE_WHEEL = 0x80
 STATE_IMU = 0x81
+SIN60 = 0.866025403784
+MOTOR_COMMAND_SCALE = 3.0
 
 
 def crc8_dji(data: bytes) -> int:
@@ -51,29 +53,26 @@ def kiwi_inverse(
     center_distance_m: float = 0.32256,
     signs: Sequence[int] = (1, 1, 1),
 ) -> Tuple[float, float, float]:
-    """按三轮 120 度对称初始假设，把机体 Twist 逆解为轮输出轴 rad/s。
+    """使用与 C++ ``KiwiKinematics`` 相同的固定联调矩阵计算三路轮速。
 
-    轮 1 位于 base_link 的 +y，径向角取 90 度，轮 2/3 依次转 120 度；
-    对应滚动切向角为 0/120/240 度。轮序、切向方向和 sign 必须在实车低速点动后修正。
+    ``radius_m`` 和 ``center_distance_m`` 保留在函数签名中以兼容旧脚本，但当前
+    联调矩阵的幅值由 ``MOTOR_COMMAND_SCALE=3`` 决定，并不直接使用这两个几何值。
+    完成实车标定后，若切换到物理 Jacobian，必须同步修改 C++、本脚本和测试。
     """
     values = (vx, vy, wz, radius_m, center_distance_m)
     if not all(math.isfinite(value) for value in values):
         raise ValueError("速度和几何参数必须是有限数")
     if radius_m <= 0.0 or center_distance_m <= 0.0:
-        raise ValueError("轮半径和轮心距必须为正")
+        raise ValueError("轮半径和轮心距必须为正（兼容参数）")
     if len(signs) != 3 or any(sign not in (-1, 1) for sign in signs):
         raise ValueError("signs 必须是三个 +1 或 -1")
 
-    result: List[float] = []
-    for index, sign in enumerate(signs):
-        radial = math.radians(90.0 + 120.0 * index)
-        tangent = math.radians(120.0 * index)
-        x = center_distance_m * math.cos(radial)
-        y = center_distance_m * math.sin(radial)
-        tx = math.cos(tangent)
-        ty = math.sin(tangent)
-        result.append(sign / radius_m * (tx * vx + ty * vy + (x * ty - y * tx) * wz))
-    return result[0], result[1], result[2]
+    command_map = ((-0.5, -SIN60, -1.0), (1.0, 0.0, -1.0), (-0.5, SIN60, -1.0))
+    body_velocity = (vx, vy, wz)
+    result = []
+    for sign, row in zip(signs, command_map):
+        result.append(sign * MOTOR_COMMAND_SCALE * sum(coef * value for coef, value in zip(row, body_velocity)))
+    return tuple(result)  # type: ignore[return-value]
 
 
 def wheel_to_motor(
@@ -228,7 +227,7 @@ def run_self_test() -> None:
     )
     assert encode_motor_command(1, (1.0, -2.0, 3.0), False)[4:-2] == bytes(12)
     wheels = kiwi_inverse(0.0, 0.0, 1.0)
-    expected = -0.32256 / 0.1015
+    expected = -MOTOR_COMMAND_SCALE
     assert all(abs(value - expected) < 1e-9 for value in wheels)
     assert wheel_to_motor(wheels) == tuple(value * 19.0 for value in wheels)
     parser = ProvisionalParser()
