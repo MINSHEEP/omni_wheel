@@ -119,14 +119,14 @@ namespace kiwi_base
       return out;
 #endif
     // 公式直接对应当前底盘控制坐标；不再额外执行 control_velocity 换轴。
-    // 备选：+x 轴对准 out[1] 轮。
-    // out[0] = kSin60 * t.vx + 0.5 * t.vy - t.wz;
-    // out[1] = -t.vy - t.wz;
-    // out[2] = -kSin60 * t.vx + 0.5 * t.vy - t.wz;
+    // 备选：+x 轴对准 out[1] 轮。与imu roll pitch yaw重合
+    out[0] = kSin60 * t.vx + 0.5 * t.vy - t.wz;
+    out[1] = -t.vy - t.wz;
+    out[2] = -kSin60 * t.vx + 0.5 * t.vy - t.wz;
     // 当前：+x 轴对准 out[0] 轮。
-    out[0] = -t.vy - t.wz;
-    out[1] = -kSin60 * t.vx + 0.5 * t.vy - t.wz;
-    out[2] = kSin60 * t.vx + 0.5 * t.vy - t.wz;
+    // out[0] = -t.vy - t.wz;
+    // out[1] = -kSin60 * t.vx + 0.5 * t.vy - t.wz;
+    // out[2] = kSin60 * t.vx + 0.5 * t.vy - t.wz;
     // 备选：+x 轴对准 out[2] 轮。
     // out[0] = -kSin60 * t.vx + 0.5 * t.vy - t.wz;
     // out[1] =  kSin60 * t.vx + 0.5 * t.vy - t.wz;
