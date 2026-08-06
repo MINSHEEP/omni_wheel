@@ -27,7 +27,7 @@ public:
    */
   KeyboardTeleop() : Node("kiwi_teleop_keyboard")
   {
-    const auto topic = declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel_safe");
+    const auto topic = declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel");
     speed_ = declare_parameter("speed_m_s", 3);
     yaw_ = declare_parameter("yaw_rad_s", 0.8);
     // SSH 终端没有按键释放事件，以最后一次有效运动按键的时间作为停车依据。

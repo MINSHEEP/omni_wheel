@@ -96,7 +96,7 @@ public:
       for (size_t i = 0; i < 3; ++i)
         motor_ratio_[i] = ratios[i];
 
-    cmd_topic_ = declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel_safe");
+    cmd_topic_ = declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel");
     wheel_odom_topic_ = declare_parameter<std::string>("wheel_odom_topic", "/wheel/odom");
     imu_topic_ = declare_parameter<std::string>("imu_topic", "/imu/data_raw");
     joint_topic_ = declare_parameter<std::string>("joint_states_topic", "/joint_states");

@@ -107,7 +107,7 @@ accel_x, accel_y, accel_z
 话题名和 frame id 都在 `config/kiwi_base.yaml` 中修改：
 
 ```text
-cmd_vel_topic       geometry_msgs/msg/Twist        默认 /cmd_vel_safe（订阅）
+cmd_vel_topic       geometry_msgs/msg/Twist        默认 /cmd_vel（订阅）
 wheel_odom_topic    nav_msgs/msg/Odometry         默认 /wheel/odom（发布）
 imu_topic           sensor_msgs/msg/Imu           默认 /imu/data_raw（发布）
 joint_states_topic  sensor_msgs/msg/JointState    默认 /joint_states（发布）

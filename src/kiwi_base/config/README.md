@@ -15,7 +15,7 @@ ros2 launch kiwi_base kiwi_base.launch.py \
 ## 运行链路
 
 ```text
-/cmd_vel_safe (Twist)
+/cmd_vel (Twist)
   -> KiwiKinematics::inverse()
   -> 三个轮输出轴速度
   -> motor_reduction_ratio（默认 19）
@@ -49,7 +49,7 @@ w3 =       0.8660254 * vx + 0.5 * vy - wz
 | `log_serial_frames` | 是否打印 CMD/TX 帧和已校验的反馈解码日志；由 YAML 控制，默认 `true` |
 | `motor_reduction_ratio` | 三路轮输出轴速度到电机轴速度的乘数 |
 | `feedback_motor_scale_to_rad_s` | C 板反馈数值的单位倍率 |
-| `cmd_vel_topic` | 底盘订阅的 `geometry_msgs/msg/Twist` 话题 |
+| `cmd_vel_topic` | 底盘订阅的 `geometry_msgs/msg/Twist` 话题，默认 `/cmd_vel` |
 | `wheel_odom_topic` / `imu_topic` / `joint_states_topic` | 节点发布话题 |
 | `odom_frame_id` / `base_frame_id` / `imu_frame_id` | 消息 frame_id |
 | `wheel_names` | 三个 `JointState.name`，顺序必须和电机 1/2/3 一致 |

@@ -13,7 +13,7 @@ kiwi_base_node:
     motor_reduction_ratio: [19.0, 19.0, 19.0]
 
     # ROS 话题入口；Nav2、键盘或测试脚本只需要发布 cmd_vel_topic。
-    cmd_vel_topic: /cmd_vel_safe
+    cmd_vel_topic: /cmd_vel
     wheel_odom_topic: /wheel/odom
     imu_topic: /imu/data_raw
     joint_states_topic: /joint_states
