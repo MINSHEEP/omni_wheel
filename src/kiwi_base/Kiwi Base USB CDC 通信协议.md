@@ -62,7 +62,8 @@ payload 偏移  帧偏移  长度  类型  字段
 8             12      4     f32   motor_3_target_rad_s
 ```
 
-目标值是 M3508 转子轴角速度 `rad/s`。上位机先按固定 Kiwi 公式得到轮输出轴速度，
+目标值是 M3508 转子轴角速度 `rad/s`。上位机先按 REP-103 机体速度和
+`wheel_radius_m`、`wheel_center_distance_m` 做 Kiwi 逆解，得到轮输出轴 `rad/s`，
 再乘 `motor_reduction_ratio`（默认 19）后填入这三个字段。协议没有 enable 字段；
 停止或禁能时三个值全部发送 `0.0f`。
 

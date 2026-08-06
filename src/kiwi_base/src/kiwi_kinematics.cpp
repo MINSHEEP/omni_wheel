@@ -3,7 +3,9 @@
  * @brief 实现三轮全向底盘的固定三行逆/正运动学公式。
  */
 #include "kiwi_base/kiwi_kinematics.hpp"
+#include <algorithm>
 #include <cmath>
+#include <stdexcept>
 namespace kiwi_base
 {
   namespace
@@ -18,6 +20,16 @@ namespace kiwi_base
       {1.0, 0.0, -1.0},
       {-0.5, kSin60, -1.0}};
 #endif
+  }
+
+  Twist2D limit_twist(const Twist2D &input, const Twist2D &limits)
+  {
+    const auto limit = [](double value, double max_abs)
+      { return std::isfinite(value) ? std::clamp(value, -max_abs, max_abs) : 0.0; };
+    return {
+      limit(input.vx, limits.vx),
+      limit(input.vy, limits.vy),
+      limit(input.wz, limits.wz)};
   }
 
 #if 0
@@ -97,18 +109,23 @@ namespace kiwi_base
     valid_ = true;
   }
 #endif
+  /** 保存实际几何参数；非法尺寸直接阻止节点带错误比例运行。 */
+  KiwiKinematics::KiwiKinematics(double wheel_radius_m, double wheel_center_distance_m)
+  : wheel_radius_m_(wheel_radius_m),
+    wheel_center_distance_m_(wheel_center_distance_m)
+  {
+    if (!std::isfinite(wheel_radius_m_) || wheel_radius_m_ <= 0.0 ||
+        !std::isfinite(wheel_center_distance_m_) || wheel_center_distance_m_ <= 0.0)
+      throw std::invalid_argument("wheel radius and center distance must be finite and positive");
+  }
+
   /**
-   * 将机体速度转换为三个轮子的联调目标速度。
+   * 将 ROS 机体速度转换为三个轮输出轴角速度。
    *
-   * 输入：当前已标定控制坐标的 vx/vy（m/s）和 wz（rad/s）；前进为 vy<0、左移为 vx<0。
-   * 输出：轮 1/2/3 的输出轴角速度，随后由 kiwi_base_node 乘以 19:1
-   *       减速比编码为 C 板所需的电机转子轴 rad/s。
-   *
-   * 直接使用当前实车确认的方向公式，不再经过换轴变量或矩阵循环：
-   * 当前 +x 轴对准轮 1（out[0]）所在方向：
-   *   w1 = -vy                - wz
-   *   w2 = -sin60*vx + 0.5*vy - wz
-   *   w3 =  sin60*vx + 0.5*vy - wz
+   * 坐标：vx 向前、vy 向左、wz 逆时针；R 为轮半径，L 为中心到轮心距离：
+   *   w1 = ( sin60*vx + 0.5*vy - L*wz) / R
+   *   w2 = (            -vy         - L*wz) / R
+   *   w3 = (-sin60*vx + 0.5*vy - L*wz) / R
    */
   std::array<double, 3> KiwiKinematics::inverse(const Twist2D &t) const
   {
@@ -118,19 +135,10 @@ namespace kiwi_base
     if (!std::isfinite(t.vx) || !std::isfinite(t.vy) || !std::isfinite(t.wz))
       return out;
 #endif
-    // 公式直接对应当前底盘控制坐标；不再额外执行 control_velocity 换轴。
-    // 备选：+x 轴对准 out[1] 轮。与imu roll pitch yaw重合
-    out[0] = kSin60 * t.vx + 0.5 * t.vy - t.wz;
-    out[1] = -t.vy - t.wz;
-    out[2] = -kSin60 * t.vx + 0.5 * t.vy - t.wz;
-    // 当前：+x 轴对准 out[0] 轮。
-    // out[0] = -t.vy - t.wz;
-    // out[1] = -kSin60 * t.vx + 0.5 * t.vy - t.wz;
-    // out[2] = kSin60 * t.vx + 0.5 * t.vy - t.wz;
-    // 备选：+x 轴对准 out[2] 轮。
-    // out[0] = -kSin60 * t.vx + 0.5 * t.vy - t.wz;
-    // out[1] =  kSin60 * t.vx + 0.5 * t.vy - t.wz;
-    // out[2] = -t.vy - t.wz;
+    const double rotation_speed = wheel_center_distance_m_ * t.wz;
+    out[0] = (kSin60 * t.vx + 0.5 * t.vy - rotation_speed) / wheel_radius_m_;
+    out[1] = (-t.vy - rotation_speed) / wheel_radius_m_;
+    out[2] = (-kSin60 * t.vx + 0.5 * t.vy - rotation_speed) / wheel_radius_m_;
     return out;
   }
 
@@ -146,10 +154,11 @@ namespace kiwi_base
     if (!std::isfinite(w[0]) || !std::isfinite(w[1]) || !std::isfinite(w[2]))
       return t;
 #endif
-    // 与 +x 轴对准轮 1 的三行逆解公式对应，轮序不能与旧坐标公式混用。
-    t.vx = (w[2] - w[1]) / (2.0 * kSin60);
-    t.vy = (w[1] + w[2] - 2.0 * w[0]) / 3.0;
-    t.wz = -(w[0] + w[1] + w[2]) / 3.0;
+    // 与上面的 w1/w2/w3 逆解严格对应，输出恢复为 m/s、m/s、rad/s。
+    t.vx = wheel_radius_m_ * (w[0] - w[2]) / (2.0 * kSin60);
+    t.vy = wheel_radius_m_ * (w[0] + w[2] - 2.0 * w[1]) / 3.0;
+    t.wz = -wheel_radius_m_ * (w[0] + w[1] + w[2]) /
+      (3.0 * wheel_center_distance_m_);
     return t;
   }
 #if 0

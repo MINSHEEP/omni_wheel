@@ -3,8 +3,8 @@
  * @brief Kiwi 三轮底盘最小联调节点。
  *
  * 运行链路只有四步：
- *   /cmd_vel -> 三行固定公式 -> USB 0x3A -> C 板反馈发布。
- * 速度限幅、斜坡、急停和反馈联锁暂不放入运行路径，待基础通信确认后再恢复。
+ *   /cmd_vel_safe -> 三轴限幅 -> 三行物理公式 -> USB 0x3A -> C 板反馈发布。
+ * 加速度斜坡、急停和反馈联锁暂不放入运行路径。
  */
 #include "kiwi_base/kiwi_kinematics.hpp"
 #include "kiwi_base/robomaster_protocol.hpp"
@@ -26,6 +26,7 @@
 #include <cerrno>
 #include <cstring>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -96,7 +97,22 @@ public:
       for (size_t i = 0; i < 3; ++i)
         motor_ratio_[i] = ratios[i];
 
-    cmd_topic_ = declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel");
+    // 几何参数统一由 kiwi_base.yaml 提供，默认值对应 203 mm 轮径和 322.56 mm 轮心距。
+    const double wheel_radius_m = declare_parameter<double>("wheel_radius_m", 0.1015);
+    const double wheel_center_distance_m = declare_parameter<double>("wheel_center_distance_m", 0.32256);
+    kinematics_ = KiwiKinematics(wheel_radius_m, wheel_center_distance_m);
+
+    // 三个 YAML 参数分别限制前后、左右和旋转速度，单位与 Twist 一致。
+    command_limits_ = {
+      declare_parameter<double>("max_linear_speed_m_s", 0.6),
+      declare_parameter<double>("max_lateral_speed_m_s", 0.6),
+      declare_parameter<double>("max_angular_speed_rad_s", 1.5)};
+    if (!std::isfinite(command_limits_.vx) || command_limits_.vx <= 0.0 ||
+        !std::isfinite(command_limits_.vy) || command_limits_.vy <= 0.0 ||
+        !std::isfinite(command_limits_.wz) || command_limits_.wz <= 0.0)
+      throw std::invalid_argument("velocity limits must be finite and positive");
+
+    cmd_topic_ = declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel_safe");
     wheel_odom_topic_ = declare_parameter<std::string>("wheel_odom_topic", "/wheel/odom");
     imu_topic_ = declare_parameter<std::string>("imu_topic", "/imu/data_raw");
     joint_topic_ = declare_parameter<std::string>("joint_states_topic", "/joint_states");
@@ -113,8 +129,9 @@ public:
       cmd_topic_, 10,
       [this](const geometry_msgs::msg::Twist::SharedPtr msg)
       {
-        // 键盘和联调脚本发布当前底盘控制坐标；Nav2 接入前需先做轴转换。
-        command_ = {msg->linear.x, msg->linear.y, msg->angular.z};
+        // 唯一限幅入口：此后的运动学和 USB 只接触限幅后的目标速度。
+        command_ = limit_twist(
+          {msg->linear.x, msg->linear.y, msg->angular.z}, command_limits_);
       });
 
     open_serial();
@@ -359,6 +376,7 @@ private:
   std::array<double, 3> motor_ratio_{{19.0, 19.0, 19.0}};
   std::vector<std::string> wheel_names_;
   KiwiKinematics kinematics_;
+  Twist2D command_limits_{0.6, 0.6, 1.5};
   Twist2D command_{};
   std::array<double, 3> wheel_position_{};
   std::array<double, 3> wheel_velocity_{};

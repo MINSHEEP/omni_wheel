@@ -12,8 +12,17 @@ kiwi_base_node:
     feedback_motor_scale_to_rad_s: 1.0
     motor_reduction_ratio: [19.0, 19.0, 19.0]
 
+    # 实车几何：203 mm 轮径；中心到轮心距离 322.56 mm。
+    wheel_radius_m: 0.1015
+    wheel_center_distance_m: 0.32256
+
+    # /cmd_vel_safe 入口限幅：分别对应前后、左右和旋转速度的绝对值上限。
+    max_linear_speed_m_s: 0.6
+    max_lateral_speed_m_s: 0.6
+    max_angular_speed_rad_s: 1.5
+
     # ROS 话题入口；Nav2、键盘或测试脚本只需要发布 cmd_vel_topic。
-    cmd_vel_topic: /cmd_vel
+    cmd_vel_topic: /cmd_vel_safe
     wheel_odom_topic: /wheel/odom
     imu_topic: /imu/data_raw
     joint_states_topic: /joint_states
@@ -24,5 +33,4 @@ kiwi_base_node:
     imu_frame_id: imu_link
     wheel_names: [wheel_joint_1, wheel_joint_2, wheel_joint_3]
 
-# 暂不启用：速度限幅、加速度斜坡、命令超时、反馈联锁、软件急停和物理几何参数。
-# 当前阶段先确认固定公式、USB 帧和 C 板电机闭环；恢复保护时再单独增加参数和测试。
+# 暂不启用：加速度斜坡、命令超时、反馈联锁和软件急停。

@@ -17,6 +17,9 @@ struct Twist2D
   double wz{0.0};
 };
 
+/** 按 vx、vy、wz 各自的绝对值上限限制速度；非有限输入直接清零。 */
+Twist2D limit_twist(const Twist2D &input, const Twist2D &limits);
+
 #if 0
 /** 历史物理模型参数，当前固定公式不读取。 */
 struct WheelGeometry
@@ -32,26 +35,32 @@ struct WheelGeometry
 /**
  * 三轮 Kiwi 底盘的逆/正运动学。
  *
- * 当前控制使用已经过底盘验证的固定方向公式；+x 轴对准 out[0] 轮，
- * 输入坐标约定为前进=-y、左移=-x。
+ * 坐标遵循 ROS 平面约定：+x 前进、+y 左移、+z 逆时针。
+ * 轮序固定为实车电机 1/2/3：纯 +x 时轮速符号为 [+ 0 -]，
+ * 纯 +y 时为 [+ - +]，纯 +wz 时为 [- - -]。
  * 该类不依赖 ROS 或串口，便于在没有硬件时单独验证轮序、方向和速度映射。
  *
- * 主机在编码 0x3A 帧前才会单独乘 M3508 的 19:1 减速比；运动学公式本身
- * 不再额外使用临时放大系数。
+ * 运动学输出为轮输出轴 rad/s；主机编码 0x3A 帧前再单独乘 M3508 的
+ * 19:1 减速比，得到电机转子轴 rad/s。
  */
 class KiwiKinematics
 {
 public:
-  /** 创建无状态固定公式运动学对象。 */
-  KiwiKinematics() = default;
+  /** 使用实车轮半径和中心到轮心距离创建运动学对象。 */
+  explicit KiwiKinematics(
+    double wheel_radius_m = 0.1015,
+    double wheel_center_distance_m = 0.32256);
 
-  /** 将机体 Twist 逆解为轮 1/2/3 的联调速度，单位按当前协议约定为 rad/s。 */
+  /** 将机体 Twist 逆解为轮 1/2/3 的输出轴角速度，单位为 rad/s。 */
   std::array<double, 3> inverse(const Twist2D &twist) const;
 
   /** 将三个轮子的实测速度按同一矩阵正解为机体 Twist。 */
   Twist2D forward(const std::array<double, 3> &wheel_rad_s) const;
 
 private:
+  double wheel_radius_m_{0.1015};
+  double wheel_center_distance_m_{0.32256};
+
 #if 0
   // 历史限幅接口和物理 Jacobian 字段，当前不参与运行。
   double max_wheel_speed(const Twist2D &twist) const;

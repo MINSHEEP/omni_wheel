@@ -15,7 +15,8 @@ ros2 launch kiwi_base kiwi_base.launch.py \
 ## 运行链路
 
 ```text
-/cmd_vel (Twist)
+/cmd_vel_safe (Twist)
+  -> vx / vy / wz 三轴限幅
   -> KiwiKinematics::inverse()
   -> 三个轮输出轴速度
   -> motor_reduction_ratio（默认 19）
@@ -27,18 +28,18 @@ ros2 launch kiwi_base kiwi_base.launch.py \
 
 ## 三轮公式
 
-当前输入使用已经点动验证的底盘控制坐标：前进为 `linear.y<0`，左移为
-`linear.x<0`，`wz=angular.z` 逆时针为正。`+x` 轴对准 `w1/out[0]` 轮，
-轮序固定为 1、2、3：
+输入遵循 REP-103：`linear.x>0` 前进、`linear.y>0` 左移、
+`wz=angular.z>0` 逆时针。轮序固定为实车电机 1、2、3：
 
 ```text
-w1 =                         -vy         - wz
-w2 =      -0.8660254 * vx + 0.5 * vy - wz
-w3 =       0.8660254 * vx + 0.5 * vy - wz
+w1 = ( 0.8660254 * vx + 0.5 * vy - L*wz) / R
+w2 = (                   -vy          - L*wz) / R
+w3 = (-0.8660254 * vx + 0.5 * vy - L*wz) / R
 ```
 
-公式位于 `src/kiwi_kinematics.cpp` 的 `KiwiKinematics::inverse()`。代码不读取轮半径、
-轮心距或 `wheel_sign`；当前不再使用临时放大比例，`19` 是 M3508 套装减速比。
+公式位于 `src/kiwi_kinematics.cpp` 的 `KiwiKinematics::inverse()`。
+`R=wheel_radius_m`，`L=wheel_center_distance_m`；默认分别为 `0.1015 m` 和
+`0.32256 m`。`19` 是 M3508 套装减速比，在运动学计算后单独应用。
 
 ## 参数在哪里改
 
@@ -49,18 +50,26 @@ w3 =       0.8660254 * vx + 0.5 * vy - wz
 | `log_serial_frames` | 是否打印 CMD/TX 帧和已校验的反馈解码日志；由 YAML 控制，默认 `true` |
 | `motor_reduction_ratio` | 三路轮输出轴速度到电机轴速度的乘数 |
 | `feedback_motor_scale_to_rad_s` | C 板反馈数值的单位倍率 |
-| `cmd_vel_topic` | 底盘订阅的 `geometry_msgs/msg/Twist` 话题，默认 `/cmd_vel` |
+| `wheel_radius_m` | 轮子有效半径，默认 `0.1015 m` |
+| `wheel_center_distance_m` | 底盘中心到轮心距离，默认 `0.32256 m` |
+| `max_linear_speed_m_s` | `linear.x` 前后速度绝对值上限，默认 `0.6 m/s` |
+| `max_lateral_speed_m_s` | `linear.y` 左右速度绝对值上限，默认 `0.6 m/s` |
+| `max_angular_speed_rad_s` | `angular.z` 旋转速度绝对值上限，默认 `1.5 rad/s` |
+| `cmd_vel_topic` | 底盘订阅的 `geometry_msgs/msg/Twist` 话题，默认 `/cmd_vel_safe` |
 | `wheel_odom_topic` / `imu_topic` / `joint_states_topic` | 节点发布话题 |
 | `odom_frame_id` / `base_frame_id` / `imu_frame_id` | 消息 frame_id |
 | `wheel_names` | 三个 `JointState.name`，顺序必须和电机 1/2/3 一致 |
 
 速度默认值在 `src/kiwi_base/src/kiwi_teleop_keyboard.cpp`：
-`speed_m_s=0.25`、`yaw_rad_s=0.8`。运行时可覆盖：
+`speed_m_s=3.0`、`yaw_rad_s=1.5`。运行时可覆盖：
 
 ```bash
 ros2 run kiwi_base kiwi_teleop_keyboard --ros-args \
   -p speed_m_s:=0.10 -p yaw_rad_s:=0.30 -p deadman_timeout_ms:=250
 ```
+
+键盘默认 `3.0 m/s` 会在底盘入口被 YAML 默认值 `0.6 m/s` 限制。首次实车联调仍应
+进一步降低三项上限并架空车轮。
 
 ## USB 帧格式
 
@@ -98,13 +107,13 @@ accel_x, accel_y, accel_z
 ## 键盘按键
 
 ```text
-w / s : linear.y=-/+speed，前进 / 后退
-a / d : linear.x=-/+speed，左移 / 右移
+w / s : linear.x=+/-speed，前进 / 后退
+a / d : linear.y=+/-speed，左移 / 右移
 q / e : +wz / -wz，逆时针 / 顺时针
 空格或 x：清零
 ```
 
-键盘直接发布这套控制坐标，因此 `w` 产生 `linear.y<0`，`a` 产生 `linear.x<0`。
-`control_velocity={-t.vy,-t.vx,t.wz}` 已经代数展开到固定公式，不再在运行代码重复换轴。
+键盘直接发布 REP-103 坐标，因此 `w` 产生 `linear.x>0`，`a` 产生 `linear.y>0`。
+底盘节点不再执行额外换轴。
 终端没有按键释放事件，键盘节点在 `deadman_timeout_ms`（默认 250 ms）内没有收到新的
 运动按键时自动发布零速；SSH 环境下可根据终端自动重复延迟把该值调大。

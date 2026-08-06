@@ -19,6 +19,8 @@ from typing import Optional, Sequence, Tuple
 SOF = 0x33
 CMD_MOTOR_SPEED = 0x3A
 SIN60 = 0.866025403784
+DEFAULT_WHEEL_RADIUS_M = 0.1015
+DEFAULT_CENTER_DISTANCE_M = 0.32256
 
 
 def crc8_dji(data: bytes) -> int:
@@ -45,20 +47,24 @@ def kiwi_inverse(
     vx: float,
     vy: float,
     wz: float,
+    wheel_radius_m: float = DEFAULT_WHEEL_RADIUS_M,
+    wheel_center_distance_m: float = DEFAULT_CENTER_DISTANCE_M,
 ) -> Tuple[float, float, float]:
-    """使用与 C++ ``KiwiKinematics`` 相同的三行固定公式计算三路轮速。
+    """使用与 C++ ``KiwiKinematics`` 相同的物理公式计算三路轮速。
 
-    当前公式不读取轮半径、轮心距和轮符号；输出直接是轮输出轴角速度。
+    输入使用 REP-103 坐标，输出为轮输出轴角速度 rad/s。
     """
-    values = (vx, vy, wz)
+    values = (vx, vy, wz, wheel_radius_m, wheel_center_distance_m)
     if not all(math.isfinite(value) for value in values):
-        raise ValueError("速度必须是有限数")
+        raise ValueError("速度和几何参数必须是有限数")
+    if wheel_radius_m <= 0.0 or wheel_center_distance_m <= 0.0:
+        raise ValueError("轮半径和中心到轮心距离必须为正数")
 
-    # +x 轴对准 out[0] 轮；轮序与 C++ 正逆解保持一致。
+    rotation_speed = wheel_center_distance_m * wz
     return (
-        -vy - wz,
-        -SIN60 * vx + 0.5 * vy - wz,
-        SIN60 * vx + 0.5 * vy - wz,
+        (SIN60 * vx + 0.5 * vy - rotation_speed) / wheel_radius_m,
+        (-vy - rotation_speed) / wheel_radius_m,
+        (-SIN60 * vx + 0.5 * vy - rotation_speed) / wheel_radius_m,
     )
 
 
@@ -127,8 +133,12 @@ def run_self_test() -> None:
     )
     assert encode_motor_command(1, (1.0, -2.0, 3.0), False)[4:-2] == bytes(12)
     wheels = kiwi_inverse(0.0, 0.0, 1.0)
-    expected = -1.0
+    expected = -DEFAULT_CENTER_DISTANCE_M / DEFAULT_WHEEL_RADIUS_M
     assert all(abs(value - expected) < 1e-9 for value in wheels)
+    forward = kiwi_inverse(1.0, 0.0, 0.0)
+    assert abs(forward[0] - SIN60 / DEFAULT_WHEEL_RADIUS_M) < 1e-9
+    assert abs(forward[1]) < 1e-9
+    assert abs(forward[2] + SIN60 / DEFAULT_WHEEL_RADIUS_M) < 1e-9
     assert wheel_to_motor(wheels) == tuple(value * 19.0 for value in wheels)
     print("kiwi_serial_test self-test: PASS")
 
@@ -150,12 +160,29 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--baudrate", type=int, default=115200, help="兼容串口 API；CDC 不使用该值")
     parser.add_argument("--rate", type=float, default=20.0, help="命令发送频率 Hz")
     parser.add_argument("--duration", type=float, default=1.0, help="发送持续时间 s；0 表示只发一帧")
-    parser.add_argument("--vx", type=float, default=0.0, help="控制 x 速度 m/s（左移为负）")
-    parser.add_argument("--vy", type=float, default=0.0, help="控制 y 速度 m/s（前进为负）")
+    parser.add_argument("--vx", type=float, default=0.0, help="机体 x 速度 m/s（前进为正）")
+    parser.add_argument("--vy", type=float, default=0.0, help="机体 y 速度 m/s（左移为正）")
     parser.add_argument("--wz", type=float, default=0.0, help="机体逆时针角速度 rad/s")
-    parser.add_argument("--wheel-rad-s", nargs=3, type=float, metavar=("W1", "W2", "W3"), help="给三个轮输出轴 rad/s，随后乘减速比")
-    parser.add_argument("--motor-rad-s", nargs=3, type=float, metavar=("M1", "M2", "M3"), help="直接给协议所需的三个电机轴 rad/s")
-    parser.add_argument("--reduction-ratio", type=float, default=19.0, help="轮输出轴到电机轴的减速比")
+    parser.add_argument(
+        "--wheel-rad-s", nargs=3, type=float, metavar=("W1", "W2", "W3"),
+        help="给三个轮输出轴 rad/s，随后乘减速比",
+    )
+    parser.add_argument(
+        "--motor-rad-s", nargs=3, type=float, metavar=("M1", "M2", "M3"),
+        help="直接给协议所需的三个电机轴 rad/s",
+    )
+    parser.add_argument(
+        "--reduction-ratio", type=float, default=19.0,
+        help="轮输出轴到电机轴的减速比",
+    )
+    parser.add_argument(
+        "--wheel-radius-m", type=float, default=DEFAULT_WHEEL_RADIUS_M,
+        help="轮子有效半径 m",
+    )
+    parser.add_argument(
+        "--wheel-center-distance-m", type=float, default=DEFAULT_CENTER_DISTANCE_M,
+        help="底盘中心到轮心距离 m",
+    )
     parser.add_argument("--enable", action="store_true", help="允许发送非零目标；未指定时强制零速")
     parser.add_argument("--raw-hex", help="原始十六进制帧；提供后跳过命令编码器")
     parser.add_argument("--dry-run", action="store_true", help="只打印计算结果，不打开串口")
@@ -182,7 +209,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.motor_rad_s:
             motor_targets = tuple(args.motor_rad_s)
         else:
-            wheels = tuple(args.wheel_rad_s) if args.wheel_rad_s else kiwi_inverse(args.vx, args.vy, args.wz)
+            wheels = tuple(args.wheel_rad_s) if args.wheel_rad_s else kiwi_inverse(
+                args.vx,
+                args.vy,
+                args.wz,
+                args.wheel_radius_m,
+                args.wheel_center_distance_m,
+            )
             motor_targets = wheel_to_motor(wheels, args.reduction_ratio)
         frame = None
     if motor_targets is not None:
