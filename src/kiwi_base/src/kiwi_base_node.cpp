@@ -256,7 +256,7 @@ private:
     {
       RCLCPP_INFO(
         get_logger(),
-        "键盘命令 vx=%.4f vy=%.4f wz=%.4f -> 轮子转速=[%.4f %.4f %.4f] 电机转速=[%.4f %.4f %.4f]",
+        "\nTX 目标==[%6.4f %6.4f %6.4f]\n 轮子=[%6.4f %6.4f %6.4f]\n 电机=[%6.4f %6.4f %6.4f]",
         command_.vx, command_.vy, command_.wz,
         wheel_speed[0], wheel_speed[1], wheel_speed[2],
         frame.motor_rad_s[0], frame.motor_rad_s[1], frame.motor_rad_s[2]);
@@ -302,9 +302,10 @@ private:
     {
       RCLCPP_INFO(
         get_logger(),
-        "反馈电机转速=[%.4f %.4f %.4f] 欧拉角(rpy rad)=[%.4f %.4f %.4f] "
-        "IMU原始角速度(rad/s)=[%.4f %.4f %.4f] "
-        "IMU原始加速度(m/s^2)=[%.4f %.4f %.4f]",
+        "\nRT 电机=[%6.4f %6.4f %6.4f]\n"
+        "欧拉角=[%6.4f %6.4f %6.4f]\n"
+        "角速度=[%6.4f %6.4f %6.4f]\n"
+        "加速度=[%6.4f %6.4f %6.4f]",
         state.motor_actual[0], state.motor_actual[1], state.motor_actual[2],
         state.euler[0], state.euler[1], state.euler[2],
         state.gyro[0], state.gyro[1], state.gyro[2],
@@ -314,6 +315,7 @@ private:
     const auto steady_now = Clock::now();
     const double dt = have_feedback_time_ ?
       std::chrono::duration<double>(steady_now - last_feedback_time_).count() : 0.0;
+    // 除减速比得到真实的轮子转速
     for (size_t i = 0; i < 3; ++i)
     {
       wheel_velocity_[i] = state.motor_actual[i] * feedback_scale_ / motor_ratio_[i];

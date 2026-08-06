@@ -182,6 +182,18 @@ ros2 topic echo /odometry/filtered --once
 ros2 run tf2_ros tf2_echo odom base_footprint
 ```
 
+实时查看 EKF 输出的 Pose 和 Twist：
+
+```bash
+ros2 run kiwi_base kiwi_odom_test
+```
+
+默认订阅 `/odometry/filtered`；需要监听其他里程计话题时使用：
+
+```bash
+ros2 run kiwi_base kiwi_odom_test --ros-args -p odom_topic:=/其他里程计话题
+```
+
 YAML 中的协方差只是保守初值，不是最终标定结果。静止采样和纯 `x/y/yaw` 实测后，
 应以各字段样本方差更新参数；EKF 只能降低随机噪声，不能修复错误轮序、单位和 IMU 安装方向。
 

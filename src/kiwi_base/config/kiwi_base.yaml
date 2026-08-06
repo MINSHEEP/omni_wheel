@@ -58,21 +58,32 @@ ekf_filter_node:
     world_frame: odom
 
     odom0: /wheel/odom_raw
-    odom0_config: [false, false, false,
-                   false, false, false,
-                   true,  true,  false,
-                   false, false, false,
-                   false, false, false]
+    # robot_localization 状态顺序：
+    # [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
+    # 每项 true 表示参与 EKF，false 表示忽略。
+    # 轮式里程计只提供机体 vx、vy；不重复融合其积分位姿和 wz。
+    odom0_config: [
+      false, false, false,  # x, y, z：不使用轮式积分位置
+      false, false, false,  # roll, pitch, yaw：不使用轮式积分姿态
+      true,  true,  false,  # vx, vy, vz：只使用 vx、vy
+      false, false, false,  # vroll, vpitch, vyaw：不使用轮速角速度
+      false, false, false   # ax, ay, az：轮式里程计不提供加速度
+    ]
     odom0_queue_size: 10
     odom0_differential: false
     odom0_relative: false
 
     imu0: /imu/data_raw
-    imu0_config: [false, false, false,
-                  false, false, false,
-                  false, false, false,
-                  false, false, true,
-                  false, false, false]
+    # robot_localization 的状态顺序（共 15 项）：
+    # [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
+    # 每项 true 表示参与 EKF，false 表示忽略；当前只融合 IMU 的 Z 轴角速度 vyaw。
+    imu0_config: [
+      false, false, false,  # x, y, z：IMU 不提供位置
+      false, false, false,  # roll, pitch, yaw：不直接融合 IMU 姿态四元数
+      false, false, false,  # vx, vy, vz：IMU 不提供线速度
+      false, false, true,   # vroll, vpitch, vyaw：只使用 gyro_z
+      false, false, false   # ax, ay, az：当前不使用线性加速度
+    ]
     imu0_queue_size: 10
     imu0_differential: false
     imu0_relative: false
