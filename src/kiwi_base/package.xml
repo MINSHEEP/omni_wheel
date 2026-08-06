@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<!-- Kiwi 三轮全向底盘驱动及其键盘遥操作节点的 ROS 2 包描述。 -->
+<package format="3">
+  <name>kiwi_base</name>
+  <version>0.1.0</version>
+  <description>ROS 2 driver for a three-wheel Kiwi omni base and the C board 0x3B feedback frame.</description>
+  <maintainer email="maintainer@example.com">MSHEEP</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
+  <test_depend>ament_lint_auto</test_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>
