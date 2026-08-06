@@ -53,12 +53,13 @@ ros2 run kiwi_base kiwi_teleop_keyboard --ros-args \
 ## 目标速度到三个电机
 
 输入为当前底盘控制坐标：`vx=linear.x`、`vy=linear.y`、`wz=angular.z`。前进是
-`vy<0`，左移是 `vx<0`，逆时针 `wz>0`。`src/kiwi_base/src/kiwi_kinematics.cpp` 直接使用：
+`vy<0`，左移是 `vx<0`，逆时针 `wz>0`；`+x` 轴对准 `w1/out[0]` 轮。
+`src/kiwi_base/src/kiwi_kinematics.cpp` 直接使用：
 
 ```text
-w1 =       0.8660254 * vx + 0.5 * vy - wz
-w2 =                         -vy         - wz
-w3 =      -0.8660254 * vx + 0.5 * vy - wz
+w1 =                         -vy         - wz
+w2 =      -0.8660254 * vx + 0.5 * vy - wz
+w3 =       0.8660254 * vx + 0.5 * vy - wz
 ```
 
 `w1/w2/w3` 是轮输出轴联调速度；`kiwi_base_node.cpp:update()` 再乘
@@ -68,8 +69,8 @@ C 板不做逆运动学，只做每个 M3508 的速度闭环。
 默认键盘速度的对应轮速：
 
 ```text
-w（前进，0.25 m/s）：[-0.125000,  0.250000, -0.125000]
-a（左移，0.25 m/s）：[-0.216506,  0.000000,  0.216506]
+w（前进，0.25 m/s）：[ 0.250000, -0.125000, -0.125000]
+a（左移，0.25 m/s）：[ 0.000000,  0.216506, -0.216506]
 q（旋转，0.8 rad/s）：[-0.800000, -0.800000, -0.800000]
 ```
 

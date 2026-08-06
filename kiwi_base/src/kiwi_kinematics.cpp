@@ -105,9 +105,10 @@ namespace kiwi_base
    *       减速比编码为 C 板所需的电机转子轴 rad/s。
    *
    * 直接使用当前实车确认的方向公式，不再经过换轴变量或矩阵循环：
-   *   w1 =  sin60*vx + 0.5*vy - wz
-   *   w2 = -vy              - wz
-   *   w3 = -sin60*vx + 0.5*vy - wz
+   * 当前 +x 轴对准轮 1（out[0]）所在方向：
+   *   w1 = -vy                - wz
+   *   w2 = -sin60*vx + 0.5*vy - wz
+   *   w3 =  sin60*vx + 0.5*vy - wz
    */
   std::array<double, 3> KiwiKinematics::inverse(const Twist2D &t) const
   {
@@ -118,9 +119,18 @@ namespace kiwi_base
       return out;
 #endif
     // 公式直接对应当前底盘控制坐标；不再额外执行 control_velocity 换轴。
-    out[0] = kSin60 * t.vx + 0.5 * t.vy - t.wz;
-    out[1] = -t.vy - t.wz;
-    out[2] = -kSin60 * t.vx + 0.5 * t.vy - t.wz;
+    // 备选：+x 轴对准 out[1] 轮。
+    // out[0] = kSin60 * t.vx + 0.5 * t.vy - t.wz;
+    // out[1] = -t.vy - t.wz;
+    // out[2] = -kSin60 * t.vx + 0.5 * t.vy - t.wz;
+    // 当前：+x 轴对准 out[0] 轮。
+    out[0] = -t.vy - t.wz;
+    out[1] = -kSin60 * t.vx + 0.5 * t.vy - t.wz;
+    out[2] = kSin60 * t.vx + 0.5 * t.vy - t.wz;
+    // 备选：+x 轴对准 out[2] 轮。
+    // out[0] = -kSin60 * t.vx + 0.5 * t.vy - t.wz;
+    // out[1] =  kSin60 * t.vx + 0.5 * t.vy - t.wz;
+    // out[2] = -t.vy - t.wz;
     return out;
   }
 
@@ -136,9 +146,9 @@ namespace kiwi_base
     if (!std::isfinite(w[0]) || !std::isfinite(w[1]) || !std::isfinite(w[2]))
       return t;
 #endif
-    // 与上面三行逆解公式对应的解析正解。
-    t.vx = (w[0] - w[2]) / (2.0 * kSin60);
-    t.vy = (w[0] + w[2] - 2.0 * w[1]) / 3.0;
+    // 与 +x 轴对准轮 1 的三行逆解公式对应，轮序不能与旧坐标公式混用。
+    t.vx = (w[2] - w[1]) / (2.0 * kSin60);
+    t.vy = (w[1] + w[2] - 2.0 * w[0]) / 3.0;
     t.wz = -(w[0] + w[1] + w[2]) / 3.0;
     return t;
   }

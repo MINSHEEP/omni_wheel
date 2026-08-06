@@ -54,11 +54,11 @@ def kiwi_inverse(
     if not all(math.isfinite(value) for value in values):
         raise ValueError("速度必须是有限数")
 
-    # 这里直接对应已标定控制坐标：vy<0 前进、vx<0 左移、wz>0 逆时针旋转。
+    # +x 轴对准 out[0] 轮；轮序与 C++ 正逆解保持一致。
     return (
-        SIN60 * vx + 0.5 * vy - wz,
         -vy - wz,
         -SIN60 * vx + 0.5 * vy - wz,
+        SIN60 * vx + 0.5 * vy - wz,
     )
 
 

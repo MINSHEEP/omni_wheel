@@ -27,13 +27,13 @@ TEST(KiwiKinematics, MatchesFixedFormula)
   KiwiKinematics kinematics;
 
   const auto forward = kinematics.inverse({1.0, 0.0, 0.0});
-  EXPECT_NEAR(forward[0], 0.866025403784, 1e-10);
-  EXPECT_NEAR(forward[1], 0.0, 1e-10);
-  EXPECT_NEAR(forward[2], -0.866025403784, 1e-10);
+  EXPECT_NEAR(forward[0], 0.0, 1e-10);
+  EXPECT_NEAR(forward[1], -0.866025403784, 1e-10);
+  EXPECT_NEAR(forward[2], 0.866025403784, 1e-10);
 
   const auto left = kinematics.inverse({0.0, 1.0, 0.0});
-  EXPECT_NEAR(left[0], 0.5, 1e-10);
-  EXPECT_NEAR(left[1], -1.0, 1e-10);
+  EXPECT_NEAR(left[0], -1.0, 1e-10);
+  EXPECT_NEAR(left[1], 0.5, 1e-10);
   EXPECT_NEAR(left[2], 0.5, 1e-10);
 
   const auto rotate = kinematics.inverse({0.0, 0.0, 1.0});

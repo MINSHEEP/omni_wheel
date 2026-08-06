@@ -28,12 +28,13 @@ ros2 launch kiwi_base kiwi_base.launch.py \
 ## 三轮公式
 
 当前输入使用已经点动验证的底盘控制坐标：前进为 `linear.y<0`，左移为
-`linear.x<0`，`wz=angular.z` 逆时针为正。轮序固定为 1、2、3：
+`linear.x<0`，`wz=angular.z` 逆时针为正。`+x` 轴对准 `w1/out[0]` 轮，
+轮序固定为 1、2、3：
 
 ```text
-w1 =       0.8660254 * vx + 0.5 * vy - wz
-w2 =                         -vy         - wz
-w3 =      -0.8660254 * vx + 0.5 * vy - wz
+w1 =                         -vy         - wz
+w2 =      -0.8660254 * vx + 0.5 * vy - wz
+w3 =       0.8660254 * vx + 0.5 * vy - wz
 ```
 
 公式位于 `src/kiwi_kinematics.cpp` 的 `KiwiKinematics::inverse()`。代码不读取轮半径、
