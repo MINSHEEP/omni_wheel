@@ -66,6 +66,18 @@ std::array<double, 4> rpy_to_quaternion(double roll, double pitch, double yaw)
     cr * cp * sy - sr * sp * cy,
     cr * cp * cy + sr * sp * sy};
 }
+
+/** 读取三个轴的方差；方差必须是有限正数，避免滤波器把无效配置当成真值。 */
+std::array<double, 3> declare_variance(
+  rclcpp::Node &node, const std::string &name, const std::array<double, 3> &defaults)
+{
+  const auto values = node.declare_parameter<std::vector<double>>(
+    name, {defaults[0], defaults[1], defaults[2]});
+  if (values.size() != 3 || std::any_of(values.begin(), values.end(), [](double value)
+    { return !std::isfinite(value) || value <= 0.0; }))
+    throw std::invalid_argument(name + " must contain three finite positive variances");
+  return {values[0], values[1], values[2]};
+}
 }  // namespace
 
 /**
@@ -90,12 +102,17 @@ public:
     // C++ 默认值只作为未加载参数文件时的回退，正常由 YAML 控制日志开关。
     log_serial_frames_ = declare_parameter<bool>("log_serial_frames", false);
     feedback_scale_ = declare_parameter<double>("feedback_motor_scale_to_rad_s", 1.0);
+    if (!std::isfinite(publish_rate_) || publish_rate_ <= 0.0 ||
+        !std::isfinite(feedback_scale_) || feedback_scale_ <= 0.0)
+      throw std::invalid_argument("publish rate and feedback scale must be finite and positive");
 
     const auto ratios = declare_parameter<std::vector<double>>(
       "motor_reduction_ratio", {19.0, 19.0, 19.0});
-    if (ratios.size() == 3)
-      for (size_t i = 0; i < 3; ++i)
-        motor_ratio_[i] = ratios[i];
+    if (ratios.size() != 3 || std::any_of(ratios.begin(), ratios.end(), [](double value)
+      { return !std::isfinite(value) || value <= 0.0; }))
+      throw std::invalid_argument("motor reduction ratio must contain three finite positive values");
+    for (size_t i = 0; i < 3; ++i)
+      motor_ratio_[i] = ratios[i];
 
     // 几何参数统一由 kiwi_base.yaml 提供，默认值对应 203 mm 轮径和 322.56 mm 轮心距。
     const double wheel_radius_m = declare_parameter<double>("wheel_radius_m", 0.1015);
@@ -112,8 +129,18 @@ public:
         !std::isfinite(command_limits_.wz) || command_limits_.wz <= 0.0)
       throw std::invalid_argument("velocity limits must be finite and positive");
 
+    // 这些是 EKF 的测量噪声初值，数组顺序均为 x、y、z；实测静止数据后只改 YAML。
+    wheel_pose_variance_ = declare_variance(*this, "wheel_pose_variance", {0.10, 0.10, 0.20});
+    wheel_twist_variance_ = declare_variance(*this, "wheel_twist_variance", {0.02, 0.02, 0.04});
+    imu_orientation_variance_ = declare_variance(
+      *this, "imu_orientation_variance", {0.05, 0.05, 0.20});
+    imu_angular_velocity_variance_ = declare_variance(
+      *this, "imu_angular_velocity_variance", {0.01, 0.01, 0.01});
+    imu_linear_acceleration_variance_ = declare_variance(
+      *this, "imu_linear_acceleration_variance", {0.10, 0.10, 0.10});
+
     cmd_topic_ = declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel_safe");
-    wheel_odom_topic_ = declare_parameter<std::string>("wheel_odom_topic", "/wheel/odom");
+    wheel_odom_topic_ = declare_parameter<std::string>("wheel_odom_topic", "/wheel/odom_raw");
     imu_topic_ = declare_parameter<std::string>("imu_topic", "/imu/data_raw");
     joint_topic_ = declare_parameter<std::string>("joint_states_topic", "/joint_states");
     odom_frame_ = declare_parameter<std::string>("odom_frame_id", "odom");
@@ -121,6 +148,8 @@ public:
     imu_frame_ = declare_parameter<std::string>("imu_frame_id", "imu_link");
     wheel_names_ = declare_parameter<std::vector<std::string>>(
       "wheel_names", {"wheel_joint_1", "wheel_joint_2", "wheel_joint_3"});
+    if (wheel_names_.size() != 3)
+      throw std::invalid_argument("wheel_names must contain exactly three joints");
 
     wheel_odom_pub_ = create_publisher<nav_msgs::msg::Odometry>(wheel_odom_topic_, 10);
     imu_pub_ = create_publisher<sensor_msgs::msg::Imu>(imu_topic_, 10);
@@ -282,58 +311,62 @@ private:
         state.accel[0], state.accel[1], state.accel[2]);
     }
 
-    const auto now = Clock::now();
+    const auto steady_now = Clock::now();
     const double dt = have_feedback_time_ ?
-      std::chrono::duration<double>(now - last_feedback_time_).count() : 0.0;
+      std::chrono::duration<double>(steady_now - last_feedback_time_).count() : 0.0;
     for (size_t i = 0; i < 3; ++i)
     {
       wheel_velocity_[i] = state.motor_actual[i] * feedback_scale_ / motor_ratio_[i];
       if (dt > 0.0 && dt < 1.0)
         wheel_position_[i] += wheel_velocity_[i] * dt;
     }
-    last_feedback_time_ = now;
+    last_feedback_time_ = steady_now;
     have_feedback_time_ = true;
-    publish_odom();
-    publish_joints();
-    publish_imu(state);
+    // 同一 0x3B 包中的轮速和 IMU 使用同一 ROS 时间戳，便于 EKF 对齐测量。
+    const auto stamp = this->now();
+    publish_odom(stamp, dt);
+    publish_joints(stamp);
+    publish_imu(state, stamp);
   }
 
-  /** 用反馈轮速积分并发布 /wheel/odom；不发布 TF。 */
-  void publish_odom()
+  /** 用反馈轮速积分并发布 /wheel/odom_raw；原始里程计不发布 TF。 */
+  void publish_odom(const rclcpp::Time &stamp, double dt)
   {
     const Twist2D twist = kinematics_.forward(wheel_velocity_);
-    const auto now = Clock::now();
-    if (have_odom_time_)
+    if (dt > 0.0 && dt < 1.0)
     {
-      const double dt = std::chrono::duration<double>(now - last_odom_time_).count();
       const double c = std::cos(odom_yaw_);
       const double s = std::sin(odom_yaw_);
       odom_x_ += (twist.vx * c - twist.vy * s) * dt;
       odom_y_ += (twist.vx * s + twist.vy * c) * dt;
       odom_yaw_ += twist.wz * dt;
     }
-    last_odom_time_ = now;
-    have_odom_time_ = true;
 
     nav_msgs::msg::Odometry message;
-    message.header.stamp = this->now();
+    message.header.stamp = stamp;
     message.header.frame_id = odom_frame_;
     message.child_frame_id = base_frame_;
     message.pose.pose.position.x = odom_x_;
     message.pose.pose.position.y = odom_y_;
     message.pose.pose.orientation.z = std::sin(odom_yaw_ * 0.5);
     message.pose.pose.orientation.w = std::cos(odom_yaw_ * 0.5);
+    message.pose.covariance[0] = wheel_pose_variance_[0];
+    message.pose.covariance[7] = wheel_pose_variance_[1];
+    message.pose.covariance[35] = wheel_pose_variance_[2];
     message.twist.twist.linear.x = twist.vx;
     message.twist.twist.linear.y = twist.vy;
     message.twist.twist.angular.z = twist.wz;
+    message.twist.covariance[0] = wheel_twist_variance_[0];
+    message.twist.covariance[7] = wheel_twist_variance_[1];
+    message.twist.covariance[35] = wheel_twist_variance_[2];
     wheel_odom_pub_->publish(message);
   }
 
   /** 发布三个轮子的累计角度和角速度。 */
-  void publish_joints()
+  void publish_joints(const rclcpp::Time &stamp)
   {
     sensor_msgs::msg::JointState message;
-    message.header.stamp = now();
+    message.header.stamp = stamp;
     message.name = wheel_names_;
     message.position.assign(wheel_position_.begin(), wheel_position_.end());
     message.velocity.assign(wheel_velocity_.begin(), wheel_velocity_.end());
@@ -341,23 +374,31 @@ private:
   }
 
   /** 发布 0x3B 中带欧拉角的 IMU 数据。 */
-  void publish_imu(const FeedbackFrame &state)
+  void publish_imu(const FeedbackFrame &state, const rclcpp::Time &stamp)
   {
     const auto quaternion = rpy_to_quaternion(state.euler[0], state.euler[1], state.euler[2]);
     sensor_msgs::msg::Imu message;
-    message.header.stamp = now();
+    message.header.stamp = stamp;
     message.header.frame_id = imu_frame_;
     message.orientation.x = quaternion[0];
     message.orientation.y = quaternion[1];
     message.orientation.z = quaternion[2];
     message.orientation.w = quaternion[3];
+    message.orientation_covariance[0] = imu_orientation_variance_[0];
+    message.orientation_covariance[4] = imu_orientation_variance_[1];
+    message.orientation_covariance[8] = imu_orientation_variance_[2];
     message.angular_velocity.x = state.gyro[0];
     message.angular_velocity.y = state.gyro[1];
     message.angular_velocity.z = state.gyro[2];
+    message.angular_velocity_covariance[0] = imu_angular_velocity_variance_[0];
+    message.angular_velocity_covariance[4] = imu_angular_velocity_variance_[1];
+    message.angular_velocity_covariance[8] = imu_angular_velocity_variance_[2];
     message.linear_acceleration.x = state.accel[0];
     message.linear_acceleration.y = state.accel[1];
     message.linear_acceleration.z = state.accel[2];
-    // 0x3B 已包含欧拉角，因此保留 orientation 字段；协方差暂未标定。
+    message.linear_acceleration_covariance[0] = imu_linear_acceleration_variance_[0];
+    message.linear_acceleration_covariance[4] = imu_linear_acceleration_variance_[1];
+    message.linear_acceleration_covariance[8] = imu_linear_acceleration_variance_[2];
     imu_pub_->publish(message);
   }
 
@@ -374,6 +415,11 @@ private:
   double feedback_scale_{1.0};
   bool log_serial_frames_{false};
   std::array<double, 3> motor_ratio_{{19.0, 19.0, 19.0}};
+  std::array<double, 3> wheel_pose_variance_{{0.10, 0.10, 0.20}};
+  std::array<double, 3> wheel_twist_variance_{{0.02, 0.02, 0.04}};
+  std::array<double, 3> imu_orientation_variance_{{0.05, 0.05, 0.20}};
+  std::array<double, 3> imu_angular_velocity_variance_{{0.01, 0.01, 0.01}};
+  std::array<double, 3> imu_linear_acceleration_variance_{{0.10, 0.10, 0.10}};
   std::vector<std::string> wheel_names_;
   KiwiKinematics kinematics_;
   Twist2D command_limits_{0.6, 0.6, 1.5};
@@ -384,9 +430,7 @@ private:
   double odom_y_{0.0};
   double odom_yaw_{0.0};
   bool have_feedback_time_{false};
-  bool have_odom_time_{false};
   Clock::time_point last_feedback_time_{};
-  Clock::time_point last_odom_time_{};
   FrameParser parser_;
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_sub_;

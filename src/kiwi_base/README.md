@@ -111,14 +111,79 @@ accel_x, accel_y, accel_z
 
 ```text
 cmd_vel_topic       geometry_msgs/msg/Twist        默认 /cmd_vel_safe（订阅）
-wheel_odom_topic    nav_msgs/msg/Odometry         默认 /wheel/odom（发布）
+wheel_odom_topic    nav_msgs/msg/Odometry         默认 /wheel/odom_raw（发布）
 imu_topic           sensor_msgs/msg/Imu           默认 /imu/data_raw（发布）
 joint_states_topic  sensor_msgs/msg/JointState    默认 /joint_states（发布）
 ```
 
-`/wheel/odom` 只发布消息，不发布 TF；后续由 `robot_localization` EKF 发布
-`odom -> base_footprint`，SLAM Toolbox 或 AMCL 负责上层地图定位。Nav2 的标准
-所有上层 `Twist` 均使用 REP-103 坐标，不再增加额外换轴节点。
+`/wheel/odom_raw` 是轮速正解和积分得到的原始里程计，只发布消息、不发布 TF。
+`robot_localization` 融合轮速 `vx/vy` 与 IMU `gyro_z`，发布 `/odometry/filtered` 和唯一的
+`odom -> base_footprint`。绝对 yaw 未经磁标定，第一阶段不进入 EKF。
+
+完整运行链路：
+
+```text
+C 板 0x3B
+  -> kiwi_base_node
+     -> /wheel/odom_raw：轮速正解得到 vx、vy、wz，并积分原始 x、y、yaw
+     -> /imu/data_raw：四元数、角速度、加速度
+     -> /joint_states：三个轮子的累计角度和角速度
+
+/wheel/odom_raw(vx、vy) + /imu/data_raw(gyro_z)
+  -> robot_localization EKF
+  -> /odometry/filtered + odom→base_footprint
+```
+
+协方差由 `kiwi_base_node` 写入原始消息，EKF 从消息中读取；EKF 配置并不是对
+`x/y` 做旋转，而是选择轮里程计的 `vx/vy` 和 IMU 的 `gyro_z` 作为校正量，其他状态
+由运动模型预测。SLAM Toolbox 在建图模式发布 `/map` 和 `map→odom`，不发布
+`odom→base_footprint`。
+
+## TF 与后续 URDF
+
+```text
+map ──SLAM Toolbox（建图）或 AMCL（定位，二选一）──> odom
+odom ──EKF────────────────────────────────────────> base_footprint
+base_footprint ──robot_state_publisher 固定关节───> base_link
+base_link ──固定关节──────────────────────────────> imu_link / lidar_link / motor_link_1..3
+motor_link_1..3 ──连续轮关节 + /joint_states──────> wheel_link_1..3
+```
+
+- `base_footprint` 是机器人中心在地面的二维投影，不包含惯量和几何模型，供 Nav2、
+  SLAM 和 EKF 使用。
+- `base_link` 是实际机体参考坐标，通常位于底盘几何中心或旋转中心，承载碰撞、视觉和
+  惯量模型；平地二维模型中它与 `base_footprint` 同向，只相差固定高度。
+- IMU、雷达和电机外壳是固定安装，使用静态 TF；轮子会转动，必须使用连续/旋转关节，
+  由 `/joint_states` 驱动动态 TF，不能把轮子本体写成静态 TF。
+- 建图时由 SLAM Toolbox 发布 `map→odom`；加载地图导航时关闭 SLAM Toolbox，由 AMCL
+  发布同一条 TF，二者不能同时运行。
+
+## EKF 融合里程计
+
+首次安装依赖：
+
+```bash
+sudo apt install ros-humble-robot-localization
+```
+
+启动底盘和 EKF（两者读取同一份 YAML）：
+
+```bash
+ros2 launch kiwi_base kiwi_base_ekf.launch.py
+```
+
+该 launch 暂时发布零位姿 `base_footprint -> imu_link`。只有 IMU 坐标轴与底盘坐标轴
+对齐时才能使用；URDF 发布真实安装变换后必须增加
+`publish_imu_static_tf:=false`，避免重复 TF。
+
+```bash
+ros2 topic hz /wheel/odom_raw /imu/data_raw /odometry/filtered
+ros2 topic echo /odometry/filtered --once
+ros2 run tf2_ros tf2_echo odom base_footprint
+```
+
+YAML 中的协方差只是保守初值，不是最终标定结果。静止采样和纯 `x/y/yaw` 实测后，
+应以各字段样本方差更新参数；EKF 只能降低随机噪声，不能修复错误轮序、单位和 IMU 安装方向。
 
 ## 启动和联调
 
@@ -127,8 +192,7 @@ cd /home/ym/ros2_ws
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install --packages-select kiwi_base
 source install/setup.bash
-ros2 launch kiwi_base kiwi_base.launch.py \
-  params_file:=src/kiwi_base/config/kiwi_base.yaml
+ros2 launch kiwi_base kiwi_base.launch.py
 ```
 
 另一个终端启动键盘：
@@ -158,7 +222,7 @@ YAML 中 `log_serial_frames: true` 时，节点显示目标映射、`TX[18] ...`
 以及通过协议校验后的 0x3B 反馈解码结果：
 
 ```text
-键盘命令 vx=0.0000 vy=-0.2500 wz=0.0000 -> 轮子转速=[-0.1250 0.2500 -0.1250] 电机转速=[-2.3750 4.7500 -2.3750]
+键盘命令 vx=0.0000 vy=-0.2500 wz=0.0000 -> 轮子转速=[-1.2315 2.4631 -1.2315] 电机转速=[-23.3990 46.7980 -23.3990]
 TX[18] 33 0c 3a 65 ...
 反馈电机转速=[...] 欧拉角(rpy rad)=[...] IMU原始角速度(rad/s)=[...]
 IMU原始加速度(m/s^2)=[...]
@@ -174,6 +238,8 @@ src/kiwi_kinematics.cpp       Twist -> w1/w2/w3 固定公式
 src/robomaster_protocol.cpp   0x3A 组帧、0x3B 解码、CRC
 src/kiwi_base_node.cpp        USB 读写、反馈转 ROS 消息、轮速积分
 config/kiwi_base.yaml         唯一参数入口
+launch/kiwi_base_ekf.launch.py  底盘 + EKF + 临时 IMU 静态 TF
 test/test_kinematics.cpp      固定公式测试
 test/test_protocol.cpp        CRC、长度、半帧和粘包测试
+test/test_ekf_config.py       EKF 话题、融合维度和协方差配置测试
 ```

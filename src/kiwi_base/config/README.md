@@ -6,8 +6,7 @@
 ```bash
 source /opt/ros/humble/setup.bash
 source install/setup.bash
-ros2 launch kiwi_base kiwi_base.launch.py \
-  params_file:=src/kiwi_base/config/kiwi_base.yaml
+ros2 launch kiwi_base kiwi_base.launch.py
 ```
 
 节点参数统一从 `params_file` 指定的 YAML 读取；launch 不再用 `device` 或日志默认值覆盖 YAML。
@@ -23,7 +22,8 @@ ros2 launch kiwi_base kiwi_base.launch.py \
   -> 0x33/0x3A USB 控制帧
   -> C 板 C620 + M3508
   -> 0x3B 反馈帧
-  -> /wheel/odom、/joint_states、/imu/data_raw
+  -> /wheel/odom_raw、/joint_states、/imu/data_raw
+  -> robot_localization EKF -> /odometry/filtered + odom→base_footprint
 ```
 
 ## 三轮公式
@@ -55,6 +55,8 @@ w3 = (-0.8660254 * vx + 0.5 * vy - L*wz) / R
 | `max_linear_speed_m_s` | `linear.x` 前后速度绝对值上限，默认 `0.6 m/s` |
 | `max_lateral_speed_m_s` | `linear.y` 左右速度绝对值上限，默认 `0.6 m/s` |
 | `max_angular_speed_rad_s` | `angular.z` 旋转速度绝对值上限，默认 `1.5 rad/s` |
+| `wheel_pose_variance` / `wheel_twist_variance` | 原始轮里程计三个平面轴的方差初值 |
+| `imu_*_variance` | IMU 姿态、角速度和加速度三个轴的方差初值 |
 | `cmd_vel_topic` | 底盘订阅的 `geometry_msgs/msg/Twist` 话题，默认 `/cmd_vel_safe` |
 | `wheel_odom_topic` / `imu_topic` / `joint_states_topic` | 节点发布话题 |
 | `odom_frame_id` / `base_frame_id` / `imu_frame_id` | 消息 frame_id |
@@ -97,9 +99,21 @@ accel_x, accel_y, accel_z
 
 ## ROS 输出格式
 
-- `wheel_odom_topic`：`nav_msgs/msg/Odometry`，只发布消息，不发布 `odom -> base` TF。
+- `wheel_odom_topic`：默认 `/wheel/odom_raw`，只发布原始消息，不发布 TF。
 - `imu_topic`：`sensor_msgs/msg/Imu`，0x3B 的欧拉角转四元数，角速度和加速度原样发布。
 - `joint_states_topic`：`sensor_msgs/msg/JointState`，位置为积分角度，速度为轮输出轴 rad/s。
+- `/odometry/filtered`：EKF 融合输出，并发布唯一的 `odom -> base_footprint` TF。
+
+第一阶段 EKF 只使用 `/wheel/odom_raw` 的 `vx/vy` 和 `/imu/data_raw` 的 `gyro_z`，
+不重复使用由同一轮速积分得到的位姿，也不使用未经磁标定的绝对 yaw。
+
+```bash
+sudo apt install ros-humble-robot-localization
+ros2 launch kiwi_base kiwi_base_ekf.launch.py
+```
+
+默认临时假设 `imu_link` 与 `base_footprint` 重合且同向。URDF 提供真实静态 TF 后，启动时
+增加 `publish_imu_static_tf:=false`。
 
 消息类型、字段和话题默认值集中在 `src/kiwi_base/src/kiwi_base_node.cpp` 构造函数；
 正常只需改 YAML 参数，不需改协议代码。

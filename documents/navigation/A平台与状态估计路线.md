@@ -49,7 +49,7 @@ A 不修改 SLAM、AMCL、Nav2 controller 或 costmap 参数。B 若需要传感
 ```
 
 当前 `kiwi_base` 已将正解、逆解、测试和 `R=0.1015 m`、`L=0.32256 m` 配置对齐；
-仍需通过实机 +x/+y/+wz 点动和反馈单位确认后，才能把 `/wheel/odom` 交给 EKF。
+仍需通过实机 +x/+y/+wz 点动和反馈单位确认后，才能把 `/wheel/odom_raw` 交给 EKF。
 
 ## 4. A1：底盘、雷达和原始状态话题
 
@@ -111,8 +111,12 @@ kiwi_description/
 base_footprint -> base_link
 base_link -> lidar_link
 base_link -> imu_link
-base_link -> wheel_link_1/2/3（通过 wheel_joint_1/2/3）
+base_link -> motor_link_1/2/3（固定关节，可按建模精度选配）
+motor_link_1/2/3 -> wheel_link_1/2/3（通过连续 wheel_joint_1/2/3）
 ```
+
+`base_footprint` 是地面二维投影；`base_link` 是底盘几何和惯量基准。固定传感器和电机外壳
+由 URDF 发布静态 TF，轮子角度由 `/joint_states` 驱动，不能把轮子本体建成固定关节。
 
 验收：
 
@@ -123,8 +127,8 @@ base_link -> wheel_link_1/2/3（通过 wheel_joint_1/2/3）
 
 ## 6. A3：robot_localization EKF
 
-当前系统未安装 `robot_localization`，先安装对应 Humble 包，再新增
-`kiwi_state_estimation/config/ekf_odom.yaml`。
+EKF 配置已合并到 `src/kiwi_base/config/kiwi_base.yaml`，启动入口为
+`kiwi_base_ekf.launch.py`。新设备运行前安装 `ros-humble-robot-localization`。
 
 第一阶段融合边界：
 
