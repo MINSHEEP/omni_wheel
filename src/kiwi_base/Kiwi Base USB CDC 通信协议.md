@@ -152,3 +152,90 @@ test/test_protocol.cpp                        命令 golden、反馈字段、分
 3. 下位机必须保证每个反馈包严格为 `0x33 0x30 0x3B` 开头、48 字节 payload，并按
    本文档计算 CRC8/CRC16。
 4. 任何单位变更只修改单位换算参数或上层转换，不能改变 12 个字段的顺序和长度。
+
+## 7. Linux USB CDC 驱动与设备名映射
+
+### 7.1 设备枚举链路
+
+RoboMaster C 型板使用 USB FS CDC，Ubuntu 22.04 由内核 `cdc_acm` 驱动创建虚拟串口。
+它不是 USB-UART 转换器，因此正常设备名是 `/dev/ttyACM*`，没有 `/dev/ttyUSB*` 不代表
+连接失败。节点不设置波特率，只使用 raw、非阻塞的 `read/write`。
+
+```text
+C 型板 USB CDC
+    -> cdc_acm 驱动
+    -> /dev/ttyACM0
+    -> udev 稳定软链接 /dev/robomaster_c
+    -> kiwi_base_node 的 device 参数
+```
+
+本次工控机实测属性如下：
+
+```text
+ID_VENDOR       = STMicroelectronics
+ID_MODEL        = STM32_Virtual_ComPort
+ID_VENDOR_ID    = 0483
+ID_MODEL_ID     = 5740
+ID_SERIAL_SHORT = 315A326E3034
+ID_USB_DRIVER   = cdc_acm
+```
+
+系统已经确认：
+
+```text
+/dev/robomaster_c -> ttyACM0
+```
+
+### 7.2 udev 固定软链接
+
+`kiwi_base` 不在代码中创建软链接，只从 YAML 读取设备路径。默认配置为：
+
+```yaml
+device: /dev/robomaster_c
+```
+
+推荐在工控机创建 `/etc/udev/rules.d/99-kiwi-devices.rules`，使用 VID、PID 和序列号
+绑定 C 型板，避免设备重插后从 `ttyACM0` 变成 `ttyACM1`：
+
+```text
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", ATTRS{serial}=="315A326E3034", SYMLINK+="robomaster_c", GROUP="dialout", MODE="0660"
+```
+
+如果 `udevadm info -a` 显示的 `serial` 位于其他父设备层级，应以该命令的实际属性为准，
+不要只用 `KERNEL=="ttyACM0"`，否则多个 USB 设备或重新插拔时可能映射错误。
+
+应用规则并检查结果：
+
+```bash
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+readlink -f /dev/robomaster_c
+udevadm info -q property -n /dev/ttyACM0 | rg 'ID_VENDOR_ID|ID_MODEL_ID|ID_SERIAL_SHORT|ID_USB_DRIVER'
+```
+
+`readlink -f` 应输出当前实际设备，例如 `/dev/ttyACM0`。软链接显示为 `root root` 是
+正常的，真正的读写权限由目标设备的 `root:dialout 0660` 控制。运行 ROS 的用户需要加入
+`dialout`：
+
+```bash
+sudo usermod -aG dialout "$USER"
+```
+
+重新登录 SSH 后检查：
+
+```bash
+groups
+ls -l /dev/ttyACM0 /dev/robomaster_c
+```
+
+### 7.3 稳定路径和临时直连
+
+系统还会生成按序列号固定的标准路径：
+
+```text
+/dev/serial/by-id/usb-STMicroelectronics_STM32_Virtual_ComPort_315A326E3034-if00
+```
+
+没有自定义 udev 规则时，可以临时把 YAML 改为该 `by-id` 路径；生产运行仍统一使用
+`/dev/robomaster_c`，这样启动命令和不同工控机的配置保持一致。不要在 ROS 节点中硬编码
+`/dev/ttyACM0`，也不要让键盘节点或 Python 工具与 `kiwi_base_node` 同时打开同一设备。
