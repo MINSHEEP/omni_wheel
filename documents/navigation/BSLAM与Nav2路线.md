@@ -2,7 +2,7 @@
 
 > 责任目标：消费 A 的标准里程计和 TF，交付地图、`map→odom`、全向导航和安全后的
 > `/cmd_vel_safe`。
-> 对接契约：[team-interface-contract.md](team-interface-contract.md)
+> 对接契约：[接口契约.md](接口契约.md)
 
 ## 1. 完成定义
 

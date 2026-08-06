@@ -2,7 +2,7 @@
 
 > 责任目标：向 B 稳定交付 `/scan`、`/odometry/filtered`、
 > `odom→base_footprint` 和标准坐标的底盘命令入口。
-> 对接契约：[team-interface-contract.md](team-interface-contract.md)
+> 对接契约：[接口契约.md](接口契约.md)
 
 ## 1. 完成定义
 
