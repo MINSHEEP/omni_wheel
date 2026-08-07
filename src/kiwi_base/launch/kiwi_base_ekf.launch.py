@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
-"""启动 Kiwi 底盘、平面 EKF，以及临时的零位姿 IMU 静态变换。"""
+"""启动 Kiwi 底盘和平面 EKF；传感器静态 TF 统一由 URDF 发布。"""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.conditions import IfCondition
+# 过渡期临时 TF 已停用，保留导入注释方便追溯，不再创建独立 TF 节点。
+# from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    """两个节点读取同一 YAML；URDF 接管 imu_link 后应关闭临时静态 TF。"""
+    """两个节点读取同一 YAML；IMU 和雷达安装关系由 robot_state_publisher 发布。"""
     default_params = PathJoinSubstitution(
         [FindPackageShare("kiwi_base"), "config", "kiwi_base.yaml"]
     )
     params_file = LaunchConfiguration("params_file")
-    publish_imu_tf = LaunchConfiguration("publish_imu_static_tf")
+    # 以下过渡参数已停用。正式系统只允许 URDF/Xacro 维护传感器静态 TF。
+    # publish_imu_tf = LaunchConfiguration("publish_imu_static_tf")
 
     return LaunchDescription(
         [
@@ -24,23 +26,24 @@ def generate_launch_description():
                 default_value=default_params,
                 description="底盘和 EKF 共用的参数文件",
             ),
-            DeclareLaunchArgument(
-                "publish_imu_static_tf",
-                default_value="true",
-                description="URDF 未发布 base_footprint 到 imu_link 时启用临时零变换",
-            ),
-            Node(
-                package="tf2_ros",
-                executable="static_transform_publisher",
-                name="imu_static_tf",
-                condition=IfCondition(publish_imu_tf),
-                arguments=[
-                    "--x", "0", "--y", "0", "--z", "0",
-                    "--roll", "0", "--pitch", "0", "--yaw", "0",
-                    "--frame-id", "base_footprint",
-                    "--child-frame-id", "imu_link",
-                ],
-            ),
+            # 过渡代码保留但不执行，避免与 URDF 重复发布 imu_link：
+            # DeclareLaunchArgument(
+            #     "publish_imu_static_tf",
+            #     default_value="false",
+            #     description="已停用：传感器 TF 由 URDF/Xacro 管理",
+            # ),
+            # Node(
+            #     package="tf2_ros",
+            #     executable="static_transform_publisher",
+            #     name="imu_static_tf",
+            #     condition=IfCondition(publish_imu_tf),
+            #     arguments=[
+            #         "--x", "0", "--y", "0", "--z", "0",
+            #         "--roll", "0", "--pitch", "0", "--yaw", "0",
+            #         "--frame-id", "base_footprint",
+            #         "--child-frame-id", "imu_link",
+            #     ],
+            # ),
             Node(
                 package="kiwi_base",
                 executable="kiwi_base_node",

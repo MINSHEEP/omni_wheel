@@ -1,0 +1,99 @@
+<?xml version="1.0"?>
+<!-- TF contract for mapping. Sensor mounting values are launch arguments until measured. -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="kiwi_base">
+  <xacro:arg name="base_z" default="0.0"/>
+  <xacro:arg name="imu_x" default="0.0"/>
+  <xacro:arg name="imu_y" default="0.0"/>
+  <xacro:arg name="imu_z" default="0.0"/>
+  <xacro:arg name="imu_roll" default="0.0"/>
+  <xacro:arg name="imu_pitch" default="0.0"/>
+  <xacro:arg name="imu_yaw" default="0.0"/>
+  <xacro:arg name="lidar_x" default="0.0"/>
+  <xacro:arg name="lidar_y" default="0.0"/>
+  <xacro:arg name="lidar_z" default="0.20"/>
+  <xacro:arg name="lidar_roll" default="0.0"/>
+  <xacro:arg name="lidar_pitch" default="0.0"/>
+  <xacro:arg name="lidar_yaw" default="0.0"/>
+
+  <xacro:property name="wheel_radius" value="0.1015"/>
+  <xacro:property name="wheel_center" value="0.32256"/>
+  <xacro:property name="sin60" value="0.866025403784"/>
+
+  <link name="base_footprint"/>
+
+  <link name="base_link">
+    <visual>
+      <geometry><cylinder radius="0.32256" length="0.08"/></geometry>
+      <material name="base_gray"><color rgba="0.25 0.28 0.30 1.0"/></material>
+    </visual>
+    <collision><geometry><cylinder radius="0.32256" length="0.08"/></geometry></collision>
+    <inertial>
+      <mass value="10.0"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.18" ixy="0" ixz="0" iyy="0.18" iyz="0" izz="0.35"/>
+    </inertial>
+  </link>
+  <joint name="base_footprint_to_base_link" type="fixed">
+    <parent link="base_footprint"/><child link="base_link"/>
+    <origin xyz="0 0 $(arg base_z)" rpy="0 0 0"/>
+  </joint>
+
+  <link name="imu_link"/>
+  <joint name="base_link_to_imu" type="fixed">
+    <parent link="base_link"/><child link="imu_link"/>
+    <origin xyz="$(arg imu_x) $(arg imu_y) $(arg imu_z)"
+            rpy="$(arg imu_roll) $(arg imu_pitch) $(arg imu_yaw)"/>
+  </joint>
+
+  <link name="lidar_link">
+    <visual>
+      <geometry><cylinder radius="0.01925" length="0.0337"/></geometry>
+      <material name="lidar_black"><color rgba="0.05 0.05 0.05 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="base_link_to_lidar" type="fixed">
+    <parent link="base_link"/><child link="lidar_link"/>
+    <origin xyz="$(arg lidar_x) $(arg lidar_y) $(arg lidar_z)"
+            rpy="$(arg lidar_roll) $(arg lidar_pitch) $(arg lidar_yaw)"/>
+  </joint>
+
+  <!-- Motor centers match the 120/0/240 degree order used by kiwi_base kinematics. -->
+  <link name="motor_link_1"/>
+  <joint name="base_to_motor_1" type="fixed">
+    <parent link="base_link"/><child link="motor_link_1"/>
+    <origin xyz="${-0.5 * wheel_center} ${sin60 * wheel_center} 0" rpy="0 0 2.09439510239"/>
+  </joint>
+  <link name="wheel_link_1">
+    <visual><origin rpy="0 1.57079632679 0"/><geometry><cylinder radius="${wheel_radius}" length="0.04"/></geometry></visual>
+    <collision><origin rpy="0 1.57079632679 0"/><geometry><cylinder radius="${wheel_radius}" length="0.04"/></geometry></collision>
+  </link>
+  <joint name="wheel_joint_1" type="continuous">
+    <parent link="motor_link_1"/><child link="wheel_link_1"/><axis xyz="0 1 0"/>
+  </joint>
+
+  <link name="motor_link_2"/>
+  <joint name="base_to_motor_2" type="fixed">
+    <parent link="base_link"/><child link="motor_link_2"/>
+    <origin xyz="${wheel_center} 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="wheel_link_2">
+    <visual><origin rpy="0 1.57079632679 0"/><geometry><cylinder radius="${wheel_radius}" length="0.04"/></geometry></visual>
+    <collision><origin rpy="0 1.57079632679 0"/><geometry><cylinder radius="${wheel_radius}" length="0.04"/></geometry></collision>
+  </link>
+  <joint name="wheel_joint_2" type="continuous">
+    <parent link="motor_link_2"/><child link="wheel_link_2"/><axis xyz="0 1 0"/>
+  </joint>
+
+  <link name="motor_link_3"/>
+  <joint name="base_to_motor_3" type="fixed">
+    <parent link="base_link"/><child link="motor_link_3"/>
+    <origin xyz="${-0.5 * wheel_center} ${-sin60 * wheel_center} 0" rpy="0 0 -2.09439510239"/>
+  </joint>
+  <link name="wheel_link_3">
+    <visual><origin rpy="0 1.57079632679 0"/><geometry><cylinder radius="${wheel_radius}" length="0.04"/></geometry></visual>
+    <collision><origin rpy="0 1.57079632679 0"/><geometry><cylinder radius="${wheel_radius}" length="0.04"/></geometry></collision>
+  </link>
+  <joint name="wheel_joint_3" type="continuous">
+    <parent link="motor_link_3"/><child link="wheel_link_3"/><axis xyz="0 1 0"/>
+  </joint>
+</robot>

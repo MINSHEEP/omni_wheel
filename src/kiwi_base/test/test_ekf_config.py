@@ -42,3 +42,15 @@ def test_filter_inputs_have_positive_covariances():
     for name in names:
         assert len(base[name]) == 3
         assert all(value > 0.0 for value in base[name])
+
+
+def test_ekf_launch_does_not_publish_temporary_sensor_tf():
+    """正式启动文件不得执行过渡期的零位姿 IMU 静态变换。"""
+    launch_path = Path(__file__).resolve().parents[1] / "launch" / "kiwi_base_ekf.launch.py"
+    launch = launch_path.read_text(encoding="utf-8")
+    active_lines = [
+        line for line in launch.splitlines() if not line.lstrip().startswith("#")
+    ]
+    active_launch = "\n".join(active_lines)
+    assert "publish_imu_static_tf" not in active_launch
+    assert "static_transform_publisher" not in active_launch

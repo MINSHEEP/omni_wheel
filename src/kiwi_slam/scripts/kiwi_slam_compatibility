@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+"""Installed entry point for the system compatibility checker."""
+
+from kiwi_slam.compatibility import main
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

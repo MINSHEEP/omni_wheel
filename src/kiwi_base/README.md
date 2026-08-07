@@ -172,9 +172,9 @@ sudo apt install ros-humble-robot-localization
 ros2 launch kiwi_base kiwi_base_ekf.launch.py
 ```
 
-该 launch 暂时发布零位姿 `base_footprint -> imu_link`。只有 IMU 坐标轴与底盘坐标轴
-对齐时才能使用；URDF 发布真实安装变换后必须增加
-`publish_imu_static_tf:=false`，避免重复 TF。
+该 launch 只启动 `kiwi_base_node` 和 `ekf_filter_node`，不再发布过渡期的零位姿
+`base_footprint -> imu_link`。IMU、雷达和底盘机体之间的固定 TF 必须由上层 URDF/Xacro
+通过 `robot_state_publisher` 统一发布，避免重复 TF。
 
 ```bash
 ros2 topic hz /wheel/odom_raw /imu/data_raw /odometry/filtered
@@ -250,7 +250,7 @@ src/kiwi_kinematics.cpp       Twist -> w1/w2/w3 固定公式
 src/robomaster_protocol.cpp   0x3A 组帧、0x3B 解码、CRC
 src/kiwi_base_node.cpp        USB 读写、反馈转 ROS 消息、轮速积分
 config/kiwi_base.yaml         唯一参数入口
-launch/kiwi_base_ekf.launch.py  底盘 + EKF + 临时 IMU 静态 TF
+launch/kiwi_base_ekf.launch.py  底盘 + EKF；传感器 TF 由上层 URDF 负责
 test/test_kinematics.cpp      固定公式测试
 test/test_protocol.cpp        CRC、长度、半帧和粘包测试
 test/test_ekf_config.py       EKF 话题、融合维度和协方差配置测试

@@ -1,0 +1,49 @@
+# PaceCat LDS-E110-R parameters for the existing bluesea2 UART SDK.
+# Manual V1.5: 230400 8N1, 7 Hz, 0.05-12 m, 360 degrees, 0.6 degree resolution.
+bluesea_node:
+  ros__parameters:
+    frame_id: lidar_link
+    scan_topic: /scan
+    cloud_topic: /cloud
+
+    type: uart
+    port: /dev/ttyUSB0
+    baud_rate: 230400
+    dev_id: -1
+    raw_bytes: 3
+
+    output_360: true
+    output_scan: true
+    output_cloud: false
+    output_cloud2: false
+    with_angle_filter: false
+    min_angle: -3.1415926
+    max_angle: 3.1415926
+    from_zero: false
+    inverted: false
+    reversed: false
+
+    min_dist: 0.05
+    max_dist: 12.0
+    with_checksum: true
+    hard_resample: false
+    soft_resample: false
+    error_circle: 3
+    error_scale: 0.90
+    time_mode: 0
+
+    # E110 manual does not require host-side setup commands; keep all optional commands disabled.
+    uuid: -1
+    resample_res: -1.0
+    unit_is_mm: -1
+    with_confidence: -1
+    with_smooth: -1
+    with_deshadow: -1
+    alarm_msg: -1
+    rpm: -1
+    direction: -1
+    ats: -1
+
+    filter_open: false
+    log_enable: false
+    log_path: /tmp/lds_e110_sdk.log

@@ -112,8 +112,9 @@ sudo apt install ros-humble-robot-localization
 ros2 launch kiwi_base kiwi_base_ekf.launch.py
 ```
 
-默认临时假设 `imu_link` 与 `base_footprint` 重合且同向。URDF 提供真实静态 TF 后，启动时
-增加 `publish_imu_static_tf:=false`。
+该 launch 不再发布临时 IMU 静态变换。`base_link -> imu_link`、
+`base_link -> lidar_link` 等固定关系统一写入上层 URDF/Xacro，并由
+`robot_state_publisher` 发布。
 
 消息类型、字段和话题默认值集中在 `src/kiwi_base/src/kiwi_base_node.cpp` 构造函数；
 正常只需改 YAML 参数，不需改协议代码。

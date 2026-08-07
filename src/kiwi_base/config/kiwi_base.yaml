@@ -5,7 +5,7 @@ kiwi_base_node:
     # USB CDC 设备。没有硬件时节点仍可启动，但不会产生 TX 日志。
     device: /dev/robomaster_c
     publish_rate: 50.0
-    log_serial_frames: true
+    log_serial_frames: false
 
     # 反馈电机数值 -> 轮输出轴 rad/s 的倍率。
     # 若 C 板回传的是电机轴 rad/s，保持 1.0；主机随后除以 19。
