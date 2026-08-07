@@ -5,8 +5,8 @@ from pathlib import Path
 import yaml
 
 
-def test_ekf_uses_only_independent_planar_measurements():
-    """第一阶段只融合轮速 vx/vy 与 IMU gyro_z，不重复融合积分位姿。"""
+def test_ekf_fuses_planar_velocity_with_relative_imu_yaw_and_yaw_rate():
+    """EKF 使用轮速 vx/vy，并用相对 Euler yaw 约束 gyro_z 的长期积分漂移。"""
     config_path = Path(__file__).resolve().parents[1] / "config" / "kiwi_base.yaml"
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     base = config["kiwi_base_node"]["ros__parameters"]
@@ -14,6 +14,7 @@ def test_ekf_uses_only_independent_planar_measurements():
 
     assert base["wheel_odom_topic"] == ekf["odom0"] == "/wheel/odom_raw"
     assert base["imu_topic"] == ekf["imu0"] == "/imu/data_raw"
+    assert base["feedback_debug_topic"] == "/kiwi_base/feedback_debug"
     assert ekf["two_d_mode"] is True
     assert ekf["publish_tf"] is True
     assert ekf["world_frame"] == ekf["odom_frame"] == "odom"
@@ -22,7 +23,21 @@ def test_ekf_uses_only_independent_planar_measurements():
     assert base["imu_frame_id"] == "imu_link"
     assert len(ekf["odom0_config"]) == len(ekf["imu0_config"]) == 15
     assert [i for i, enabled in enumerate(ekf["odom0_config"]) if enabled] == [6, 7]
-    assert [i for i, enabled in enumerate(ekf["imu0_config"]) if enabled] == [11]
+    assert [i for i, enabled in enumerate(ekf["imu0_config"]) if enabled] == [5, 11]
+    assert ekf["imu0_differential"] is False
+    assert ekf["imu0_relative"] is True
+
+
+def test_static_measurement_filters_match_observed_noise_and_ros_yaw_sign():
+    """Z 轴翻转为逆时针正，静止死区覆盖本次采集到的 IMU 和轮速抖动。"""
+    config_path = Path(__file__).resolve().parents[1] / "config" / "kiwi_base.yaml"
+    base = yaml.safe_load(config_path.read_text(encoding="utf-8"))[
+        "kiwi_base_node"
+    ]["ros__parameters"]
+
+    assert base["imu_angular_velocity_sign"] == [1.0, 1.0, -1.0]
+    assert base["imu_angular_velocity_deadband_rad_s"] == [0.015, 0.015, 0.015]
+    assert base["wheel_twist_deadband"] == [0.015, 0.015, 0.015]
 
 
 def test_filter_inputs_have_positive_covariances():
@@ -54,3 +69,14 @@ def test_ekf_launch_does_not_publish_temporary_sensor_tf():
     active_launch = "\n".join(active_lines)
     assert "publish_imu_static_tf" not in active_launch
     assert "static_transform_publisher" not in active_launch
+
+
+def test_feedback_debug_message_keeps_the_decoded_0x3b_field_order():
+    """调试消息必须保留 0x3B 的四组、每组三个字段。"""
+    package_root = Path(__file__).resolve().parents[1]
+    message = (package_root / "msg" / "FeedbackDebug.msg").read_text(encoding="utf-8")
+    assert "std_msgs/Header header" in message
+    assert "float32[3] motor_actual_rad_s" in message
+    assert "float32[3] euler_rad" in message
+    assert "float32[3] gyro_raw_rad_s" in message
+    assert "float32[3] accel_m_s2" in message

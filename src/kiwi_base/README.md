@@ -113,12 +113,26 @@ accel_x, accel_y, accel_z
 cmd_vel_topic       geometry_msgs/msg/Twist        默认 /cmd_vel_safe（订阅）
 wheel_odom_topic    nav_msgs/msg/Odometry         默认 /wheel/odom_raw（发布）
 imu_topic           sensor_msgs/msg/Imu           默认 /imu/data_raw（发布）
+feedback_debug_topic kiwi_base/msg/FeedbackDebug 默认 /kiwi_base/feedback_debug（发布）
 joint_states_topic  sensor_msgs/msg/JointState    默认 /joint_states（发布）
 ```
 
 `/wheel/odom_raw` 是轮速正解和积分得到的原始里程计，只发布消息、不发布 TF。
-`robot_localization` 融合轮速 `vx/vy` 与 IMU `gyro_z`，发布 `/odometry/filtered` 和唯一的
-`odom -> base_footprint`。绝对 yaw 未经磁标定，第一阶段不进入 EKF。
+`robot_localization` 融合死区处理后的轮速 `vx/vy`、相对 Euler yaw 与修正后的 IMU
+`gyro_z`，发布 `/odometry/filtered` 和唯一的 `odom -> base_footprint`。Euler yaw 以
+节点启动时刻为零点，不把下位机的任意绝对初始航向带入 `odom`。
+
+`/kiwi_base/feedback_debug` 使用自定义消息 `kiwi_base/msg/FeedbackDebug`，字段固定为：
+
+```text
+motor_actual_rad_s[0..2]：电机 1/2/3 原始反馈
+euler_rad[0..2]：roll/pitch/yaw，单位 rad
+gyro_raw_rad_s[0..2]：下位机原始角速度，单位 rad/s
+accel_m_s2[0..2]：下位机原始加速度，单位 m/s²
+```
+
+该话题仅用于 Foxglove 等工具的图形化调试，不被 EKF 订阅；ROS 方向修正后的角速度
+仍只在 `/imu/data_raw` 中发布。
 
 完整运行链路：
 
@@ -127,16 +141,18 @@ C 板 0x3B
   -> kiwi_base_node
      -> /wheel/odom_raw：轮速正解得到 vx、vy、wz，并积分原始 x、y、yaw
      -> /imu/data_raw：四元数、角速度、加速度
+     -> /kiwi_base/feedback_debug：0x3B 解码后的四组原始数组
      -> /joint_states：三个轮子的累计角度和角速度
 
-/wheel/odom_raw(vx、vy) + /imu/data_raw(gyro_z)
+/wheel/odom_raw(vx、vy) + /imu/data_raw(relative yaw、gyro_z)
   -> robot_localization EKF
   -> /odometry/filtered + odom→base_footprint
 ```
 
 协方差由 `kiwi_base_node` 写入原始消息，EKF 从消息中读取；EKF 配置并不是对
-`x/y` 做旋转，而是选择轮里程计的 `vx/vy` 和 IMU 的 `gyro_z` 作为校正量，其他状态
-由运动模型预测。SLAM Toolbox 在建图模式发布 `/map` 和 `map→odom`，不发布
+`x/y` 做旋转，而是选择轮里程计的 `vx/vy`、IMU 相对 yaw 和 `gyro_z` 作为校正量，
+其他状态由运动模型预测。三轴符号和静止死区均由 `kiwi_base.yaml` 配置。SLAM Toolbox
+在建图模式发布 `/map` 和 `map→odom`，不发布
 `odom→base_footprint`。
 
 ## TF 与后续 URDF
@@ -236,7 +252,7 @@ YAML 中 `log_serial_frames: true` 时，节点显示目标映射、`TX[18] ...`
 ```text
 键盘命令 vx=0.0000 vy=-0.2500 wz=0.0000 -> 轮子转速=[-1.2315 2.4631 -1.2315] 电机转速=[-23.3990 46.7980 -23.3990]
 TX[18] 33 0c 3a 65 ...
-反馈电机转速=[...] 欧拉角(rpy rad)=[...] IMU原始角速度(rad/s)=[...]
+反馈电机转速=[...] 欧拉角(rpy rad)=[...] IMU原始角速度(rad/s)=[...] ROS角速度=[...]
 IMU原始加速度(m/s^2)=[...]
 ```
 
@@ -247,6 +263,7 @@ IMU原始加速度(m/s^2)=[...]
 ```text
 src/kiwi_teleop_keyboard.cpp  键盘 -> Twist
 src/kiwi_kinematics.cpp       Twist -> w1/w2/w3 固定公式
+src/measurement_processing.cpp  传感器符号修正与静止死区
 src/robomaster_protocol.cpp   0x3A 组帧、0x3B 解码、CRC
 src/kiwi_base_node.cpp        USB 读写、反馈转 ROS 消息、轮速积分
 config/kiwi_base.yaml         唯一参数入口

@@ -10,17 +10,32 @@ find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
+find_package(std_msgs REQUIRED)
+
+# 调试消息只描述已解码的 0x3B 字段，不参与底盘控制和 EKF 接口。
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/FeedbackDebug.msg"
+  DEPENDENCIES std_msgs
+)
 include_directories(include)
-add_library(kiwi_base_core src/kiwi_kinematics.cpp src/robomaster_protocol.cpp)
+add_library(
+  kiwi_base_core
+  src/kiwi_kinematics.cpp
+  src/measurement_processing.cpp
+  src/robomaster_protocol.cpp)
 add_executable(kiwi_base_node src/kiwi_base_node.cpp)
 target_link_libraries(kiwi_base_node kiwi_base_core)
-ament_target_dependencies(kiwi_base_node rclcpp geometry_msgs nav_msgs sensor_msgs)
+ament_target_dependencies(kiwi_base_node rclcpp geometry_msgs nav_msgs sensor_msgs std_msgs)
+rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
+target_link_libraries(kiwi_base_node "${cpp_typesupport_target}")
 add_executable(kiwi_teleop_keyboard src/kiwi_teleop_keyboard.cpp)
 ament_target_dependencies(kiwi_teleop_keyboard rclcpp geometry_msgs)
 add_executable(kiwi_odom_test src/kiwi_odom_test.cpp)
 ament_target_dependencies(kiwi_odom_test rclcpp nav_msgs)
 install(TARGETS kiwi_base_node kiwi_teleop_keyboard kiwi_odom_test kiwi_base_core ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
+install(DIRECTORY msg/ DESTINATION share/${PROJECT_NAME}/msg)
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
 # 安装命令发送工具和 0x3B 组合反馈接收工具，便于脱离 ROS 节点进行串口联调。
@@ -34,6 +49,8 @@ if(BUILD_TESTING)
   target_link_libraries(test_kinematics kiwi_base_core)
   ament_add_gtest(test_protocol test/test_protocol.cpp)
   target_link_libraries(test_protocol kiwi_base_core)
+  ament_add_gtest(test_measurement_processing test/test_measurement_processing.cpp)
+  target_link_libraries(test_measurement_processing kiwi_base_core)
   ament_add_pytest_test(test_ekf_config test/test_ekf_config.py)
 endif()
 ament_package()

@@ -21,7 +21,7 @@ bluesea_node:
     max_angle: 3.1415926
     from_zero: false
     inverted: false
-    reversed: false
+    reversed: true
 
     min_dist: 0.05
     max_dist: 12.0

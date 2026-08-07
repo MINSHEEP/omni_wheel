@@ -4,7 +4,8 @@
 它不重复实现底盘和雷达驱动，而是组合以下现有模块：
 
 - `kiwi_base`：RoboMaster C 板 USB 通信、三轮运动学、轮速里程计和 IMU 发布。
-- `robot_localization`：融合轮速 `vx/vy` 与 IMU `gyro_z`，发布滤波里程计和动态 TF。
+- `robot_localization`：融合死区后的轮速 `vx/vy`、相对 Euler yaw 与修正后 `gyro_z`，
+  发布滤波里程计和动态 TF。
 - `bluesea2`：读取 PaceCat LDS-E110-R 雷达并发布 `/scan`。
 - `slam_toolbox`：激光建图、回环检测、`/map` 和 `map->odom`。
 - `robot_state_publisher`：根据 URDF 发布底盘、IMU、雷达和轮子 TF。
@@ -171,8 +172,11 @@ TF 监听实现；应在 rqt_graph 勾选 `Hide tf nodes`，不能通过删除 T
 ```bash
 ros2 launch kiwi_slam kiwi_slam.launch.py use_rviz:=true \
   lidar_x:=0.10 lidar_y:=0.00 lidar_z:=0.25 lidar_yaw:=0.00 \
-  imu_x:=0.00 imu_y:=0.00 imu_z:=0.08 imu_yaw:=0.00
+  imu_x:=0.0115 imu_y:=-0.149 imu_z:=0.00 imu_yaw:=0.00
 ```
+
+默认 IMU 平移已经按实测写入：相对 `base_link` 前方 `11.5 mm`、右侧 `149 mm`；坐标约定
+为 x 向前、y 向左。IMU 高度和安装角仍保持零，测量后通过同一组 launch 参数更新。
 
 ## 诊断接口
 
@@ -181,6 +185,9 @@ ros2 launch kiwi_slam kiwi_slam.launch.py use_rviz:=true \
 ```bash
 ros2 topic echo /kiwi_slam/diagnostics
 ```
+
+监视节点会按诊断状态分别输出 INFO、WARN 或 ERROR；各级别使用独立日志调用位置，兼容
+ROS 2 Humble 的 logger severity 缓存规则，状态恢复时不会因切换日志级别退出。
 
 按需检查一次完整链路：
 

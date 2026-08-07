@@ -2,8 +2,9 @@
 <!-- TF contract for mapping. Sensor mounting values are launch arguments until measured. -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="kiwi_base">
   <xacro:arg name="base_z" default="0.0"/>
-  <xacro:arg name="imu_x" default="0.0"/>
-  <xacro:arg name="imu_y" default="0.0"/>
+  <!-- 实测：IMU 位于 base_link 原点前方 11.5 mm、右侧 149 mm。 -->
+  <xacro:arg name="imu_x" default="0.0115"/>
+  <xacro:arg name="imu_y" default="-0.149"/>
   <xacro:arg name="imu_z" default="0.0"/>
   <xacro:arg name="imu_roll" default="0.0"/>
   <xacro:arg name="imu_pitch" default="0.0"/>

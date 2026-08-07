@@ -80,8 +80,9 @@ def generate_launch_description():
         DeclareLaunchArgument("start_description", default_value="true"),
         DeclareLaunchArgument("use_rviz", default_value="false"),
         DeclareLaunchArgument("base_z", default_value="0.0"),
-        DeclareLaunchArgument("imu_x", default_value="0.0"),
-        DeclareLaunchArgument("imu_y", default_value="0.0"),
+        # ROS 机体坐标：x 向前、y 向左；实测 IMU 在前 11.5 mm、右 149 mm。
+        DeclareLaunchArgument("imu_x", default_value="0.0115"),
+        DeclareLaunchArgument("imu_y", default_value="-0.149"),
         DeclareLaunchArgument("imu_z", default_value="0.0"),
         DeclareLaunchArgument("imu_roll", default_value="0.0"),
         DeclareLaunchArgument("imu_pitch", default_value="0.0"),

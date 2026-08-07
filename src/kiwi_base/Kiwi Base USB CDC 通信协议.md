@@ -112,14 +112,19 @@ USB read -> FrameParser::feed()
          -> FrameParser::FeedbackCallback
          -> KiwiBaseNode::on_feedback()
          -> decode_feedback()
-         -> /wheel/odom_raw、/joint_states、/imu/data_raw
+         -> /wheel/odom_raw、/joint_states、/imu/data_raw、/kiwi_base/feedback_debug
 ```
 
 `/wheel/odom_raw` 使用三个实际轮速按固定公式正解并积分；节点只发布消息，不发布
-`odom -> base_footprint` TF。EKF 融合轮速 `vx/vy` 与 IMU `gyro_z` 后发布
-`/odometry/filtered` 和该 TF。`/imu/data_raw` 将 roll/pitch/yaw 转为四元数，同时原样
-发布角速度、加速度和非零协方差。当前反馈帧没有电压、故障位或温度字段，因此节点不发布
+`odom -> base_footprint` TF。EKF 融合死区后的轮速 `vx/vy`、相对 Euler yaw 与修正后
+`gyro_z`，并发布 `/odometry/filtered` 和该 TF。`/imu/data_raw` 将 roll/pitch/yaw 转为
+四元数，角速度按 YAML 修正符号并应用静止死区，加速度保持原值，同时发布非零协方差。
+当前反馈帧没有电压、故障位或温度字段，因此节点不发布
 `sensor_msgs/msg/BatteryState` 或旧的独立状态话题。
+
+`/kiwi_base/feedback_debug` 是 `kiwi_base/msg/FeedbackDebug` 调试话题，固定发布四组长度为 3
+的数组：`motor_actual_rad_s`、`euler_rad`、`gyro_raw_rad_s`、`accel_m_s2`。它仅用于
+Foxglove 查看原始解码结果，不改变 `/imu/data_raw` 等既有接口。
 
 ### 4.3 抓包示例
 

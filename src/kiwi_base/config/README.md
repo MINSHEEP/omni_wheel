@@ -47,7 +47,7 @@ w3 = (-0.8660254 * vx + 0.5 * vy - L*wz) / R
 | --- | --- |
 | `device` | USB CDC 设备路径；只在 YAML 中修改 |
 | `publish_rate` | 发送和串口读取周期，Hz |
-| `log_serial_frames` | 是否打印 CMD/TX 帧和已校验的反馈解码日志；由 YAML 控制，默认 `true` |
+| `log_serial_frames` | 是否打印 CMD/TX 帧和已校验的反馈解码日志；默认 `false` |
 | `motor_reduction_ratio` | 三路轮输出轴速度到电机轴速度的乘数 |
 | `feedback_motor_scale_to_rad_s` | C 板反馈数值的单位倍率 |
 | `wheel_radius_m` | 轮子有效半径，默认 `0.1015 m` |
@@ -57,8 +57,11 @@ w3 = (-0.8660254 * vx + 0.5 * vy - L*wz) / R
 | `max_angular_speed_rad_s` | `angular.z` 旋转速度绝对值上限，默认 `1.5 rad/s` |
 | `wheel_pose_variance` / `wheel_twist_variance` | 原始轮里程计三个平面轴的方差初值 |
 | `imu_*_variance` | IMU 姿态、角速度和加速度三个轴的方差初值 |
+| `imu_angular_velocity_sign` | IMU 三轴角速度符号；当前 Z 为 `-1`，转换为 ROS 逆时针正 |
+| `imu_angular_velocity_deadband_rad_s` | IMU 三轴静止死区，默认均为 `0.015 rad/s` |
+| `wheel_twist_deadband` | 轮式 `vx/vy/wz` 静止死区，默认均为 `0.015` |
 | `cmd_vel_topic` | 底盘订阅的 `geometry_msgs/msg/Twist` 话题，默认 `/cmd_vel_safe` |
-| `wheel_odom_topic` / `imu_topic` / `joint_states_topic` | 节点发布话题 |
+| `wheel_odom_topic` / `imu_topic` / `feedback_debug_topic` / `joint_states_topic` | 节点发布话题 |
 | `odom_frame_id` / `base_frame_id` / `imu_frame_id` | 消息 frame_id |
 | `wheel_names` | 三个 `JointState.name`，顺序必须和电机 1/2/3 一致 |
 
@@ -100,12 +103,16 @@ accel_x, accel_y, accel_z
 ## ROS 输出格式
 
 - `wheel_odom_topic`：默认 `/wheel/odom_raw`，只发布原始消息，不发布 TF。
-- `imu_topic`：`sensor_msgs/msg/Imu`，0x3B 的欧拉角转四元数，角速度和加速度原样发布。
+- `imu_topic`：`sensor_msgs/msg/Imu`，0x3B 的欧拉角转四元数；角速度经过 YAML 符号和
+  静止死区修正，加速度保持原始单位发布。
+- `feedback_debug_topic`：`kiwi_base/msg/FeedbackDebug`，默认 `/kiwi_base/feedback_debug`；
+  原样发布 0x3B 解码后的三路电机、`roll/pitch/yaw`、三轴原始角速度和三轴原始加速度，
+  适合 Foxglove 绘图，不参与控制或 EKF。
 - `joint_states_topic`：`sensor_msgs/msg/JointState`，位置为积分角度，速度为轮输出轴 rad/s。
 - `/odometry/filtered`：EKF 融合输出，并发布唯一的 `odom -> base_footprint` TF。
 
-第一阶段 EKF 只使用 `/wheel/odom_raw` 的 `vx/vy` 和 `/imu/data_raw` 的 `gyro_z`，
-不重复使用由同一轮速积分得到的位姿，也不使用未经磁标定的绝对 yaw。
+EKF 使用 `/wheel/odom_raw` 的死区后 `vx/vy`，以及 `/imu/data_raw` 的相对 Euler yaw 和
+修正后 `gyro_z`。不重复使用由同一轮速积分得到的位姿，Euler yaw 以启动时刻为零点。
 
 ```bash
 sudo apt install ros-humble-robot-localization

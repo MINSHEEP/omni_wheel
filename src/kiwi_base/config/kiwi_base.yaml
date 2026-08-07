@@ -25,14 +25,23 @@ kiwi_base_node:
     # 当前是保守初值；完成静止和匀速采样后再用实测方差替换。
     wheel_pose_variance: [0.10, 0.10, 0.20]
     wheel_twist_variance: [0.02, 0.02, 0.04]
-    imu_orientation_variance: [0.05, 0.05, 0.20]
+    imu_orientation_variance: [0.05, 0.05, 0.05]
     imu_angular_velocity_variance: [0.01, 0.01, 0.01]
     imu_linear_acceleration_variance: [0.10, 0.10, 0.10]
+
+    # 下位机 gyro_z 为逆时针负，ROS 要求逆时针正，因此只翻转 Z 轴。
+    imu_angular_velocity_sign: [1.0, 1.0, -1.0]
+    # 本次静止样本绝对值最大约 0.012 rad/s；0.015 可阻止零偏持续积分。
+    imu_angular_velocity_deadband_rad_s: [0.015, 0.015, 0.015]
+    # 顺序为 vx(m/s)、vy(m/s)、wz(rad/s)，过滤静止编码器抖动后再积分和发布。
+    wheel_twist_deadband: [0.015, 0.015, 0.015]
 
     # ROS 话题入口；Nav2、键盘或测试脚本只需要发布 cmd_vel_topic。
     cmd_vel_topic: /cmd_vel_safe
     wheel_odom_topic: /wheel/odom_raw
     imu_topic: /imu/data_raw
+    # 0x3B 解码调试消息；字段为电机、欧拉角、原始角速度、原始加速度。
+    feedback_debug_topic: /kiwi_base/feedback_debug
     joint_states_topic: /joint_states
 
     # ROS 坐标和关节名称。
@@ -43,7 +52,7 @@ kiwi_base_node:
 
 # 暂不启用：加速度斜坡、命令超时、反馈联锁和软件急停。
 
-# 平面 EKF：只融合轮速 vx/vy 和 IMU gyro_z，避免重复融合轮速积分得到的位姿。
+# 平面 EKF：融合轮速 vx/vy，以及同一 IMU 的相对 Euler yaw 和修正后 gyro_z。
 ekf_filter_node:
   ros__parameters:
     frequency: 50.0
@@ -76,15 +85,16 @@ ekf_filter_node:
     imu0: /imu/data_raw
     # robot_localization 的状态顺序（共 15 项）：
     # [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
-    # 每项 true 表示参与 EKF，false 表示忽略；当前只融合 IMU 的 Z 轴角速度 vyaw。
+    # 每项 true 表示参与 EKF，false 表示忽略；Euler yaw 抑制长期漂移，gyro_z 保留动态响应。
     imu0_config: [
       false, false, false,  # x, y, z：IMU 不提供位置
-      false, false, false,  # roll, pitch, yaw：不直接融合 IMU 姿态四元数
+      false, false, true,   # roll, pitch, yaw：只使用下位机计算且方向正确的 yaw
       false, false, false,  # vx, vy, vz：IMU 不提供线速度
       false, false, true,   # vroll, vpitch, vyaw：只使用 gyro_z
       false, false, false   # ax, ay, az：当前不使用线性加速度
     ]
     imu0_queue_size: 10
     imu0_differential: false
-    imu0_relative: false
+    # 以节点启动时的 Euler yaw 为零点，避免 odom 带入任意绝对初始航向。
+    imu0_relative: true
     imu0_remove_gravitational_acceleration: false

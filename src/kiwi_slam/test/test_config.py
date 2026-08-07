@@ -44,10 +44,17 @@ def test_urdf_has_required_tf_links_and_joint_names():
     root = element_tree.parse(PACKAGE / "urdf" / "kiwi.urdf.xacro").getroot()
     links = {item.attrib["name"] for item in root.findall("link")}
     joints = {item.attrib["name"] for item in root.findall("joint")}
+    arguments = {
+        item.attrib["name"]: item.attrib["default"]
+        for item in root
+        if item.tag.endswith("arg")
+    }
     assert {"base_footprint", "base_link", "imu_link", "lidar_link"} <= links
     assert {"wheel_joint_1", "wheel_joint_2", "wheel_joint_3"} <= joints
     assert "base_footprint_to_base_link" in joints
     assert "base_link_to_lidar" in joints
+    assert arguments["imu_x"] == "0.0115"
+    assert arguments["imu_y"] == "-0.149"
 
 
 def test_launch_exposes_hardware_free_and_mounting_debug_arguments():
@@ -56,6 +63,8 @@ def test_launch_exposes_hardware_free_and_mounting_debug_arguments():
         assert f'DeclareLaunchArgument("{name}"' in launch
     for name in ("lidar_x", "lidar_y", "lidar_z", "lidar_yaw"):
         assert f'DeclareLaunchArgument("{name}"' in launch
+    assert 'DeclareLaunchArgument("imu_x", default_value="0.0115")' in launch
+    assert 'DeclareLaunchArgument("imu_y", default_value="-0.149")' in launch
     assert 'FindPackageShare("bluesea2")' in launch
     assert 'executable="sync_slam_toolbox_node"' in launch
     assert '"rviz_config_file"' in launch

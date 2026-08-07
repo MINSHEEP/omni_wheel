@@ -255,13 +255,18 @@ class KiwiSlamMonitor(Node):
             report = " | ".join(
                 f"{status.name.rsplit('/', 1)[-1]}={status.message}" for status in message.status
             )
-            logger = (
-                self.get_logger().error
-                if level >= DiagnosticStatus.ERROR
-                else self.get_logger().info
-            )
-            logger(report)
+            self._log_report(level, report)
         self.last_level = level
+
+    def _log_report(self, level: int, report: str) -> None:
+        """在固定调用位置输出对应级别，避免 Humble logger 在状态切换时抛出异常。"""
+        # rclpy Humble 会按源码调用位置缓存日志级别；不同 severity 不能共用同一调用行。
+        if level >= DiagnosticStatus.ERROR:
+            self.get_logger().error(report)
+        elif level >= DiagnosticStatus.WARN:
+            self.get_logger().warning(report)
+        else:
+            self.get_logger().info(report)
 
     def _on_check(self, _request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
         """Return the current complete health report on demand."""

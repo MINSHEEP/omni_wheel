@@ -40,9 +40,9 @@ struct CommandFrame
 struct FeedbackFrame
 {
   std::array<float, 3> motor_actual{};
-  std::array<float, 3> euler{};
-  std::array<float, 3> gyro{};
-  std::array<float, 3> accel{};
+  std::array<float, 3> euler{}; // roll、pitch、yaw
+  std::array<float, 3> gyro{}; // x、y、z 角速度
+  std::array<float, 3> accel{}; // x、y、z 加速度
 };
 
 /** 计算 header 前三个字节的 DJI 反射 CRC8。 */
