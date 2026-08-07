@@ -122,9 +122,9 @@ USB read -> FrameParser::feed()
 当前反馈帧没有电压、故障位或温度字段，因此节点不发布
 `sensor_msgs/msg/BatteryState` 或旧的独立状态话题。
 
-`/kiwi_base/feedback_debug` 是 `kiwi_base/msg/FeedbackDebug` 调试话题，固定发布四组长度为 3
-的数组：`motor_actual_rad_s`、`euler_rad`、`gyro_raw_rad_s`、`accel_m_s2`。它仅用于
-Foxglove 查看原始解码结果，不改变 `/imu/data_raw` 等既有接口。
+`/kiwi_base/feedback_debug` 是 `kiwi_base/msg/FeedbackDebug` 调试话题，将三路电机、
+roll/pitch/yaw、三轴原始角速度和三轴原始加速度发布为 12 个独立标量。Foxglove 可直接
+按字段名绘图，不需要访问数组下标；该话题不改变 `/imu/data_raw` 等既有接口。
 
 ### 4.3 抓包示例
 

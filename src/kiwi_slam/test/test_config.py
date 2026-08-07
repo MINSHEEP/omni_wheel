@@ -65,6 +65,7 @@ def test_launch_exposes_hardware_free_and_mounting_debug_arguments():
         assert f'DeclareLaunchArgument("{name}"' in launch
     assert 'DeclareLaunchArgument("imu_x", default_value="0.0115")' in launch
     assert 'DeclareLaunchArgument("imu_y", default_value="-0.149")' in launch
+    assert 'DeclareLaunchArgument("rviz_software_rendering", default_value="true")' in launch
     assert 'FindPackageShare("bluesea2")' in launch
     assert 'executable="sync_slam_toolbox_node"' in launch
     assert '"rviz_config_file"' in launch
@@ -75,6 +76,9 @@ def test_launch_exposes_hardware_free_and_mounting_debug_arguments():
     active_launch = "\n".join(active_lines)
     assert "kiwi_base_ekf.launch.py" not in active_launch
     assert "static_transform_publisher" not in active_launch
+    assert 'name="rviz2"' not in active_launch
+    assert '"QT_QPA_PLATFORM": "xcb"' in active_launch
+    assert '"LIBGL_ALWAYS_SOFTWARE"' in active_launch
 
 
 def test_rviz_and_monitor_expose_map_robot_and_debug_contracts():

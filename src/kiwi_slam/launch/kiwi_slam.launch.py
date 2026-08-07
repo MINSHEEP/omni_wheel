@@ -5,7 +5,12 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import (
+    Command,
+    IfElseSubstitution,
+    LaunchConfiguration,
+    PathJoinSubstitution,
+)
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
@@ -26,6 +31,7 @@ def generate_launch_description():
     start_monitor = LaunchConfiguration("start_monitor")
     start_description = LaunchConfiguration("start_description")
     use_rviz = LaunchConfiguration("use_rviz")
+    rviz_software_rendering = LaunchConfiguration("rviz_software_rendering")
 
     xacro_file = PathJoinSubstitution([package_share, "urdf", "kiwi.urdf.xacro"])
     robot_description = Command(
@@ -79,6 +85,8 @@ def generate_launch_description():
         DeclareLaunchArgument("start_monitor", default_value="true"),
         DeclareLaunchArgument("start_description", default_value="true"),
         DeclareLaunchArgument("use_rviz", default_value="false"),
+        # 工控机显卡驱动会触发 RViz Map 的 GLSL sampler 错误，默认只对 RViz 使用软件渲染。
+        DeclareLaunchArgument("rviz_software_rendering", default_value="true"),
         DeclareLaunchArgument("base_z", default_value="0.0"),
         # ROS 机体坐标：x 向前、y 向左；实测 IMU 在前 11.5 mm、右 149 mm。
         DeclareLaunchArgument("imu_x", default_value="0.0115"),
@@ -148,10 +156,16 @@ def generate_launch_description():
         Node(
             package="rviz2",
             executable="rviz2",
-            name="rviz2",
             condition=IfCondition(use_rviz),
             output="screen",
             arguments=["-d", rviz_config],
+            # 不设置 ROS name，避免 RViz 内部 TF 节点被同一个 __node remap 重命名。
+            additional_env={
+                "QT_QPA_PLATFORM": "xcb",
+                "LIBGL_ALWAYS_SOFTWARE": IfElseSubstitution(
+                    rviz_software_rendering, "1", "0"
+                ),
+            },
         ),
     ]
     return LaunchDescription(arguments + [lidar] + nodes)

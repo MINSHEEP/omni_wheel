@@ -72,7 +72,8 @@ ROS frame       lidar_link
 ```
 
 底盘 URDF 使用当前已知参数：轮径 `0.203 m`、圆心到轮心距离 `0.32256 m`。
-雷达默认高度 `lidar_z=0.20 m`、IMU 默认位姿为零，仅用于首次启动，正式建图前必须实测。
+雷达默认高度 `lidar_z=0.20 m`；IMU 平移已按实测设为前方 `11.5 mm`、右侧 `149 mm`，
+其高度和安装角仍需实测后更新。
 
 ## 安装依赖
 
@@ -143,6 +144,17 @@ ros2 launch kiwi_slam kiwi_slam.launch.py
 ```bash
 ros2 launch kiwi_slam kiwi_slam.launch.py use_rviz:=true
 ```
+
+工控机上 RViz 默认使用 XCB 和 Mesa 软件渲染，规避 Map 显示的 GLSL sampler 驱动错误；
+该环境只作用于 RViz，不影响底盘、雷达、EKF 或 SLAM。确认显卡驱动能够正常渲染后可关闭：
+
+```bash
+ros2 launch kiwi_slam kiwi_slam.launch.py \
+  use_rviz:=true rviz_software_rendering:=false
+```
+
+启动文件不再强制把 RViz 命名为 `/rviz2`，因此其内部 TF listener 会保留唯一随机名称，
+不会再出现多个同名节点的 rosout publisher 警告。
 
 参数名必须是 `use_rviz`，不能写成 `use-rviz`。
 

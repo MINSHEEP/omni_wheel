@@ -452,11 +452,18 @@ private:
     // 独立调试接口：保留 C 板 0x3B 的 12 个已解码字段，便于 Foxglove 绘图。
     kiwi_base::msg::FeedbackDebug debug;
     debug.header = message.header;
-    debug.motor_actual_rad_s = {
-      state.motor_actual[0], state.motor_actual[1], state.motor_actual[2]};
-    debug.euler_rad = {state.euler[0], state.euler[1], state.euler[2]};
-    debug.gyro_raw_rad_s = {state.gyro[0], state.gyro[1], state.gyro[2]};
-    debug.accel_m_s2 = {state.accel[0], state.accel[1], state.accel[2]};
+    debug.motor_1_actual_rad_s = state.motor_actual[0];
+    debug.motor_2_actual_rad_s = state.motor_actual[1];
+    debug.motor_3_actual_rad_s = state.motor_actual[2];
+    debug.roll_rad = state.euler[0];
+    debug.pitch_rad = state.euler[1];
+    debug.yaw_rad = state.euler[2];
+    debug.gyro_x_raw_rad_s = state.gyro[0];
+    debug.gyro_y_raw_rad_s = state.gyro[1];
+    debug.gyro_z_raw_rad_s = state.gyro[2];
+    debug.accel_x_m_s2 = state.accel[0];
+    debug.accel_y_m_s2 = state.accel[1];
+    debug.accel_z_m_s2 = state.accel[2];
     feedback_debug_pub_->publish(debug);
   }
 

@@ -122,13 +122,14 @@ joint_states_topic  sensor_msgs/msg/JointState    默认 /joint_states（发布�
 `gyro_z`，发布 `/odometry/filtered` 和唯一的 `odom -> base_footprint`。Euler yaw 以
 节点启动时刻为零点，不把下位机的任意绝对初始航向带入 `odom`。
 
-`/kiwi_base/feedback_debug` 使用自定义消息 `kiwi_base/msg/FeedbackDebug`，字段固定为：
+`/kiwi_base/feedback_debug` 使用自定义消息 `kiwi_base/msg/FeedbackDebug`，12 个数值均为
+可直接选择的标量字段：
 
 ```text
-motor_actual_rad_s[0..2]：电机 1/2/3 原始反馈
-euler_rad[0..2]：roll/pitch/yaw，单位 rad
-gyro_raw_rad_s[0..2]：下位机原始角速度，单位 rad/s
-accel_m_s2[0..2]：下位机原始加速度，单位 m/s²
+motor_1_actual_rad_s / motor_2_actual_rad_s / motor_3_actual_rad_s
+roll_rad / pitch_rad / yaw_rad
+gyro_x_raw_rad_s / gyro_y_raw_rad_s / gyro_z_raw_rad_s
+accel_x_m_s2 / accel_y_m_s2 / accel_z_m_s2
 ```
 
 该话题仅用于 Foxglove 等工具的图形化调试，不被 EKF 订阅；ROS 方向修正后的角速度
@@ -141,7 +142,7 @@ C 板 0x3B
   -> kiwi_base_node
      -> /wheel/odom_raw：轮速正解得到 vx、vy、wz，并积分原始 x、y、yaw
      -> /imu/data_raw：四元数、角速度、加速度
-     -> /kiwi_base/feedback_debug：0x3B 解码后的四组原始数组
+     -> /kiwi_base/feedback_debug：0x3B 解码后的 12 个独立标量
      -> /joint_states：三个轮子的累计角度和角速度
 
 /wheel/odom_raw(vx、vy) + /imu/data_raw(relative yaw、gyro_z)

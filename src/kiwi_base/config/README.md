@@ -106,8 +106,8 @@ accel_x, accel_y, accel_z
 - `imu_topic`：`sensor_msgs/msg/Imu`，0x3B 的欧拉角转四元数；角速度经过 YAML 符号和
   静止死区修正，加速度保持原始单位发布。
 - `feedback_debug_topic`：`kiwi_base/msg/FeedbackDebug`，默认 `/kiwi_base/feedback_debug`；
-  原样发布 0x3B 解码后的三路电机、`roll/pitch/yaw`、三轴原始角速度和三轴原始加速度，
-  适合 Foxglove 绘图，不参与控制或 EKF。
+  将 0x3B 解码后的三路电机、`roll/pitch/yaw`、三轴原始角速度和三轴原始加速度分别
+  发布为 12 个标量字段，适合 Foxglove 直接选字段绘图，不参与控制或 EKF。
 - `joint_states_topic`：`sensor_msgs/msg/JointState`，位置为积分角度，速度为轮输出轴 rad/s。
 - `/odometry/filtered`：EKF 融合输出，并发布唯一的 `odom -> base_footprint` TF。
 

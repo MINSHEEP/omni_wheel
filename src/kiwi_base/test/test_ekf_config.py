@@ -72,11 +72,26 @@ def test_ekf_launch_does_not_publish_temporary_sensor_tf():
 
 
 def test_feedback_debug_message_keeps_the_decoded_0x3b_field_order():
-    """调试消息必须保留 0x3B 的四组、每组三个字段。"""
+    """调试消息必须按 0x3B 顺序提供 12 个可直接绘图的标量字段。"""
     package_root = Path(__file__).resolve().parents[1]
-    message = (package_root / "msg" / "FeedbackDebug.msg").read_text(encoding="utf-8")
-    assert "std_msgs/Header header" in message
-    assert "float32[3] motor_actual_rad_s" in message
-    assert "float32[3] euler_rad" in message
-    assert "float32[3] gyro_raw_rad_s" in message
-    assert "float32[3] accel_m_s2" in message
+    message_path = package_root / "msg" / "FeedbackDebug.msg"
+    lines = [
+        line
+        for line in message_path.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    ]
+    assert lines == [
+        "std_msgs/Header header",
+        "float32 motor_1_actual_rad_s",
+        "float32 motor_2_actual_rad_s",
+        "float32 motor_3_actual_rad_s",
+        "float32 roll_rad",
+        "float32 pitch_rad",
+        "float32 yaw_rad",
+        "float32 gyro_x_raw_rad_s",
+        "float32 gyro_y_raw_rad_s",
+        "float32 gyro_z_raw_rad_s",
+        "float32 accel_x_m_s2",
+        "float32 accel_y_m_s2",
+        "float32 accel_z_m_s2",
+    ]
