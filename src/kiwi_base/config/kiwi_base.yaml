@@ -34,7 +34,7 @@ kiwi_base_node:
     # 本次静止样本绝对值最大约 0.012 rad/s；0.015 可阻止零偏持续积分。
     imu_angular_velocity_deadband_rad_s: [0.015, 0.015, 0.015]
     # 顺序为 vx(m/s)、vy(m/s)、wz(rad/s)，过滤静止编码器抖动后再积分和发布。
-    wheel_twist_deadband: [0.015, 0.015, 0.015]
+    wheel_twist_deadband: [0.015, 0.015, 0.022]
 
     # ROS 话题入口；Nav2、键盘或测试脚本只需要发布 cmd_vel_topic。
     cmd_vel_topic: /cmd_vel_safe
@@ -88,7 +88,7 @@ ekf_filter_node:
     # 每项 true 表示参与 EKF，false 表示忽略；Euler yaw 抑制长期漂移，gyro_z 保留动态响应。
     imu0_config: [
       false, false, false,  # x, y, z：IMU 不提供位置
-      false, false, true,   # roll, pitch, yaw：只使用下位机计算且方向正确的 yaw
+      false, false, false,   # roll, pitch, yaw：只使用下位机计算且方向正确的 yaw
       false, false, false,  # vx, vy, vz：IMU 不提供线速度
       false, false, true,   # vroll, vpitch, vyaw：只使用 gyro_z
       false, false, false   # ax, ay, az：当前不使用线性加速度
