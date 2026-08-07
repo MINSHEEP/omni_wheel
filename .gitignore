@@ -20,3 +20,5 @@ coverage.xml
 .idea/
 .DS_Store
 
+# 本机下载的第三方源码；版本记录在 third_party/README.md 中。
+/third_party/Livox-SDK2/
