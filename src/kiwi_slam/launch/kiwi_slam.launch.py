@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Start the Kiwi base, E110 driver, TF model, SLAM Toolbox, and diagnostics."""
+"""启动 Kiwi 底盘、Pace E110、SLAM Toolbox、模型和诊断。"""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (
-    Command,
     IfElseSubstitution,
     LaunchConfiguration,
     PathJoinSubstitution,
@@ -16,16 +15,18 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    """直接启动底盘和 EKF，避免复用带过渡期静态 TF 的旧 launch。"""
+    """复用无雷达依赖的公共底盘层，构成可回退的二维建图路线。"""
     package_share = FindPackageShare("kiwi_slam")
     lidar_params = LaunchConfiguration("lidar_params_file")
     slam_params = LaunchConfiguration("slam_params_file")
     base_params = LaunchConfiguration("base_params_file")
+    ekf_params = LaunchConfiguration("ekf_params_file")
     monitor_params = LaunchConfiguration("monitor_params_file")
+    robot_params = LaunchConfiguration("robot_params_file")
     rviz_config = LaunchConfiguration("rviz_config_file")
-    use_sim_time = LaunchConfiguration("use_sim_time")
 
     start_base = LaunchConfiguration("start_base")
+    start_ekf = LaunchConfiguration("start_ekf")
     start_lidar = LaunchConfiguration("start_lidar")
     start_slam = LaunchConfiguration("start_slam")
     start_monitor = LaunchConfiguration("start_monitor")
@@ -33,74 +34,77 @@ def generate_launch_description():
     use_rviz = LaunchConfiguration("use_rviz")
     rviz_software_rendering = LaunchConfiguration("rviz_software_rendering")
 
-    xacro_file = PathJoinSubstitution([package_share, "urdf", "kiwi.urdf.xacro"])
-    robot_description = Command(
-        [
-            "xacro ", xacro_file,
-            " base_z:=", LaunchConfiguration("base_z"),
-            " imu_x:=", LaunchConfiguration("imu_x"),
-            " imu_y:=", LaunchConfiguration("imu_y"),
-            " imu_z:=", LaunchConfiguration("imu_z"),
-            " imu_roll:=", LaunchConfiguration("imu_roll"),
-            " imu_pitch:=", LaunchConfiguration("imu_pitch"),
-            " imu_yaw:=", LaunchConfiguration("imu_yaw"),
-            " lidar_x:=", LaunchConfiguration("lidar_x"),
-            " lidar_y:=", LaunchConfiguration("lidar_y"),
-            " lidar_z:=", LaunchConfiguration("lidar_z"),
-            " lidar_roll:=", LaunchConfiguration("lidar_roll"),
-            " lidar_pitch:=", LaunchConfiguration("lidar_pitch"),
-            " lidar_yaw:=", LaunchConfiguration("lidar_yaw"),
-        ]
-    )
-
     arguments = [
         DeclareLaunchArgument(
             "lidar_params_file",
             default_value=PathJoinSubstitution([package_share, "config", "lds_e110.yaml"]),
+            description="Pace E110 串口和 LaserScan 参数 YAML",
         ),
         DeclareLaunchArgument(
             "slam_params_file",
             default_value=PathJoinSubstitution([package_share, "config", "slam_toolbox.yaml"]),
+            description="SLAM Toolbox 二维建图参数 YAML",
         ),
         DeclareLaunchArgument(
             "monitor_params_file",
             default_value=PathJoinSubstitution([package_share, "config", "monitor.yaml"]),
+            description="二维链路诊断参数 YAML",
         ),
         DeclareLaunchArgument(
             "base_params_file",
             default_value=PathJoinSubstitution(
                 [FindPackageShare("kiwi_base"), "config", "kiwi_base.yaml"]
             ),
+            description="底盘硬件参数 YAML",
+        ),
+        DeclareLaunchArgument(
+            "ekf_params_file",
+            default_value=PathJoinSubstitution(
+                [FindPackageShare("kiwi_base"), "config", "ekf_chassis.yaml"]
+            ),
+            description="C 板 IMU 备用 EKF 参数 YAML",
+        ),
+        DeclareLaunchArgument(
+            "robot_params_file",
+            default_value=PathJoinSubstitution(
+                [package_share, "config", "robot_state_publisher.yaml"]
+            ),
+            description="robot_state_publisher 参数 YAML",
         ),
         DeclareLaunchArgument(
             "rviz_config_file",
             default_value=PathJoinSubstitution(
                 [package_share, "config", "kiwi_slam.rviz"]
             ),
+            description="Pace 二维建图 RViz 配置",
         ),
-        DeclareLaunchArgument("use_sim_time", default_value="false"),
-        DeclareLaunchArgument("start_base", default_value="true"),
-        DeclareLaunchArgument("start_lidar", default_value="true"),
-        DeclareLaunchArgument("start_slam", default_value="true"),
-        DeclareLaunchArgument("start_monitor", default_value="true"),
-        DeclareLaunchArgument("start_description", default_value="true"),
-        DeclareLaunchArgument("use_rviz", default_value="false"),
+        DeclareLaunchArgument(
+            "start_base", default_value="true", description="是否启动 USB 底盘节点"
+        ),
+        DeclareLaunchArgument(
+            "start_ekf", default_value="true", description="是否启动 C 板 IMU 平面 EKF"
+        ),
+        DeclareLaunchArgument(
+            "start_lidar", default_value="true", description="是否启动 Pace E110 驱动"
+        ),
+        DeclareLaunchArgument(
+            "start_slam", default_value="true", description="是否启动 SLAM Toolbox"
+        ),
+        DeclareLaunchArgument(
+            "start_monitor", default_value="true", description="是否启动二维链路诊断节点"
+        ),
+        DeclareLaunchArgument(
+            "start_description", default_value="true", description="是否发布 URDF 和静态 TF"
+        ),
+        DeclareLaunchArgument(
+            "use_rviz", default_value="false", description="是否启动二维建图 RViz"
+        ),
         # 工控机显卡驱动会触发 RViz Map 的 GLSL sampler 错误，默认只对 RViz 使用软件渲染。
-        DeclareLaunchArgument("rviz_software_rendering", default_value="true"),
-        DeclareLaunchArgument("base_z", default_value="0.0"),
-        # ROS 机体坐标：x 向前、y 向左；实测 IMU 在前 11.5 mm、右 149 mm。
-        DeclareLaunchArgument("imu_x", default_value="0.0115"),
-        DeclareLaunchArgument("imu_y", default_value="-0.149"),
-        DeclareLaunchArgument("imu_z", default_value="0.0"),
-        DeclareLaunchArgument("imu_roll", default_value="0.0"),
-        DeclareLaunchArgument("imu_pitch", default_value="0.0"),
-        DeclareLaunchArgument("imu_yaw", default_value="0.0"),
-        DeclareLaunchArgument("lidar_x", default_value="0.0"),
-        DeclareLaunchArgument("lidar_y", default_value="0.0"),
-        DeclareLaunchArgument("lidar_z", default_value="0.20"),
-        DeclareLaunchArgument("lidar_roll", default_value="0.0"),
-        DeclareLaunchArgument("lidar_pitch", default_value="0.0"),
-        DeclareLaunchArgument("lidar_yaw", default_value="0.0"),
+        DeclareLaunchArgument(
+            "rviz_software_rendering",
+            default_value="true",
+            description="RViz 是否使用软件 OpenGL",
+        ),
     ]
 
     lidar = IncludeLaunchDescription(
@@ -111,39 +115,29 @@ def generate_launch_description():
         launch_arguments={"params_file": lidar_params}.items(),
     )
 
-    # 不 include kiwi_base_ekf.launch.py；IMU、雷达和机体固定 TF 只由下方 Xacro 发布。
+    robot_stack = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([package_share, "launch", "kiwi_robot.launch.py"])
+        ),
+        launch_arguments={
+            "base_params_file": base_params,
+            "ekf_params_file": ekf_params,
+            "robot_params_file": robot_params,
+            "start_base": start_base,
+            "start_ekf": start_ekf,
+            "start_description": start_description,
+        }.items(),
+    )
+
+    # 二维建图层只保留 E110、SLAM、诊断和 RViz；底盘层由 kiwi_robot.launch.py 管理。
     nodes = [
-        Node(
-            package="robot_state_publisher",
-            executable="robot_state_publisher",
-            name="robot_state_publisher",
-            condition=IfCondition(start_description),
-            output="screen",
-            parameters=[{"robot_description": robot_description, "use_sim_time": use_sim_time}],
-        ),
-        Node(
-            package="kiwi_base",
-            executable="kiwi_base_node",
-            name="kiwi_base_node",
-            condition=IfCondition(start_base),
-            output="screen",
-            parameters=[base_params],
-        ),
-        Node(
-            package="robot_localization",
-            executable="ekf_node",
-            name="ekf_filter_node",
-            condition=IfCondition(start_base),
-            output="screen",
-            parameters=[base_params, {"use_sim_time": use_sim_time}],
-        ),
         Node(
             package="slam_toolbox",
             executable="sync_slam_toolbox_node",
             name="slam_toolbox",
             condition=IfCondition(start_slam),
             output="screen",
-            parameters=[slam_params, {"use_sim_time": use_sim_time}],
+            parameters=[slam_params],
         ),
         Node(
             package="kiwi_slam",
@@ -151,7 +145,7 @@ def generate_launch_description():
             name="kiwi_slam_monitor",
             condition=IfCondition(start_monitor),
             output="screen",
-            parameters=[monitor_params, {"use_sim_time": use_sim_time}],
+            parameters=[monitor_params],
         ),
         Node(
             package="rviz2",
@@ -168,4 +162,4 @@ def generate_launch_description():
             },
         ),
     ]
-    return LaunchDescription(arguments + [lidar] + nodes)
+    return LaunchDescription(arguments + [robot_stack, lidar] + nodes)

@@ -2,6 +2,7 @@
 # Manual V1.5: 230400 8N1, 7 Hz, 0.05-12 m, 360 degrees, 0.6 degree resolution.
 bluesea_node:
   ros__parameters:
+    use_sim_time: false
     frame_id: lidar_link
     scan_topic: /scan
     cloud_topic: /cloud

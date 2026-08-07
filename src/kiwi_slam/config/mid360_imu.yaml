@@ -1,0 +1,12 @@
+mid360_imu_adapter:
+  ros__parameters:
+    use_sim_time: false
+    input_topic: /livox/imu
+    output_topic: /livox/imu/ekf
+
+    # Livox ROS Driver2 未填写协方差；这里为 EKF 提供可调的测量方差。
+    angular_velocity_variance: [0.0004, 0.0004, 0.0004]
+    linear_acceleration_variance: [0.04, 0.04, 0.04]
+
+    # 仅作用于 EKF 支路，FAST-LIO2 仍接收未修改的 /livox/imu。
+    angular_velocity_deadband_rad_s: [0.0, 0.0, 0.0]

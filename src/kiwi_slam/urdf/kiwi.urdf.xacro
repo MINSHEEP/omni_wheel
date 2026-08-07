@@ -1,61 +1,67 @@
 <?xml version="1.0"?>
-<!-- TF contract for mapping. Sensor mounting values are launch arguments until measured. -->
+<!-- Kiwi 结构和 TF 的唯一描述入口：结构尺寸读 YAML，传感器安装外参只在本文件标定。 -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="kiwi_base">
-  <xacro:arg name="base_z" default="0.0"/>
-  <!-- 实测：IMU 位于 base_link 原点前方 11.5 mm、右侧 149 mm。 -->
-  <xacro:arg name="imu_x" default="0.0115"/>
-  <xacro:arg name="imu_y" default="-0.149"/>
-  <xacro:arg name="imu_z" default="0.0"/>
-  <xacro:arg name="imu_roll" default="0.0"/>
-  <xacro:arg name="imu_pitch" default="0.0"/>
-  <xacro:arg name="imu_yaw" default="0.0"/>
-  <xacro:arg name="lidar_x" default="0.0"/>
-  <xacro:arg name="lidar_y" default="0.0"/>
-  <xacro:arg name="lidar_z" default="0.20"/>
-  <xacro:arg name="lidar_roll" default="0.0"/>
-  <xacro:arg name="lidar_pitch" default="0.0"/>
-  <xacro:arg name="lidar_yaw" default="0.0"/>
+  <xacro:arg name="hardware_config" default="$(find kiwi_base)/config/kiwi_base.yaml"/>
+  <xacro:property name="hardware" value="${xacro.load_yaml('$(arg hardware_config)')}"/>
+  <xacro:property name="base_params" value="${hardware['kiwi_base_node']['ros__parameters']}"/>
+  <xacro:property name="model" value="${hardware['kiwi_robot_model']['ros__parameters']}"/>
 
-  <xacro:property name="wheel_radius" value="0.1015"/>
-  <xacro:property name="wheel_center" value="0.32256"/>
+  <xacro:property name="wheel_radius" value="${base_params['wheel_radius_m']}"/>
+  <xacro:property name="wheel_center" value="${base_params['wheel_center_distance_m']}"/>
   <xacro:property name="sin60" value="0.866025403784"/>
+
+  <!-- 安装外参标定区：ROS 坐标为 x 前、y 左、z 上，角度单位 rad。 -->
+  <!-- C 板 IMU：实测位于 base_link 前方 11.5 mm、右侧 149 mm。 -->
+  <xacro:property name="chassis_imu_xyz" value="0.0115 -0.149 0.0"/>
+  <xacro:property name="chassis_imu_rpy" value="0.0 0.0 0.0"/>
+  <!-- Mid-360S 整机安装位姿：高度 0.20 m，x/y/角度待实测后只修改这里。 -->
+  <xacro:property name="lidar_xyz" value="0.0 0.0 0.20"/>
+  <xacro:property name="lidar_rpy" value="0.0 0.0 0.0"/>
 
   <link name="base_footprint"/>
 
   <link name="base_link">
     <visual>
-      <geometry><cylinder radius="0.32256" length="0.08"/></geometry>
+      <geometry><cylinder radius="${model['base_radius_m']}" length="${model['base_height_m']}"/></geometry>
       <material name="base_gray"><color rgba="0.25 0.28 0.30 1.0"/></material>
     </visual>
-    <collision><geometry><cylinder radius="0.32256" length="0.08"/></geometry></collision>
+    <collision><geometry><cylinder radius="${model['base_radius_m']}" length="${model['base_height_m']}"/></geometry></collision>
     <inertial>
-      <mass value="10.0"/>
+      <mass value="${model['base_mass_kg']}"/>
       <origin xyz="0 0 0"/>
-      <inertia ixx="0.18" ixy="0" ixz="0" iyy="0.18" iyz="0" izz="0.35"/>
+      <inertia ixx="${model['base_inertia_kg_m2'][0]}" ixy="0" ixz="0"
+               iyy="${model['base_inertia_kg_m2'][1]}" iyz="0"
+               izz="${model['base_inertia_kg_m2'][2]}"/>
     </inertial>
   </link>
   <joint name="base_footprint_to_base_link" type="fixed">
     <parent link="base_footprint"/><child link="base_link"/>
-    <origin xyz="0 0 $(arg base_z)" rpy="0 0 0"/>
+    <origin xyz="0 0 ${model['base_z_m']}" rpy="0 0 0"/>
   </joint>
 
-  <link name="imu_link"/>
-  <joint name="base_link_to_imu" type="fixed">
-    <parent link="base_link"/><child link="imu_link"/>
-    <origin xyz="$(arg imu_x) $(arg imu_y) $(arg imu_z)"
-            rpy="$(arg imu_roll) $(arg imu_pitch) $(arg imu_yaw)"/>
+  <!-- C 板 BMI088 的独立坐标系；名称与 Mid-360S 内置 IMU 明确区分。 -->
+  <link name="chassis_imu_link"/>
+  <joint name="base_link_to_chassis_imu" type="fixed">
+    <parent link="base_link"/><child link="chassis_imu_link"/>
+    <origin xyz="${chassis_imu_xyz}" rpy="${chassis_imu_rpy}"/>
   </joint>
 
   <link name="lidar_link">
     <visual>
-      <geometry><cylinder radius="0.01925" length="0.0337"/></geometry>
+      <geometry><cylinder radius="${model['lidar_visual_radius_m']}" length="${model['lidar_visual_height_m']}"/></geometry>
       <material name="lidar_black"><color rgba="0.05 0.05 0.05 1.0"/></material>
     </visual>
   </link>
   <joint name="base_link_to_lidar" type="fixed">
     <parent link="base_link"/><child link="lidar_link"/>
-    <origin xyz="$(arg lidar_x) $(arg lidar_y) $(arg lidar_z)"
-            rpy="$(arg lidar_roll) $(arg lidar_pitch) $(arg lidar_yaw)"/>
+    <origin xyz="${lidar_xyz}" rpy="${lidar_rpy}"/>
+  </joint>
+
+  <!-- Livox 驱动固定发布 livox_frame；与项目统一雷达安装入口 lidar_link 重合。 -->
+  <link name="livox_frame"/>
+  <joint name="lidar_link_to_livox_frame" type="fixed">
+    <parent link="lidar_link"/><child link="livox_frame"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
   </joint>
 
   <!-- Motor centers match the 120/0/240 degree order used by kiwi_base kinematics. -->
@@ -65,8 +71,8 @@
     <origin xyz="${-0.5 * wheel_center} ${sin60 * wheel_center} 0" rpy="0 0 2.09439510239"/>
   </joint>
   <link name="wheel_link_1">
-    <visual><origin rpy="0 1.57079632679 0"/><geometry><cylinder radius="${wheel_radius}" length="0.04"/></geometry></visual>
-    <collision><origin rpy="0 1.57079632679 0"/><geometry><cylinder radius="${wheel_radius}" length="0.04"/></geometry></collision>
+    <visual><origin rpy="0 1.57079632679 0"/><geometry><cylinder radius="${wheel_radius}" length="${model['wheel_width_m']}"/></geometry></visual>
+    <collision><origin rpy="0 1.57079632679 0"/><geometry><cylinder radius="${wheel_radius}" length="${model['wheel_width_m']}"/></geometry></collision>
   </link>
   <joint name="wheel_joint_1" type="continuous">
     <parent link="motor_link_1"/><child link="wheel_link_1"/><axis xyz="0 1 0"/>
@@ -78,8 +84,8 @@
     <origin xyz="${wheel_center} 0 0" rpy="0 0 0"/>
   </joint>
   <link name="wheel_link_2">
-    <visual><origin rpy="0 1.57079632679 0"/><geometry><cylinder radius="${wheel_radius}" length="0.04"/></geometry></visual>
-    <collision><origin rpy="0 1.57079632679 0"/><geometry><cylinder radius="${wheel_radius}" length="0.04"/></geometry></collision>
+    <visual><origin rpy="0 1.57079632679 0"/><geometry><cylinder radius="${wheel_radius}" length="${model['wheel_width_m']}"/></geometry></visual>
+    <collision><origin rpy="0 1.57079632679 0"/><geometry><cylinder radius="${wheel_radius}" length="${model['wheel_width_m']}"/></geometry></collision>
   </link>
   <joint name="wheel_joint_2" type="continuous">
     <parent link="motor_link_2"/><child link="wheel_link_2"/><axis xyz="0 1 0"/>
@@ -91,8 +97,8 @@
     <origin xyz="${-0.5 * wheel_center} ${-sin60 * wheel_center} 0" rpy="0 0 -2.09439510239"/>
   </joint>
   <link name="wheel_link_3">
-    <visual><origin rpy="0 1.57079632679 0"/><geometry><cylinder radius="${wheel_radius}" length="0.04"/></geometry></visual>
-    <collision><origin rpy="0 1.57079632679 0"/><geometry><cylinder radius="${wheel_radius}" length="0.04"/></geometry></collision>
+    <visual><origin rpy="0 1.57079632679 0"/><geometry><cylinder radius="${wheel_radius}" length="${model['wheel_width_m']}"/></geometry></visual>
+    <collision><origin rpy="0 1.57079632679 0"/><geometry><cylinder radius="${wheel_radius}" length="${model['wheel_width_m']}"/></geometry></collision>
   </link>
   <joint name="wheel_joint_3" type="continuous">
     <parent link="motor_link_3"/><child link="wheel_link_3"/><axis xyz="0 1 0"/>

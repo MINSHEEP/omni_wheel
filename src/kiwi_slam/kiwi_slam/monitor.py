@@ -10,6 +10,7 @@ from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.duration import Duration
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
@@ -32,18 +33,20 @@ class KiwiSlamMonitor(Node):
 
     def __init__(self) -> None:
         super().__init__("kiwi_slam_monitor")
-        self.scan_topic = self.declare_parameter("scan_topic", "/scan").value
-        self.odom_topic = self.declare_parameter("odom_topic", "/odometry/filtered").value
-        self.map_topic = self.declare_parameter("map_topic", "/map").value
-        self.laser_frame = self.declare_parameter("laser_frame", "lidar_link").value
-        self.base_frame = self.declare_parameter("base_frame", "base_footprint").value
-        self.odom_frame = self.declare_parameter("odom_frame", "odom").value
-        self.map_frame = self.declare_parameter("map_frame", "map").value
-        self.timeout_sec = float(self.declare_parameter("timeout_sec", 1.0).value)
-        self.map_timeout_sec = float(self.declare_parameter("map_timeout_sec", 5.0).value)
-        self.min_valid_ratio = float(self.declare_parameter("min_valid_scan_ratio", 0.10).value)
-        self.require_map_tf = bool(self.declare_parameter("require_map_tf", False).value)
-        self.debug_log = bool(self.declare_parameter("debug_log", True).value)
+        self.scan_topic = str(self._required("scan_topic", Parameter.Type.STRING))
+        self.odom_topic = str(self._required("odom_topic", Parameter.Type.STRING))
+        self.map_topic = str(self._required("map_topic", Parameter.Type.STRING))
+        self.laser_frame = str(self._required("laser_frame", Parameter.Type.STRING))
+        self.base_frame = str(self._required("base_frame", Parameter.Type.STRING))
+        self.odom_frame = str(self._required("odom_frame", Parameter.Type.STRING))
+        self.map_frame = str(self._required("map_frame", Parameter.Type.STRING))
+        self.timeout_sec = float(self._required("timeout_sec", Parameter.Type.DOUBLE))
+        self.map_timeout_sec = float(self._required("map_timeout_sec", Parameter.Type.DOUBLE))
+        self.min_valid_ratio = float(
+            self._required("min_valid_scan_ratio", Parameter.Type.DOUBLE)
+        )
+        self.require_map_tf = bool(self._required("require_map_tf", Parameter.Type.BOOL))
+        self.debug_log = bool(self._required("debug_log", Parameter.Type.BOOL))
 
         self.last_scan: LaserScan | None = None
         self.last_odom: Odometry | None = None
@@ -80,6 +83,13 @@ class KiwiSlamMonitor(Node):
             f"monitor scan={self.scan_topic} odom={self.odom_topic} map={self.map_topic} "
             f"frames={self.odom_frame}->{self.base_frame}->{self.laser_frame}"
         )
+
+    def _required(self, name: str, parameter_type: Parameter.Type) -> object:
+        """声明由 monitor.yaml 提供的必填参数，不在代码中维护回退值。"""
+        parameter = self.declare_parameter(name, parameter_type)
+        if parameter.type_ == Parameter.Type.NOT_SET:
+            raise RuntimeError(f"required parameter '{name}' is missing; load monitor.yaml")
+        return parameter.value
 
     def _on_scan(self, message: LaserScan) -> None:
         """Store the newest scan and receipt time without blocking the driver."""

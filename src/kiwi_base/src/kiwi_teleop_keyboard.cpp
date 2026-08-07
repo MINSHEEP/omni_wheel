@@ -27,11 +27,12 @@ public:
    */
   KeyboardTeleop() : Node("kiwi_teleop_keyboard")
   {
-    const auto topic = declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel_safe");
-    speed_ = declare_parameter("speed_m_s", 0.25);
-    yaw_ = declare_parameter("yaw_rad_s", 0.8);
+    // 控制话题、速度和超时只由 kiwi_base.yaml 提供，避免代码与文档出现两套数值。
+    const auto topic = declare_parameter<std::string>("cmd_vel_topic");
+    speed_ = declare_parameter<double>("speed_m_s");
+    yaw_ = declare_parameter<double>("yaw_rad_s");
     // SSH 终端没有按键释放事件，以最后一次有效运动按键的时间作为停车依据。
-    deadman_timeout_ms_ = static_cast<int>(declare_parameter<int>("deadman_timeout_ms", 500));
+    deadman_timeout_ms_ = static_cast<int>(declare_parameter<int>("deadman_timeout_ms"));
     deadman_timeout_ms_ = std::max(1, deadman_timeout_ms_);
     pub_ = create_publisher<geometry_msgs::msg::Twist>(topic, 10);
 
@@ -195,12 +196,12 @@ private:
   rclcpp::TimerBase::SharedPtr timer_;
   termios old_{};
   int flags_{-1};
-  int deadman_timeout_ms_{250};
+  int deadman_timeout_ms_{};
   bool terminal_ready_{false};
   bool termios_changed_{false};
   bool have_key_{false};
-  double speed_{0.25};
-  double yaw_{0.8};
+  double speed_{};
+  double yaw_{};
   double vx_{0.0};
   double vy_{0.0};
   double wz_{0.0};

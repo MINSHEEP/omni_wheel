@@ -1,7 +1,8 @@
-# kiwi_base 唯一运行参数文件（ROS 2 Humble）。
-# 需要修改设备、话题、默认减速比或发布格式时，只改本文件。
+# Kiwi 底盘硬件唯一参数入口（ROS 2 Humble）。
+# 本文件只描述底盘、键盘、调试节点和结构尺寸；EKF 传感器选择放在独立 YAML。
 kiwi_base_node:
   ros__parameters:
+    use_sim_time: false
     # USB CDC 设备。没有硬件时节点仍可启动，但不会产生 TX 日志。
     device: /dev/robomaster_c
     publish_rate: 50.0
@@ -38,63 +39,44 @@ kiwi_base_node:
 
     # ROS 话题入口；Nav2、键盘或测试脚本只需要发布 cmd_vel_topic。
     cmd_vel_topic: /cmd_vel_safe
-    wheel_odom_topic: /wheel/odom_raw
-    imu_topic: /imu/data_raw
+    wheel_odom_topic: /chassis/odom/raw
+    imu_topic: /chassis/imu/data_raw
     # 0x3B 解码调试消息；字段为电机、欧拉角、原始角速度、原始加速度。
-    feedback_debug_topic: /kiwi_base/feedback_debug
+    feedback_debug_topic: /chassis/feedback/raw
     joint_states_topic: /joint_states
 
     # ROS 坐标和关节名称。
     odom_frame_id: odom
     base_frame_id: base_footprint
-    imu_frame_id: imu_link
+    imu_frame_id: chassis_imu_link
     wheel_names: [wheel_joint_1, wheel_joint_2, wheel_joint_3]
 
 # 暂不启用：加速度斜坡、命令超时、反馈联锁和软件急停。
 
-# 平面 EKF：融合轮速 vx/vy，以及同一 IMU 的相对 Euler yaw 和修正后 gyro_z。
-ekf_filter_node:
+# 键盘节点不再在 C++ 中保存速度默认值，修改手动控制速度只改这里。
+kiwi_teleop_keyboard:
   ros__parameters:
-    frequency: 50.0
-    sensor_timeout: 0.20
-    two_d_mode: true
-    publish_tf: true
-    print_diagnostics: true
+    use_sim_time: false
+    cmd_vel_topic: /cmd_vel_safe
+    speed_m_s: 0.25
+    yaw_rad_s: 0.8
+    deadman_timeout_ms: 500
 
-    map_frame: map
-    odom_frame: odom
-    base_link_frame: base_footprint
-    world_frame: odom
+# 滤波里程计终端调试节点。
+kiwi_odom_test:
+  ros__parameters:
+    use_sim_time: false
+    odom_topic: /odometry/filtered
 
-    odom0: /wheel/odom_raw
-    # robot_localization 状态顺序：
-    # [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
-    # 每项 true 表示参与 EKF，false 表示忽略。
-    # 轮式里程计只提供机体 vx、vy；不重复融合其积分位姿和 wz。
-    odom0_config: [
-      false, false, false,  # x, y, z：不使用轮式积分位置
-      false, false, false,  # roll, pitch, yaw：不使用轮式积分姿态
-      true,  true,  false,  # vx, vy, vz：只使用 vx、vy
-      false, false, false,  # vroll, vpitch, vyaw：不使用轮速角速度
-      false, false, false   # ax, ay, az：轮式里程计不提供加速度
-    ]
-    odom0_queue_size: 10
-    odom0_differential: false
-    odom0_relative: false
-
-    imu0: /imu/data_raw
-    # robot_localization 的状态顺序（共 15 项）：
-    # [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
-    # 每项 true 表示参与 EKF，false 表示忽略；Euler yaw 抑制长期漂移，gyro_z 保留动态响应。
-    imu0_config: [
-      false, false, false,  # x, y, z：IMU 不提供位置
-      false, false, false,   # roll, pitch, yaw：只使用下位机计算且方向正确的 yaw
-      false, false, false,  # vx, vy, vz：IMU 不提供线速度
-      false, false, true,   # vroll, vpitch, vyaw：只使用 gyro_z
-      false, false, false   # ax, ay, az：当前不使用线性加速度
-    ]
-    imu0_queue_size: 10
-    imu0_differential: false
-    # 以节点启动时的 Euler yaw 为零点，避免 odom 带入任意绝对初始航向。
-    imu0_relative: true
-    imu0_remove_gravitational_acceleration: false
+# 只供 Xacro 读取的底盘结构尺寸；传感器安装外参不放在这里。
+# IMU 和雷达相对 base_link 的安装标定只维护 urdf/kiwi.urdf.xacro。
+kiwi_robot_model:
+  ros__parameters:
+    base_z_m: 0.0
+    base_radius_m: 0.32256
+    base_height_m: 0.08
+    base_mass_kg: 10.0
+    base_inertia_kg_m2: [0.18, 0.18, 0.35]
+    wheel_width_m: 0.04
+    lidar_visual_radius_m: 0.01925
+    lidar_visual_height_m: 0.0337

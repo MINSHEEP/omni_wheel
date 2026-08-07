@@ -7,7 +7,12 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from ament_index_python.packages import PackageNotFoundError, get_package_prefix
+import yaml
+from ament_index_python.packages import (
+    PackageNotFoundError,
+    get_package_prefix,
+    get_package_share_directory,
+)
 
 
 REQUIRED_PACKAGES = (
@@ -76,7 +81,16 @@ def device_check(path: str, required: bool) -> Check:
     return Check("OK" if access else "ERROR", f"device:{path}", message)
 
 
-def run_checks(lidar_port: str, require_hardware: bool) -> list[Check]:
+def load_parameter(path: Path, node: str, name: str) -> object:
+    """从 ROS 参数 YAML 读取单个必填字段。"""
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    try:
+        return data[node]["ros__parameters"][name]
+    except (KeyError, TypeError) as exc:
+        raise ValueError(f"missing {node}.ros__parameters.{name} in {path}") from exc
+
+
+def run_checks(base_device: str, lidar_port: str, require_hardware: bool) -> list[Check]:
     """Collect platform, package, and serial-device checks."""
     try:
         os_release = parse_os_release(Path("/etc/os-release").read_text(encoding="utf-8"))
@@ -84,7 +98,7 @@ def run_checks(lidar_port: str, require_hardware: bool) -> list[Check]:
         os_release = {}
     checks = platform_checks(os_release, os.environ.get("ROS_DISTRO", ""))
     checks.extend(package_checks())
-    checks.append(device_check("/dev/robomaster_c", require_hardware))
+    checks.append(device_check(base_device, require_hardware))
     checks.append(device_check(lidar_port, require_hardware))
     return checks
 
@@ -92,11 +106,22 @@ def run_checks(lidar_port: str, require_hardware: bool) -> list[Check]:
 def main(argv: list[str] | None = None) -> int:
     """Print a concise compatibility report and return nonzero on errors."""
     parser = argparse.ArgumentParser(description="Check Kiwi SLAM runtime compatibility")
-    parser.add_argument("--lidar-port", default="/dev/ttyUSB0")
+    parser.add_argument(
+        "--base-params-file",
+        type=Path,
+        default=Path(get_package_share_directory("kiwi_base")) / "config" / "kiwi_base.yaml",
+    )
+    parser.add_argument(
+        "--lidar-params-file",
+        type=Path,
+        default=Path(get_package_share_directory("kiwi_slam")) / "config" / "lds_e110.yaml",
+    )
     parser.add_argument("--require-hardware", action="store_true")
     args = parser.parse_args(argv)
 
-    checks = run_checks(args.lidar_port, args.require_hardware)
+    base_device = str(load_parameter(args.base_params_file, "kiwi_base_node", "device"))
+    lidar_port = str(load_parameter(args.lidar_params_file, "bluesea_node", "port"))
+    checks = run_checks(base_device, lidar_port, args.require_hardware)
     for check in checks:
         print(f"[{check.level:5}] {check.name}: {check.message}")
     errors = sum(check.level == "ERROR" for check in checks)

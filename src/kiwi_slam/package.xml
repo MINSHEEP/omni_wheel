@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
-<!-- Kiwi 三轮全向底盘与 LDS-E110-R 的建图集成包。 -->
+<!-- Kiwi 三轮全向底盘的二维建图与 Mid-360S LIO 集成包。 -->
 <package format="3">
   <name>kiwi_slam</name>
   <version>0.1.0</version>
-  <description>SLAM Toolbox integration and diagnostics for the Kiwi base and PaceCat LDS-E110-R.</description>
+  <description>2D SLAM and Livox Mid-360S FAST-LIO2 integration for the Kiwi base.</description>
   <maintainer email="maintainer@example.com">MSHEEP</maintainer>
   <license>Apache-2.0</license>
 
@@ -13,10 +13,13 @@
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>bluesea2</exec_depend>
   <exec_depend>diagnostic_msgs</exec_depend>
+  <exec_depend>fast_lio</exec_depend>
   <exec_depend>kiwi_base</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <exec_depend>livox_ros_driver2</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>robot_localization</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>

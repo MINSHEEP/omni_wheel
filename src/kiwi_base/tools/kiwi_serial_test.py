@@ -13,14 +13,43 @@ import math
 import struct
 import sys
 import time
+from pathlib import Path
 from typing import Optional, Sequence, Tuple
+
+import yaml
 
 
 SOF = 0x33
 CMD_MOTOR_SPEED = 0x3A
 SIN60 = 0.866025403784
-DEFAULT_WHEEL_RADIUS_M = 0.1015
-DEFAULT_CENTER_DISTANCE_M = 0.32256
+
+
+def default_params_path() -> Path:
+    """返回源码树或安装空间中的统一底盘参数文件。"""
+    source_path = Path(__file__).resolve().parents[1] / "config" / "kiwi_base.yaml"
+    if source_path.exists():
+        return source_path
+    return Path(__file__).resolve().parents[2] / "share" / "kiwi_base" / "config" / "kiwi_base.yaml"
+
+
+def load_base_parameters(path: Path) -> dict[str, object]:
+    """读取 kiwi_base_node 参数，缺少硬件字段时立即失败。"""
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    try:
+        params = data["kiwi_base_node"]["ros__parameters"]
+    except (KeyError, TypeError) as exc:
+        raise ValueError(f"无效的 Kiwi 参数文件: {path}") from exc
+    required = {
+        "device",
+        "publish_rate",
+        "wheel_radius_m",
+        "wheel_center_distance_m",
+        "motor_reduction_ratio",
+    }
+    missing = required.difference(params)
+    if missing:
+        raise ValueError(f"参数文件缺少: {', '.join(sorted(missing))}")
+    return params
 
 
 def crc8_dji(data: bytes) -> int:
@@ -47,8 +76,8 @@ def kiwi_inverse(
     vx: float,
     vy: float,
     wz: float,
-    wheel_radius_m: float = DEFAULT_WHEEL_RADIUS_M,
-    wheel_center_distance_m: float = DEFAULT_CENTER_DISTANCE_M,
+    wheel_radius_m: float,
+    wheel_center_distance_m: float,
 ) -> Tuple[float, float, float]:
     """使用与 C++ ``KiwiKinematics`` 相同的物理公式计算三路轮速。
 
@@ -69,14 +98,19 @@ def kiwi_inverse(
 
 
 def wheel_to_motor(
-    wheel_rad_s: Sequence[float], reduction_ratio: float = 19.0
+    wheel_rad_s: Sequence[float], reduction_ratio: Sequence[float]
 ) -> Tuple[float, float, float]:
     """把轮输出轴 rad/s 转为联调帧所需的电机轴 rad/s。"""
-    if len(wheel_rad_s) != 3 or not math.isfinite(reduction_ratio) or reduction_ratio <= 0.0:
-        raise ValueError("需要三个轮速且 reduction_ratio 必须为正数")
-    if not all(math.isfinite(float(value)) for value in wheel_rad_s):
-        raise ValueError("轮速必须是有限数")
-    return tuple(float(value) * reduction_ratio for value in wheel_rad_s)  # type: ignore[return-value]
+    if len(wheel_rad_s) != 3 or len(reduction_ratio) != 3:
+        raise ValueError("轮速和减速比都必须包含三个数")
+    values = tuple(float(value) for value in wheel_rad_s)
+    ratios = tuple(float(value) for value in reduction_ratio)
+    if not all(math.isfinite(value) for value in values + ratios) or not all(
+        value > 0.0 for value in ratios
+    ):
+        raise ValueError("轮速必须有限且减速比必须为有限正数")
+    motor_targets = tuple(value * ratio for value, ratio in zip(values, ratios))
+    return motor_targets  # type: ignore[return-value]
 
 
 def encode_motor_command(
@@ -121,7 +155,7 @@ def parse_hex_bytes(text: str) -> bytes:
         raise ValueError(f"无法解析原始十六进制: {exc}") from exc
 
 
-def run_self_test() -> None:
+def run_self_test(wheel_radius_m: float, center_distance_m: float, ratios: Sequence[float]) -> None:
     """运行无硬件自检：CRC、18 字节命令向量和运动学公式。"""
     golden = bytes.fromhex(
         "33 0c 3a 65 00 00 00 00 00 00 00 00 00 00 00 00 02 fd"
@@ -132,14 +166,16 @@ def run_self_test() -> None:
         "33 0c 3a 65 00 00 80 3f 00 00 00 c0 00 00 40 40 64 8e"
     )
     assert encode_motor_command(1, (1.0, -2.0, 3.0), False)[4:-2] == bytes(12)
-    wheels = kiwi_inverse(0.0, 0.0, 1.0)
-    expected = -DEFAULT_CENTER_DISTANCE_M / DEFAULT_WHEEL_RADIUS_M
+    wheels = kiwi_inverse(0.0, 0.0, 1.0, wheel_radius_m, center_distance_m)
+    expected = -center_distance_m / wheel_radius_m
     assert all(abs(value - expected) < 1e-9 for value in wheels)
-    forward = kiwi_inverse(1.0, 0.0, 0.0)
-    assert abs(forward[0] - SIN60 / DEFAULT_WHEEL_RADIUS_M) < 1e-9
+    forward = kiwi_inverse(1.0, 0.0, 0.0, wheel_radius_m, center_distance_m)
+    assert abs(forward[0] - SIN60 / wheel_radius_m) < 1e-9
     assert abs(forward[1]) < 1e-9
-    assert abs(forward[2] + SIN60 / DEFAULT_WHEEL_RADIUS_M) < 1e-9
-    assert wheel_to_motor(wheels) == tuple(value * 19.0 for value in wheels)
+    assert abs(forward[2] + SIN60 / wheel_radius_m) < 1e-9
+    assert wheel_to_motor(wheels, ratios) == tuple(
+        value * ratio for value, ratio in zip(wheels, ratios)
+    )
     print("kiwi_serial_test self-test: PASS")
 
 
@@ -156,9 +192,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
     """构造命令行参数解析器，默认保持电机禁能。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true", help="只运行无硬件自检")
-    parser.add_argument("--port", default="/dev/robomaster_c", help="USB CDC 设备路径")
+    parser.add_argument(
+        "--params-file", type=Path, default=default_params_path(),
+        help="统一底盘 YAML；默认自动定位 config/kiwi_base.yaml",
+    )
+    parser.add_argument("--port", help="临时覆盖 YAML 中的 USB CDC 设备路径")
     parser.add_argument("--baudrate", type=int, default=115200, help="兼容串口 API；CDC 不使用该值")
-    parser.add_argument("--rate", type=float, default=20.0, help="命令发送频率 Hz")
+    parser.add_argument("--rate", type=float, help="临时覆盖 YAML 中的命令发送频率 Hz")
     parser.add_argument("--duration", type=float, default=1.0, help="发送持续时间 s；0 表示只发一帧")
     parser.add_argument("--vx", type=float, default=0.0, help="机体 x 速度 m/s（前进为正）")
     parser.add_argument("--vy", type=float, default=0.0, help="机体 y 速度 m/s（左移为正）")
@@ -171,18 +211,6 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--motor-rad-s", nargs=3, type=float, metavar=("M1", "M2", "M3"),
         help="直接给协议所需的三个电机轴 rad/s",
     )
-    parser.add_argument(
-        "--reduction-ratio", type=float, default=19.0,
-        help="轮输出轴到电机轴的减速比",
-    )
-    parser.add_argument(
-        "--wheel-radius-m", type=float, default=DEFAULT_WHEEL_RADIUS_M,
-        help="轮子有效半径 m",
-    )
-    parser.add_argument(
-        "--wheel-center-distance-m", type=float, default=DEFAULT_CENTER_DISTANCE_M,
-        help="底盘中心到轮心距离 m",
-    )
     parser.add_argument("--enable", action="store_true", help="允许发送非零目标；未指定时强制零速")
     parser.add_argument("--raw-hex", help="原始十六进制帧；提供后跳过命令编码器")
     parser.add_argument("--dry-run", action="store_true", help="只打印计算结果，不打开串口")
@@ -193,10 +221,16 @@ def build_argument_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """执行 0x3A 电机速度发送循环；反馈帧由 kiwi_feedback_receiver.py 接收。"""
     args = build_argument_parser().parse_args(argv)
+    params = load_base_parameters(args.params_file)
+    wheel_radius_m = float(params["wheel_radius_m"])
+    center_distance_m = float(params["wheel_center_distance_m"])
+    reduction_ratio = tuple(float(value) for value in params["motor_reduction_ratio"])
+    port = args.port or str(params["device"])
+    rate = args.rate if args.rate is not None else float(params["publish_rate"])
     if args.self_test:
-        run_self_test()
+        run_self_test(wheel_radius_m, center_distance_m, reduction_ratio)
         return 0
-    if args.rate <= 0.0 or args.duration < 0.0:
+    if rate <= 0.0 or args.duration < 0.0:
         raise SystemExit("--rate 必须为正，--duration 不能为负")
     if args.raw_hex and (args.wheel_rad_s or args.motor_rad_s):
         raise SystemExit("--raw-hex 不能与速度参数同时使用")
@@ -213,10 +247,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 args.vx,
                 args.vy,
                 args.wz,
-                args.wheel_radius_m,
-                args.wheel_center_distance_m,
+                wheel_radius_m,
+                center_distance_m,
             )
-            motor_targets = wheel_to_motor(wheels, args.reduction_ratio)
+            motor_targets = wheel_to_motor(wheels, reduction_ratio)
         frame = None
     if motor_targets is not None:
         print("目标电机轴速度 rad/s: " + ", ".join(f"{value:.6f}" for value in motor_targets))
@@ -228,9 +262,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("发送帧: " + frame.hex(" "))
         return 0
 
-    serial_port = open_serial(args.port, args.baudrate, 0.5)
+    serial_port = open_serial(port, args.baudrate, 0.5)
     sequence = 0
-    period = 1.0 / args.rate
+    period = 1.0 / rate
     deadline = time.monotonic() + args.duration
     try:
         while True:
@@ -240,7 +274,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if args.raw_hex:
                 outgoing = frame or b""
             else:
-                outgoing = encode_motor_command(sequence, motor_targets or (0.0, 0.0, 0.0), args.enable)
+                outgoing = encode_motor_command(
+                    sequence,
+                    motor_targets or (0.0, 0.0, 0.0),
+                    args.enable,
+                )
             serial_port.write(outgoing)
             serial_port.flush()
             if args.print_hex:
@@ -266,6 +304,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (RuntimeError, ValueError) as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         print(f"错误: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc

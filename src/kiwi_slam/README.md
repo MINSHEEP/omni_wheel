@@ -1,373 +1,288 @@
 # kiwi_slam
 
-`kiwi_slam` 是 ROS 2 Humble / Ubuntu 22.04 下的三轮全向底盘在线建图集成包。
-它不重复实现底盘和雷达驱动，而是组合以下现有模块：
+`kiwi_slam` 是传感器与建图集成层。主路线使用 Livox Mid-360S 内置 IMU、
+`livox_ros_driver2` 和 FAST-LIO2；Pacecat LDS-E110-R + SLAM Toolbox 二维路线完整保留。
+两条路线复用同一个底盘、URDF 和 TF 约定，不互相修改驱动源码。
 
-- `kiwi_base`：RoboMaster C 板 USB 通信、三轮运动学、轮速里程计和 IMU 发布。
-- `robot_localization`：融合死区后的轮速 `vx/vy`、相对 Euler yaw 与修正后 `gyro_z`，
-  发布滤波里程计和动态 TF。
-- `bluesea2`：读取 PaceCat LDS-E110-R 雷达并发布 `/scan`。
-- `slam_toolbox`：激光建图、回环检测、`/map` 和 `map->odom`。
-- `robot_state_publisher`：根据 URDF 发布底盘、IMU、雷达和轮子 TF。
-- `kiwi_slam_monitor`：检查雷达、里程计、地图和 TF 链路。
-
-## 系统链路
+## 1. 架构边界
 
 ```text
-RoboMaster C
-  └─ USB CDC ─> kiwi_base_node
-                 ├─ /wheel/odom_raw ─┐
-                 ├─ /imu/data_raw ───┴─> ekf_filter_node
-                 │                         ├─ /odometry/filtered
-                 │                         └─ odom -> base_footprint
-                 └─ /joint_states ─────> robot_state_publisher
-
-LDS-E110-R
-  └─ 230400 UART ─> bluesea_node ─> /scan ─> slam_toolbox
-                                                   ├─ /map
-                                                   └─ map -> odom
-
-robot_state_publisher
-  └─ base_footprint -> base_link -> imu_link/lidar_link/三个轮子
+kiwi_base              USB、运动学、底盘 IMU、轮式 odom、关节状态
+kiwi_robot.launch.py   底盘 + 可替换 EKF YAML + URDF 公共层
+kiwi_lio.launch.py     Mid-360S + IMU 适配 + FAST-LIO2 主路线
+kiwi_slam.launch.py    Pace E110 + SLAM Toolbox 备用二维路线
 ```
 
-完整 TF 树应为：
+传感器选择只发生在 EKF YAML：
 
 ```text
-map                     SLAM Toolbox 发布
-└── odom                EKF 的 world_frame
-    └── base_footprint  EKF 发布动态 TF
-        └── base_link   URDF 固定 TF
-            ├── imu_link
-            ├── lidar_link
-            └── motor_link_1..3 -> wheel_link_1..3
+Mid-360S 主路线  config/ekf_mid360.yaml       /livox/imu/ekf
+Pace 备用路线    kiwi_base/config/ekf_chassis.yaml  /chassis/imu/data_raw
 ```
 
-职责边界：
+底盘节点始终发布 C 板 IMU。没有任何雷达节点能够关闭或改写该话题。
+
+## 2. Mid-360S 主路线
 
 ```text
-Xacro/URDF             定义 RobotModel、/robot_description 和机体静态 TF
-robot_state_publisher  发布 URDF 中的 /tf_static 和轮关节 /tf
-EKF                    发布 odom -> base_footprint
-SLAM Toolbox           发布 /map 消息和 map -> odom
+Mid-360S --Ethernet/UDP--> livox_ros_driver2
+  ├─ /livox/lidar (CustomMsg) ───────────────┐
+  └─ /livox/imu (Imu) ───────────────────────┼─> FAST-LIO2
+       └─ mid360_imu_adapter                 │    ├─ /cloud_registered
+            └─ /livox/imu/ekf ─┐             │    ├─ /Laser_map
+                                ├─> EKF       │    ├─ /Odometry
+/chassis/odom/raw ──────────────┘             │    └─ /path
+  └─ /odometry/filtered + odom -> base_footprint
 ```
 
-URDF/Xacro 本身不会发布 `/map`。没有 `/scan` 时可以正常显示 RobotModel，但不能生成
-有效地图。`kiwi_slam.launch.py` 直接启动底盘与 EKF，不复用带过渡逻辑的底盘 launch；
-IMU 和雷达 TF 只允许由 `urdf/kiwi.urdf.xacro` 维护。
+FAST-LIO2 直接读取原始 `/livox/imu`，适配节点只为平面 EKF 复制一条带协方差的
+`/livox/imu/ekf` 支路。两条数据互不覆盖。`/Laser_map` 是三维 `PointCloud2`，不是
+Nav2 所需的二维 `nav_msgs/OccupancyGrid /map`。
 
-## 雷达与底盘参数
+当前完成的是 Mid-360S 三维建图和独立底盘 EKF。接入 Nav2 前还需完成：
 
-LDS-E110-R V1.5 参数位于 `config/lds_e110.yaml`：
+1. 将 `/Laser_map` 投影为二维占据栅格 `/map`；
+2. 将 LIO 位姿对齐到 `map -> odom`，保持 EKF 独占 `odom -> base_footprint`；
+3. 增加 AMCL/LIO 定位模式、Nav2 costmap、全向控制器和任务层参数。
+
+## 3. Pace 备用路线
 
 ```text
-接口            UART 3.3 V，230400，8N1
-扫描范围        360°
-扫描频率        约 7 Hz（420 rpm）
-角分辨率        约 0.6°
-有效量程        0.05～12 m
-ROS 话题        /scan
-ROS frame       lidar_link
-默认设备        /dev/ttyUSB0
+LDS-E110-R -> bluesea2 -> /scan -> slam_toolbox
+                                      ├─ /map
+                                      └─ map -> odom
+
+/chassis/odom/raw + /chassis/imu/data_raw -> EKF
+                                               ├─ /odometry/filtered
+                                               └─ odom -> base_footprint
 ```
 
-底盘 URDF 使用当前已知参数：轮径 `0.203 m`、圆心到轮心距离 `0.32256 m`。
-雷达默认高度 `lidar_z=0.20 m`；IMU 平移已按实测设为前方 `11.5 mm`、右侧 `149 mm`，
-其高度和安装角仍需实测后更新。
+该路线可直接生成二维 `/map`，用于现有 SLAM Toolbox 联调。切回 Pace 只换启动命令，
+不改 Mid-360S、底盘或 URDF 代码。
 
-## 安装依赖
+## 4. 参数与外参入口
+
+```text
+config/mid360s_network.json    工控机/雷达 IP 和 Livox UDP 端口（SDK 固定 JSON 格式）
+config/livox_mid360s.yaml      Livox 驱动格式、频率和 frame_id
+config/mid360_imu.yaml         EKF 支路协方差和角速度死区
+config/ekf_mid360.yaml         Mid-360S 主路线的 EKF 输入选择
+config/fast_lio_mid360s.yaml   FAST-LIO2 内参、厂内 IMU 外参和地图输出
+config/lds_e110.yaml           Pace 串口与 LaserScan 参数
+config/slam_toolbox.yaml       Pace 二维建图参数
+urdf/kiwi.urdf.xacro           整车结构和传感器相对 base_link 的安装外参
+```
+
+安装外参只在 Xacro 维护：
+
+```text
+base_link -> chassis_imu_link  C 板 BMI088 安装位姿
+base_link -> lidar_link        雷达整机安装位姿
+lidar_link -> livox_frame      Livox 驱动坐标系连接
+```
+
+`fast_lio_mid360s.yaml` 的 `extrinsic_T/R` 是 Mid-360S 点云原点到内置 IMU 的厂内标定，
+不是雷达相对底盘的安装外参，不能与 Xacro 数值混用。
+
+## 5. 调试话题和消息结构
+
+```text
+话题                         类型                                  发布者/用途
+/chassis/feedback/raw        kiwi_base/msg/FeedbackDebug          C 板 12 字段原始反馈
+/chassis/imu/data_raw        sensor_msgs/msg/Imu                   C 板底盘 IMU
+/chassis/odom/raw            nav_msgs/msg/Odometry                三轮原始轮式里程计
+/joint_states                sensor_msgs/msg/JointState           三轮角度和角速度
+/livox/lidar                 livox_ros_driver2/msg/CustomMsg       Mid-360S 原始点和逐点时间
+/livox/imu                   sensor_msgs/msg/Imu                   Mid-360S 原始六轴数据
+/livox/imu/ekf               sensor_msgs/msg/Imu                   补协方差后的 EKF 支路
+/odometry/filtered           nav_msgs/msg/Odometry                平面 EKF 位姿和速度
+/cloud_registered            sensor_msgs/msg/PointCloud2          LIO 世界系配准点云
+/cloud_registered_body       sensor_msgs/msg/PointCloud2          LIO 机体系点云
+/Laser_map                   sensor_msgs/msg/PointCloud2          FAST-LIO2 三维地图
+/Odometry                    nav_msgs/msg/Odometry                FAST-LIO2 三维位姿
+/path                        nav_msgs/msg/Path                    FAST-LIO2 轨迹
+/scan                        sensor_msgs/msg/LaserScan             Pace 路线 SLAM 输入
+/map                         nav_msgs/msg/OccupancyGrid           Pace 路线二维栅格地图
+```
+
+Livox `CustomMsg` 的主要字段：
+
+```text
+header       ROS 时间戳和 livox_frame
+timebase     当前数据包的纳秒时间基准
+point_num    有效点数量
+lidar_id     雷达编号
+points[]     每点 offset_time、x/y/z、reflectivity、tag、line
+```
+
+`sensor_msgs/msg/Imu` 包含 `orientation`、`angular_velocity`、
+`linear_acceleration` 及三组 3x3 协方差。Livox 原始消息不提供有效 orientation；
+适配消息将 `orientation_covariance[0]` 设为 `-1` 明确表示无姿态。
+
+`nav_msgs/msg/Odometry` 包含 `header`、`child_frame_id`、带 6x6 协方差的 `pose` 和
+`twist`。`/chassis/odom/raw` 是轮速原始量，`/odometry/filtered` 是平面 EKF 输出，
+`/Odometry` 是 FAST-LIO2 三维输出，三者不可混用。
+
+## 6. 外部依赖和构建
+
+根仓库固定以下源码版本：
+
+```text
+src/livox_ros_driver2  Livox 官方 1.2.6（git submodule）
+src/FAST_LIO_ROS2      ros2 分支固定提交（git submodule，含 ikd-Tree）
+third_party/Livox-SDK2 v1.3.1（本机系统库，不纳入根仓库）
+```
+
+首次拉取根仓库：
+
+```bash
+cd ~/ros2_ws
+git submodule update --init --recursive
+
+# 官方驱动只跟踪 package_ROS2.xml；复制为 package.xml 后 colcon 才能发现。
+cp src/livox_ros_driver2/package_ROS2.xml src/livox_ros_driver2/package.xml
+```
+
+若工控机尚未安装 SDK：
+
+```bash
+git clone --branch v1.3.1 --depth 1 \
+  https://github.com/Livox-SDK/Livox-SDK2.git third_party/Livox-SDK2
+cmake -S third_party/Livox-SDK2 -B third_party/Livox-SDK2/build
+cmake --build third_party/Livox-SDK2/build -j$(nproc)
+sudo cmake --install third_party/Livox-SDK2/build
+sudo ldconfig
+```
+
+安装 ROS 依赖并构建：
 
 ```bash
 sudo apt update
-sudo apt install \
-  ros-humble-xacro \
-  ros-humble-robot-state-publisher \
-  ros-humble-robot-localization \
-  ros-humble-slam-toolbox \
-  ros-humble-rviz2 \
-  ros-humble-rqt-graph
+rosdep install --from-paths src --ignore-src -r -y --rosdistro humble
+
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install \
+  --packages-up-to livox_ros_driver2 fast_lio kiwi_slam
+source install/setup.bash
 ```
 
-如果启动时报错 `No such file or directory: 'xacro'`，说明远端缺少
-`ros-humble-xacro`，安装后不需要修改源码。
+## 7. SCP 到工控机
 
-## 构建
+仅同步本项目封装（工控机已有 SDK 和两个外部仓库时推荐）：
 
-首次构建或依赖发生变化时：
+```bash
+scp -r \
+  /home/ym/ros2_ws/src/kiwi_base \
+  /home/ym/ros2_ws/src/kiwi_slam \
+  a@192.168.66.119:~/ros2_ws/src/
+```
+
+首次完整同步源码：
+
+```bash
+scp -r \
+  /home/ym/ros2_ws/src/FAST_LIO_ROS2 \
+  /home/ym/ros2_ws/src/livox_ros_driver2 \
+  a@192.168.66.119:~/ros2_ws/src/
+
+scp -r /home/ym/ros2_ws/third_party/Livox-SDK2 \
+  a@192.168.66.119:~/ros2_ws/third_party/
+```
+
+不在文档或脚本保存 SSH 密码；输入密码或使用 SSH key。SCP 后在工控机重新执行本节构建，
+不要复制本机 `build/ install/ log/`。
+
+## 8. 启动命令
 
 ```bash
 cd ~/ros2_ws
 source /opt/ros/humble/setup.bash
-colcon build --symlink-install --packages-up-to kiwi_slam
 source install/setup.bash
 ```
 
-如果底盘和雷达包已经构建，只更新了 `kiwi_slam`：
+Mid-360S 主路线：
 
 ```bash
-colcon build --symlink-install --packages-select kiwi_slam
-source install/setup.bash
+ping -c 3 192.168.1.12
+ros2 launch kiwi_slam kiwi_lio.launch.py
 ```
 
-若 `base` 报错 `failed to create symbolic link ... Is a directory`，说明同一
-`build` 目录混用了普通构建和 `--symlink-install`。保留旧产物后重建：
+无桌面工控机：
 
 ```bash
-mv build/base build/base.non_symlink_backup
-colcon build --symlink-install --packages-up-to kiwi_slam
+ros2 launch kiwi_slam kiwi_lio.launch.py use_rviz:=false
 ```
 
-不要删除 `src/base`，后续统一使用 `--symlink-install`。
-
-## 硬件兼容性检查
-
-该命令只检查环境和设备，执行完立即退出，不会启动建图：
-
-```bash
-ros2 run kiwi_slam kiwi_slam_compatibility \
-  --lidar-port /dev/ttyUSB0 \
-  --require-hardware
-```
-
-无硬件测试时去掉 `--require-hardware`，串口缺失只显示 `WARN`。
-
-## 启动建图
-
-不启动 RViz：
-
-```bash
-ros2 launch kiwi_slam kiwi_slam.launch.py
-```
-
-启动专用 RViz 配置：
+Pace 二维备用路线：
 
 ```bash
 ros2 launch kiwi_slam kiwi_slam.launch.py use_rviz:=true
 ```
 
-工控机上 RViz 默认使用 XCB 和 Mesa 软件渲染，规避 Map 显示的 GLSL sampler 驱动错误；
-该环境只作用于 RViz，不影响底盘、雷达、EKF 或 SLAM。确认显卡驱动能够正常渲染后可关闭：
+只启动公共底盘、C 板 EKF 和模型：
 
 ```bash
-ros2 launch kiwi_slam kiwi_slam.launch.py \
-  use_rviz:=true rviz_software_rendering:=false
+ros2 launch kiwi_slam kiwi_robot.launch.py
 ```
 
-启动文件不再强制把 RViz 命名为 `/rviz2`，因此其内部 TF listener 会保留唯一随机名称，
-不会再出现多个同名节点的 rosout publisher 警告。
-
-参数名必须是 `use_rviz`，不能写成 `use-rviz`。
-
-专用 `config/kiwi_slam.rviz` 默认显示：
-
-- `/map`
-- `/scan`
-- RobotModel
-- TF
-- Grid
-- SLAM Toolbox 面板
-
-RViz 固定坐标系默认为 `odom`。这样即使 SLAM 还没有生成 `map`，机器人模型
-仍然可以显示；地图生成后会通过 `map->odom` 自动对齐。
-
-不需要诊断服务、希望减少节点图业务连线时可关闭监视器：
+## 9. 实时调试接口
 
 ```bash
-ros2 launch kiwi_slam kiwi_slam.launch.py use_rviz:=true start_monitor:=false
-```
+# Mid-360S 输入
+ros2 topic hz /livox/lidar
+ros2 topic hz /livox/imu
+ros2 topic echo /livox/imu --once
 
-TF2 内部的 `transform_listener_impl_*` 仍可能出现，这是 SLAM、EKF 或 RViz 的正常
-TF 监听实现；应在 rqt_graph 勾选 `Hide tf nodes`，不能通过删除 TF 监听器解决。
+# 底盘输入与两种 IMU 对照
+ros2 topic hz /chassis/feedback/raw
+ros2 topic echo /chassis/feedback/raw
+ros2 topic echo /chassis/imu/data_raw
+ros2 topic echo /chassis/odom/raw
+ros2 topic echo /livox/imu/ekf
 
-覆盖传感器安装位姿：
-
-```bash
-ros2 launch kiwi_slam kiwi_slam.launch.py use_rviz:=true \
-  lidar_x:=0.10 lidar_y:=0.00 lidar_z:=0.25 lidar_yaw:=0.00 \
-  imu_x:=0.0115 imu_y:=-0.149 imu_z:=0.00 imu_yaw:=0.00
-```
-
-默认 IMU 平移已经按实测写入：相对 `base_link` 前方 `11.5 mm`、右侧 `149 mm`；坐标约定
-为 x 向前、y 向左。IMU 高度和安装角仍保持零，测量后通过同一组 launch 参数更新。
-
-## 诊断接口
-
-持续查看完整诊断消息：
-
-```bash
-ros2 topic echo /kiwi_slam/diagnostics
-```
-
-监视节点会按诊断状态分别输出 INFO、WARN 或 ERROR；各级别使用独立日志调用位置，兼容
-ROS 2 Humble 的 logger severity 缓存规则，状态恢复时不会因切换日志级别退出。
-
-按需检查一次完整链路：
-
-```bash
-ros2 service call /kiwi_slam_monitor/check std_srvs/srv/Trigger "{}"
-```
-
-诊断内容包括：
-
-```text
-laser_scan       /scan 是否存在、frame、频率、有效点比例和超时
-filtered_odom    /odometry/filtered 是否存在、frame、频率和四元数合法性
-map              /map 是否存在、尺寸、分辨率和更新时间
-base_to_laser_tf base_footprint -> lidar_link
-odom_to_base_tf  odom -> base_footprint
-map_to_odom_tf   map -> odom
-```
-
-## `/map` 不发布的排查顺序
-
-SLAM Toolbox 必须收到能够变换到 `odom` 的首帧 `/scan`，才会产生有效地图。
-
-`ros2 topic info /map --verbose` 显示 `Publisher count: 1` 只代表 SLAM Toolbox 已创建
-发布器，不代表已经发布有效 OccupancyGrid。若诊断同时显示 `no scan received`，当前
-唯一阻塞点仍是雷达数据，不应由 URDF 伪造空地图。
-
-```bash
-# 1. 雷达节点必须存在
-ros2 node list | grep -E 'blue|lidar'
-
-# 2. /scan 应有一个发布者，频率约 7 Hz，frame_id 应为 lidar_link
-ros2 topic info /scan --verbose
-ros2 topic hz /scan
-ros2 topic echo /scan --once
-
-# 3. EKF 必须持续输出滤波里程计
+# EKF 和 LIO 输出
 ros2 topic hz /odometry/filtered
+ros2 topic echo /odometry/filtered --once
+ros2 topic hz /cloud_registered
+ros2 topic hz /Laser_map
+ros2 topic echo /Odometry --once
 
-# 4. SLAM 所需 TF 必须连续
-ros2 run tf2_ros tf2_echo base_footprint lidar_link
+# TF 所有权和安装外参
 ros2 run tf2_ros tf2_echo odom base_footprint
+ros2 run tf2_ros tf2_echo base_link chassis_imu_link
+ros2 run tf2_ros tf2_echo base_link livox_frame
 
-# 5. 检查 SLAM 和地图发布者
-ros2 node info /slam_toolbox
-ros2 topic info /map --verbose
-
-# 6. 汇总判断
+# Pace 路线
+ros2 topic hz /scan
+ros2 topic hz /map
 ros2 service call /kiwi_slam_monitor/check std_srvs/srv/Trigger "{}"
-```
 
-判断规则：
-
-```text
-现象                                原因或检查方向
-/bluesea_node 不存在                雷达节点启动失败，查看主启动终端
-/scan 没有发布者                    雷达端口、USB 转串口或驱动问题
-/scan 有发布者但没有消息            波特率、协议、串口权限或硬件连接问题
-/odometry/filtered 没有消息         C 板反馈、kiwi_base 或 EKF 问题
-odom -> base_footprint 不存在       EKF 没有获得有效传感器输入
-base_footprint -> lidar_link 不存在 robot_state_publisher/URDF 问题
-/map 发布者为 0                     slam_toolbox 未运行或已经退出
-/map 有发布者但没有有效消息         /scan 无法通过 TF 变换或首帧未处理
-```
-
-雷达设备与权限检查：
-
-```bash
-ls -l /dev/ttyUSB* /dev/serial/by-id/*
-grep -n "port:" \
-  ~/ros2_ws/install/kiwi_slam/share/kiwi_slam/config/lds_e110.yaml
-groups
-```
-
-用户应属于 `dialout` 组。修改组后需要重新登录：
-
-```bash
-sudo usermod -aG dialout "$USER"
-```
-
-## rqt_graph 节点图说明
-
-启动节点图：
-
-```bash
+# 接口定义和节点连接
+ros2 interface show livox_ros_driver2/msg/CustomMsg
+ros2 interface show sensor_msgs/msg/Imu
+ros2 interface show nav_msgs/msg/Odometry
 rqt_graph
 ```
 
-推荐在界面中：
-
-1. 图类型选择 `Nodes only`。
-2. 勾选 `Hide tf nodes`。
-3. 勾选 `Hide debug`。
-4. 勾选 `Hide unreachable nodes`。
-
-`/transform_listener_impl_<随机后缀>` 是 TF2 为内部坐标查询创建的监听节点：
-
-- 主要订阅 `/tf` 和 `/tf_static`。
-- 随机后缀用于防止节点重名。
-- 不代表启动了多个底盘、雷达或 TF 发布器。
-- 不会重复发布坐标变换，也不需要手动删除。
-
-可检查其中任意一个：
+Foxglove 可直接选择上述标量字段和点云话题；如已安装 bridge：
 
 ```bash
-ros2 node info /transform_listener_impl_XXXXXXXX
+ros2 launch foxglove_bridge foxglove_bridge_launch.xml
 ```
 
-精简后，核心业务图应接近：
-
-```text
-bluesea_node --/scan--------------------> slam_toolbox --/map------> monitor/RViz
-kiwi_base_node --/wheel/odom_raw--------> ekf_filter_node
-kiwi_base_node --/imu/data_raw----------> ekf_filter_node
-ekf_filter_node --/odometry/filtered----> monitor
-kiwi_base_node --/joint_states----------> robot_state_publisher
-```
-
-如果节点图中没有 `bluesea_node` 和 `/scan`，建图一定不会开始。
-
-## RobotModel 不显示
-
-依次检查：
-
-```bash
-ros2 node info /robot_state_publisher
-ros2 topic info /robot_description --verbose
-ros2 topic hz /joint_states
-ros2 run tf2_ros tf2_echo odom base_footprint
-ros2 run tf2_ros tf2_echo base_footprint base_link
-```
-
-固定关节由 `/tf_static` 发布；三个轮子的连续关节依赖 `kiwi_base_node` 的
-`/joint_states`。没有电机反馈时，底盘和传感器固定部分仍应显示，轮子可能报告
-缺少动态关节变换。
-
-## 无硬件启动测试
-
-仅启动 URDF 和诊断节点：
-
-```bash
-ros2 launch kiwi_slam kiwi_slam.launch.py \
-  start_base:=false \
-  start_lidar:=false \
-  start_slam:=false \
-  use_rviz:=false
-```
-
-此模式下 `no scan received`、`no odometry received` 和 `no map received` 属于预期结果。
-
-## 构建与测试验证
+## 10. 测试
 
 ```bash
 cd ~/ros2_ws
 source /opt/ros/humble/setup.bash
-source install/setup.bash
+colcon test --packages-select kiwi_base kiwi_slam --event-handlers console_direct+
+colcon test-result --verbose
 
-colcon test --packages-select kiwi_slam --event-handlers console_direct+
-ctest --test-dir build/kiwi_slam --output-on-failure
+xacro src/kiwi_slam/urdf/kiwi.urdf.xacro \
+  hardware_config:="$(pwd)/src/kiwi_base/config/kiwi_base.yaml" \
+  > /tmp/kiwi.urdf
+check_urdf /tmp/kiwi.urdf
 ```
 
-当前测试覆盖 E110 参数、SLAM frame 与量程、URDF 关键链接、RViz 显示契约、
-运行依赖和诊断计算。
-
-## 保存地图
-
-```bash
-mkdir -p ~/ros2_ws/maps
-ros2 run nav2_map_server map_saver_cli -f ~/ros2_ws/maps/kiwi_map
-```
-
-保存前应低速完成一个闭环并回到起点，确认 RViz 中墙面没有双层、旋转或明显错位。
+FAST-LIO2 发布的原生 TF 被重映射到 `/fast_lio/tf`，避免与底盘 EKF 争抢 TF。
+接入 Nav2 前必须实现并验证唯一的 `map -> odom -> base_footprint -> base_link` 链路。

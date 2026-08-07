@@ -15,7 +15,8 @@ class KiwiOdomTest final : public rclcpp::Node
 public:
   KiwiOdomTest() : Node("kiwi_odom_test")
   {
-    const auto topic = declare_parameter<std::string>("odom_topic", "/odometry/filtered");
+    // 调试话题只从 kiwi_base.yaml 读取，避免测试工具暗含另一套默认接口。
+    const auto topic = declare_parameter<std::string>("odom_topic");
     subscription_ = create_subscription<nav_msgs::msg::Odometry>(
       topic, 10, std::bind(&KiwiOdomTest::on_odometry, this, std::placeholders::_1));
     RCLCPP_INFO(get_logger(), "等待滤波里程计: %s", topic.c_str());

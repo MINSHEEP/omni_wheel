@@ -16,7 +16,10 @@ import sys
 import termios
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional, Sequence
+
+import yaml
 
 
 SOF = 0x33
@@ -24,6 +27,23 @@ FEEDBACK_ID = 0x3B
 PAYLOAD_FORMAT = "<12f"
 PAYLOAD_LENGTH = struct.calcsize(PAYLOAD_FORMAT)
 FRAME_LENGTH = 4 + PAYLOAD_LENGTH + 2
+
+
+def default_params_path() -> Path:
+    """返回源码树或安装空间中的统一底盘参数文件。"""
+    source_path = Path(__file__).resolve().parents[1] / "config" / "kiwi_base.yaml"
+    if source_path.exists():
+        return source_path
+    return Path(__file__).resolve().parents[2] / "share" / "kiwi_base" / "config" / "kiwi_base.yaml"
+
+
+def load_device(path: Path) -> str:
+    """从 kiwi_base.yaml 读取 USB 设备，避免接收工具另存一份默认端口。"""
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    try:
+        return str(data["kiwi_base_node"]["ros__parameters"]["device"])
+    except (KeyError, TypeError) as exc:
+        raise ValueError(f"无效的 Kiwi 参数文件: {path}") from exc
 
 
 def crc8_dji(data: bytes) -> int:
@@ -251,7 +271,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
     """构造串口接收测试参数。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true", help="不打开串口，只运行解析自检")
-    parser.add_argument("--port", default="/dev/robomaster_c", help="USB CDC 或串口设备路径")
+    parser.add_argument(
+        "--params-file", type=Path, default=default_params_path(),
+        help="统一底盘 YAML；默认自动定位 config/kiwi_base.yaml",
+    )
+    parser.add_argument("--port", help="临时覆盖 YAML 中的 USB CDC 设备路径")
     parser.add_argument("--baudrate", type=int, default=115200, help="串口波特率；USB CDC 通常忽略")
     parser.add_argument("--read-timeout", type=float, default=0.1, help="单次读取超时，单位秒")
     parser.add_argument("--duration", type=float, default=0.0, help="运行秒数；0 表示持续运行")
@@ -291,8 +315,8 @@ def receive_feedback(args: argparse.Namespace) -> int:
         serial_port.close()
         elapsed = max(time.monotonic() - started_at, 1e-9)
         print(
-        "统计: valid={} rate={:.2f}Hz length_errors={} crc_errors={} "
-                "payload_errors={} dropped_bytes={}".format(
+            "统计: valid={} rate={:.2f}Hz length_errors={} crc_errors={} "
+            "payload_errors={} dropped_bytes={}".format(
                 parser.valid_frames,
                 parser.valid_frames / elapsed,
                 parser.length_errors,
@@ -310,6 +334,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.self_test:
         run_self_test()
         return 0
+    args.port = args.port or load_device(args.params_file)
     return receive_feedback(args)
 
 

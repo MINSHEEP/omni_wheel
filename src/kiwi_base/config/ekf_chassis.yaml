@@ -1,0 +1,46 @@
+# Pace 二维路线和独立底盘调试使用的 EKF 参数。
+# 只切换本文件即可选择 C 板 IMU，不需要修改 kiwi_base_node。
+ekf_filter_node:
+  ros__parameters:
+    use_sim_time: false
+    frequency: 50.0
+    sensor_timeout: 0.20
+    two_d_mode: true
+    publish_tf: true
+    print_diagnostics: true
+
+    # EKF 独占 odom -> base_footprint；SLAM/定位模块负责 map -> odom。
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_footprint
+    world_frame: odom
+
+    # 状态顺序固定为：
+    # [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
+    odom0: /chassis/odom/raw
+    odom0_config: [
+      false, false, false,  # x, y, z：不重复融合轮速积分位置
+      false, false, false,  # roll, pitch, yaw：不使用轮式积分姿态
+      true,  true,  false,  # vx, vy, vz：融合全向底盘平面线速度
+      false, false, true,   # vroll, vpitch, vyaw：融合轮速正解的 wz
+      false, false, false   # ax, ay, az：轮式里程计不提供加速度
+    ]
+    odom0_queue_size: 10
+    odom0_differential: false
+    odom0_relative: false
+
+    # C 板 IMU 同时提供欧拉角转换后的 yaw 和符号修正后的 gyro_z。
+    imu0: /chassis/imu/data_raw
+    imu0_config: [
+      false, false, false,  # x, y, z：IMU 不提供位置
+      false, false, true,   # roll, pitch, yaw：只融合平面航向 yaw
+      false, false, false,  # vx, vy, vz：IMU 不提供线速度
+      false, false, true,   # vroll, vpitch, vyaw：只融合 z 轴角速度
+      false, false, false   # ax, ay, az：当前平面 EKF 不融合加速度
+    ]
+    imu0_queue_size: 20
+    imu0_differential: false
+    imu0_relative: true
+    imu0_remove_gravitational_acceleration: false
+    imu0_pose_rejection_threshold: 1.0
+    imu0_twist_rejection_threshold: 1.0

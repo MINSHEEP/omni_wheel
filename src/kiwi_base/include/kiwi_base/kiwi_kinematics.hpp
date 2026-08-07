@@ -20,17 +20,15 @@ struct Twist2D
 /** 按 vx、vy、wz 各自的绝对值上限限制速度；非有限输入直接清零。 */
 Twist2D limit_twist(const Twist2D &input, const Twist2D &limits);
 
-#if 0
-/** 历史物理模型参数，当前固定公式不读取。 */
-struct WheelGeometry
-{
-  double x{0.0};
-  double y{0.0};
-  double tangent_angle_rad{0.0};
-  double radius{0.0};
-  double sign{1.0};
-};
-#endif
+// 停用原因：实车轮序、方向和几何公式已固定，当前不需要通用轮几何矩阵。
+// struct WheelGeometry
+// {
+//   double x{0.0};
+//   double y{0.0};
+//   double tangent_angle_rad{0.0};
+//   double radius{0.0};
+//   double sign{1.0};
+// };
 
 /**
  * 三轮 Kiwi 底盘的逆/正运动学。
@@ -47,9 +45,7 @@ class KiwiKinematics
 {
 public:
   /** 使用实车轮半径和中心到轮心距离创建运动学对象。 */
-  explicit KiwiKinematics(
-    double wheel_radius_m = 0.1015,
-    double wheel_center_distance_m = 0.32256);
+  explicit KiwiKinematics(double wheel_radius_m, double wheel_center_distance_m);
 
   /** 将机体 Twist 逆解为轮 1/2/3 的输出轴角速度，单位为 rad/s。 */
   std::array<double, 3> inverse(const Twist2D &twist) const;
@@ -58,15 +54,13 @@ public:
   Twist2D forward(const std::array<double, 3> &wheel_rad_s) const;
 
 private:
-  double wheel_radius_m_{0.1015};
-  double wheel_center_distance_m_{0.32256};
+  double wheel_radius_m_;
+  double wheel_center_distance_m_;
 
-#if 0
-  // 历史限幅接口和物理 Jacobian 字段，当前不参与运行。
-  double max_wheel_speed(const Twist2D &twist) const;
-  std::array<WheelGeometry, 3> wheels_{};
-  double j_[3][3]{};
-  double pinv_[3][3]{};
-#endif
+  // 停用原因：限幅已经集中在 Twist 入口，运行路径使用三行解析公式而不是 Jacobian。
+  // double max_wheel_speed(const Twist2D &twist) const;
+  // std::array<WheelGeometry, 3> wheels_{};
+  // double j_[3][3]{};
+  // double pinv_[3][3]{};
 };
 }  // namespace kiwi_base

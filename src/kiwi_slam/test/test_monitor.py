@@ -1,6 +1,7 @@
 """Unit tests for hardware-independent health calculations."""
 
 import math
+from pathlib import Path
 
 import pytest
 import rclpy
@@ -28,7 +29,8 @@ def test_sample_rate_and_quaternion_norm():
 
 def test_monitor_can_change_log_severity_without_crashing():
     """复现远程日志中的 ERROR→INFO 切换，确保 Humble logger 不再抛 ValueError。"""
-    rclpy.init()
+    config = Path(__file__).resolve().parents[1] / "config" / "monitor.yaml"
+    rclpy.init(args=["--ros-args", "--params-file", str(config)])
     node = KiwiSlamMonitor()
     try:
         node._log_report(DiagnosticStatus.ERROR, "error state")
