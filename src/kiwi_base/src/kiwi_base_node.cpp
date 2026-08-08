@@ -404,7 +404,8 @@ private:
     message.pose.covariance[0] = wheel_pose_variance_[0];
     message.pose.covariance[7] = wheel_pose_variance_[1];
     message.pose.covariance[35] = wheel_pose_variance_[2];
-    // Twist 是 EKF 实际使用的机体系 vx、vy、wz，已经过静止死区。
+    // Twist 是 EKF 实际使用的当前 ROS/雷达统一机体系 vx、vy、wz；
+    // 180° 方向变换已在 KiwiKinematics::forward() 完成，此处不能再次取反。
     message.twist.twist.linear.x = twist.vx;
     message.twist.twist.linear.y = twist.vy;
     message.twist.twist.angular.z = twist.wz;

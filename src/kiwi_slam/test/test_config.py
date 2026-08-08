@@ -64,8 +64,14 @@ def test_urdf_has_required_tf_links_and_joint_names():
     assert "lidar_link_to_livox_frame" in joints
     assert set(arguments) == {"hardware_config"}
     text = (PACKAGE / "urdf" / "kiwi.urdf.xacro").read_text(encoding="utf-8")
-    assert 'name="chassis_imu_xyz" value="0.0115 -0.149 0.0"' in text
+    assert 'name="chassis_imu_xyz" value="-0.0115 0.149 0.0"' in text
+    assert 'name="chassis_imu_rpy" value="0.0 0.0 3.141592653589793"' in text
     assert 'name="lidar_xyz" value="0.0 0.0 0.20"' in text
+    assert 'name="lidar_rpy" value="0.0 0.0 3.141592653589793"' in text
+    assert '<origin xyz="0 0 ${model[\'base_z_m\']}" rpy="0 0 0"/>' in text
+    assert 'xyz="${0.5 * wheel_center} ${-sin60 * wheel_center} 0"' in text
+    assert 'xyz="${-wheel_center} 0 0" rpy="0 0 3.14159265359"' in text
+    assert 'xyz="${0.5 * wheel_center} ${sin60 * wheel_center} 0"' in text
     assert "wheel_radius_m" in text
     assert "wheel_center_distance_m" in text
 

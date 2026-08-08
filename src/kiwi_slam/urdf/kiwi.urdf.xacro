@@ -11,12 +11,16 @@
   <xacro:property name="sin60" value="0.866025403784"/>
 
   <!-- 安装外参标定区：ROS 坐标为 x 前、y 左、z 上，角度单位 rad。 -->
-  <!-- C 板 IMU：实测位于 base_link 前方 11.5 mm、右侧 149 mm。 -->
-  <xacro:property name="chassis_imu_xyz" value="0.0115 -0.149 0.0"/>
-  <xacro:property name="chassis_imu_rpy" value="0.0 0.0 0.0"/>
-  <!-- Mid-360S 整机安装位姿：高度 0.20 m，x/y/角度待实测后只修改这里。 -->
+  <!--
+    当前底盘对外坐标相对原轮组解析式坐标逆时针旋转 180°。
+    C 板 IMU 原测量位置为原坐标的前方 11.5 mm、右侧 149 mm，转换到当前坐标后取反；
+    IMU 若保持水平且板端 x 轴与原轮组方向一致，静态 yaw 同样为 180°。
+  -->
+  <xacro:property name="chassis_imu_xyz" value="-0.0115 0.149 0.0"/>
+  <xacro:property name="chassis_imu_rpy" value="0.0 0.0 3.141592653589793"/>
+  <!-- Mid-360S 整机安装位姿：当前仅高度已知，雷达坐标轴相对底盘旋转 180°。 -->
   <xacro:property name="lidar_xyz" value="0.0 0.0 0.20"/>
-  <xacro:property name="lidar_rpy" value="0.0 0.0 0.0"/>
+  <xacro:property name="lidar_rpy" value="0.0 0.0 3.141592653589793"/>
 
   <link name="base_footprint"/>
 
@@ -64,11 +68,11 @@
     <origin xyz="0 0 0" rpy="0 0 0"/>
   </joint>
 
-  <!-- Motor centers match the 120/0/240 degree order used by kiwi_base kinematics. -->
+  <!-- 轮组几何与运动学解析式同步旋转 180°，保持轮序和 TF 模型使用同一坐标约定。 -->
   <link name="motor_link_1"/>
   <joint name="base_to_motor_1" type="fixed">
     <parent link="base_link"/><child link="motor_link_1"/>
-    <origin xyz="${-0.5 * wheel_center} ${sin60 * wheel_center} 0" rpy="0 0 2.09439510239"/>
+    <origin xyz="${0.5 * wheel_center} ${-sin60 * wheel_center} 0" rpy="0 0 -1.0471975512"/>
   </joint>
   <link name="wheel_link_1">
     <visual><origin rpy="0 1.57079632679 0"/><geometry><cylinder radius="${wheel_radius}" length="${model['wheel_width_m']}"/></geometry></visual>
@@ -81,7 +85,7 @@
   <link name="motor_link_2"/>
   <joint name="base_to_motor_2" type="fixed">
     <parent link="base_link"/><child link="motor_link_2"/>
-    <origin xyz="${wheel_center} 0 0" rpy="0 0 0"/>
+    <origin xyz="${-wheel_center} 0 0" rpy="0 0 3.14159265359"/>
   </joint>
   <link name="wheel_link_2">
     <visual><origin rpy="0 1.57079632679 0"/><geometry><cylinder radius="${wheel_radius}" length="${model['wheel_width_m']}"/></geometry></visual>
@@ -94,7 +98,7 @@
   <link name="motor_link_3"/>
   <joint name="base_to_motor_3" type="fixed">
     <parent link="base_link"/><child link="motor_link_3"/>
-    <origin xyz="${-0.5 * wheel_center} ${-sin60 * wheel_center} 0" rpy="0 0 -2.09439510239"/>
+    <origin xyz="${0.5 * wheel_center} ${sin60 * wheel_center} 0" rpy="0 0 1.0471975512"/>
   </joint>
   <link name="wheel_link_3">
     <visual><origin rpy="0 1.57079632679 0"/><geometry><cylinder radius="${wheel_radius}" length="${model['wheel_width_m']}"/></geometry></visual>
