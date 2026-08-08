@@ -152,7 +152,14 @@ cmake -S third_party/Livox-SDK2 -B third_party/Livox-SDK2/build
 cmake --build third_party/Livox-SDK2/build -j$(nproc)
 sudo cmake --install third_party/Livox-SDK2/build
 sudo ldconfig
+
+# 驱动 CMake 固定从 /usr/local 查找 SDK，安装后应能看到这两个文件。
+test -f /usr/local/lib/liblivox_lidar_sdk_shared.so
+test -f /usr/local/include/livox_lidar_api.h
 ```
+
+若构建报 `Could not find LIVOX_LIDAR_SDK_LIBRARY`，表示 SDK 只完成了编译、尚未
+完成系统安装；重新执行上面的 `sudo cmake --install ...` 和 `sudo ldconfig`。
 
 安装 ROS 依赖并构建：
 
@@ -160,11 +167,22 @@ sudo ldconfig
 sudo apt update
 rosdep install --from-paths src --ignore-src -r -y --rosdistro humble
 
+# 工作区 colcon.meta 会自动只为 livox_ros_driver2 传入 -DDISTRO_ROS=humble。
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install \
   --packages-up-to livox_ros_driver2 fast_lio kiwi_slam
 source install/setup.bash
 ```
+
+日常修改本项目代码时使用单包增量构建即可：
+
+```bash
+colcon build --symlink-install --packages-select kiwi_base kiwi_slam
+```
+
+只有首次部署、修改消息/依赖、更新外部驱动或清理 `build/ install/ log/` 后，才需要重新执行
+全量或按依赖构建。`third_party/Livox-SDK2` 是独立 SDK：首次安装后不会随每次 colcon
+重复编译；只有 SDK 源码或安装环境变化时才重新执行 SDK 的 `cmake --build` 和 `cmake --install`。
 
 ## 7. SCP 到工控机
 
