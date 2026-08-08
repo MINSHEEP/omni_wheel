@@ -1,0 +1,1 @@
+# Livox SDK2 独立安装到 /usr/local，不作为 ROS 2 包参与 colcon 构建。

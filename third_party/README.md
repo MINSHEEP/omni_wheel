@@ -1,6 +1,6 @@
 # 第三方本地依赖
 
-该目录保存不参与 ROS 2 `colcon` 扫描的上游源码。不要把这里的工程移动到
+该目录保存由 `COLCON_IGNORE` 排除、不参与 ROS 2 `colcon` 扫描的上游源码。不要把这里的工程移动到
 `src/`，也不要直接修改上游代码；确需修补时，应记录补丁和对应版本。
 
 ## Livox-SDK2
@@ -36,4 +36,3 @@ cmake --build third_party/Livox-SDK2/build -j
 sudo cmake --install third_party/Livox-SDK2/build
 sudo ldconfig
 ```
-
