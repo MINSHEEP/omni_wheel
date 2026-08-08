@@ -1,0 +1,11 @@
+# Nav2 最终速度到 Kiwi 底盘唯一入口的安全中继参数。
+kiwi_nav_cmd_relay:
+  ros__parameters:
+    use_sim_time: false
+    input_topic: /cmd_vel
+    output_topic: /cmd_vel_safe
+    publish_rate_hz: 20.0
+    command_timeout_s: 0.30
+    max_linear_speed_m_s: 0.30
+    max_lateral_speed_m_s: 0.30
+    max_angular_speed_rad_s: 0.80

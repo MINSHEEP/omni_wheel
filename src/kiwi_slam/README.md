@@ -11,6 +11,7 @@ kiwi_base              USB、运动学、底盘 IMU、轮式 odom、关节状态
 kiwi_robot.launch.py   底盘 + 可替换 EKF YAML + URDF 公共层
 kiwi_lio.launch.py     Mid-360S + IMU 适配 + FAST-LIO2 主路线
 kiwi_slam.launch.py    Pace E110 + SLAM Toolbox 备用二维路线
+kiwi_navigation        Pace SLAM + AMCL + Nav2 全向导航组合层
 ```
 
 传感器选择只发生在 EKF YAML：
@@ -39,11 +40,10 @@ FAST-LIO2 直接读取原始 `/livox/imu`，适配节点只为平面 EKF 复制�
 `/livox/imu/ekf` 支路。两条数据互不覆盖。`/Laser_map` 是三维 `PointCloud2`，不是
 Nav2 所需的二维 `nav_msgs/OccupancyGrid /map`。
 
-当前完成的是 Mid-360S 三维建图和独立底盘 EKF。接入 Nav2 前还需完成：
-
-1. 将 `/Laser_map` 投影为二维占据栅格 `/map`；
-2. 将 LIO 位姿对齐到 `map -> odom`，保持 EKF 独占 `odom -> base_footprint`；
-3. 增加 AMCL/LIO 定位模式、Nav2 costmap、全向控制器和任务层参数。
+Mid-360S 三维建图和 Pace 二维建图均可独立运行。二维导航由新增的
+`kiwi_navigation` 负责：建图模式组合 Pace + SLAM Toolbox + Nav2，定位模式组合
+Pace + map_server + Omni AMCL + Nav2。Mid-360 的 `/Laser_map` 仍是三维点云，暂不冒充
+Nav2 的二维 `/map`；若主路线切换到 Mid-360 导航，需要另行增加点云投影或三维代价地图。
 
 ## 3. Pace 备用路线
 
@@ -230,6 +230,11 @@ ros2 launch kiwi_slam kiwi_lio.launch.py
 优先确认 `/livox/lidar` 存在发布者，以及 `/cloud_registered` 的 `width` 大于 0。
 主路线默认使用硬件 OpenGL；若远程桌面出现黑屏，再加 `rviz_software_rendering:=true` 回退到软件渲染。
 
+FAST-LIO 原生 `camera_init -> body` TF 在启动文件中隔离到 `/fast_lio/tf`，所以它不会出现在
+底盘的 `/tf` 树中，也不会自动与 `odom` 相连。三维 RViz 切换到 `odom`、`map` 或
+`camera_link` 后，点云没有可用变换就会被隐藏；切回时在 Fixed Frame 输入框手动输入
+`camera_init`，或重新加载 `config/kiwi_lio.rviz`，不要选择不存在的 `camera_link`。
+
 无桌面工控机：
 
 ```bash
@@ -240,6 +245,19 @@ Pace 二维备用路线：
 
 ```bash
 ros2 launch kiwi_slam kiwi_slam.launch.py use_rviz:=true
+```
+
+Pace 建图并同时启动 Nav2：
+
+```bash
+ros2 launch kiwi_navigation mapping_navigation.launch.py
+```
+
+已保存地图的 AMCL 导航：
+
+```bash
+ros2 launch kiwi_navigation localization_navigation.launch.py \
+  map:=$HOME/ros2_ws/maps/kiwi_site.yaml
 ```
 
 只启动公共底盘、C 板 EKF 和模型：
@@ -310,4 +328,5 @@ check_urdf /tmp/kiwi.urdf
 ```
 
 FAST-LIO2 发布的原生 TF 被重映射到 `/fast_lio/tf`，避免与底盘 EKF 争抢 TF。
-接入 Nav2 前必须实现并验证唯一的 `map -> odom -> base_footprint -> base_link` 链路。
+二维 Nav2 路线必须验证唯一的 `map -> odom -> base_footprint -> base_link` 链路；三维
+路线必须在 RViz 使用 `camera_init`，不要将两种 Fixed Frame 混用。

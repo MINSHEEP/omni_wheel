@@ -6,6 +6,15 @@
 
 ## 1. 完成定义
 
+当前本地已落地 `src/kiwi_navigation`：
+
+- `mapping_navigation.launch.py`：Pace E110 + SLAM Toolbox + Nav2 同时运行；
+- `localization_navigation.launch.py`：Pace E110 + map_server + Omni AMCL + Nav2；
+- DWB 全向局部规划、SmacPlanner2D 全局规划、Nav2 速度平滑和命令超时中继；
+- Mid-360/FAST-LIO 仍保持独立三维路线，未把 `/Laser_map` 错当成二维 `/map`。
+
+这两个启动文件只在本地实现和验证，未上传工控机。
+
 B 负责机器人“在哪里、去哪里、如何避障”，不处理电机轮序、减速比、USB 帧或 IMU
 安装方向。
 
