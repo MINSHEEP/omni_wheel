@@ -60,7 +60,7 @@ kiwi_teleop_keyboard:
     cmd_vel_topic: /cmd_vel_safe
     speed_m_s: 0.25
     yaw_rad_s: 0.8
-    deadman_timeout_ms: 500
+    deadman_timeout_ms: 200
 
 # 滤波里程计终端调试节点。
 kiwi_odom_test:
