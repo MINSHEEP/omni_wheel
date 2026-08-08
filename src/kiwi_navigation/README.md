@@ -1,7 +1,7 @@
 # kiwi_navigation
 
 `kiwi_navigation` 是 ROS 2 Humble 下的二维建图与 Nav2 集成层。它不修改底盘协议、
-FAST-LIO 或雷达驱动，只组合 `kiwi_slam`、SLAM Toolbox、AMCL 和 Nav2。
+FAST-LIO 或雷达驱动，只组合标准雷达接口、SLAM Toolbox、AMCL 和 Nav2。
 
 ## 坐标系结论
 
@@ -15,10 +15,38 @@ Pace + Nav2:         map -> odom -> base_footprint -> base_link -> lidar_link
 消失。三维建图使用 `kiwi_lio.launch.py` 和 `camera_init`；二维建图导航使用本包和 `map`，
 两条路线不要在同一个 RViz 中手动混切 Fixed Frame。
 
+## 雷达解耦接口
+
+建图和导航只订阅 `/scan`，不订阅 E110 或 Mid-360 的原始消息：
+
+```text
+E110:    bluesea2 -> /scan (sensor_msgs/msg/LaserScan)
+Mid-360: livox_ros_driver2 -> /livox/lidar (CustomMsg)
+         -> kiwi_livox_scan_adapter -> /scan (sensor_msgs/msg/LaserScan)
+```
+
+两种雷达使用同一套 SLAM、Nav2、costmap 和 RViz 配置。替换雷达只改启动参数：
+
+```bash
+# E110
+ros2 launch kiwi_navigation mapping_navigation.launch.py lidar_type:=pace
+
+# Mid-360：使用原始 Livox 点云投影成二维扫描，仍由 SLAM Toolbox 建图
+ros2 launch kiwi_navigation mapping_navigation.launch.py lidar_type:=mid360
+```
+
+Mid-360 的 FAST-LIO 三维路线仍通过 `kiwi_slam kiwi_lio.launch.py` 独立运行；它发布的
+`/Laser_map` 是三维点云，不能直接替代 Nav2 的二维 `/map`。如果以后更换其他雷达，只需
+新增一个驱动适配 launch，使其发布 `/scan` 和正确的传感器 TF，不改 SLAM/Nav2 参数。
+
+当前 Mid-360 二维适配按水平高度切片投影原始点云，未使用 FAST-LIO 的运动去畸变；应先
+低速、静止验证地图质量。若高速运动产生重影，优先使用 E110 二维路线，或后续增加基于
+FAST-LIO 配准点云的投影节点，算法层接口仍保持 `/scan` 不变。
+
 ## 数据链路
 
 ```text
-/scan + /odometry/filtered + TF
+/scan（由雷达适配层提供） + /odometry/filtered + TF
   -> SLAM Toolbox
   -> /map + map->odom
   -> Nav2 global/local costmap
@@ -47,7 +75,7 @@ source install/setup.bash
 ## 建图并启动 Nav2
 
 ```bash
-ros2 launch kiwi_navigation mapping_navigation.launch.py
+ros2 launch kiwi_navigation mapping_navigation.launch.py lidar_type:=pace
 ```
 
 该命令会启动底盘、EKF、Pace E110、SLAM Toolbox、Nav2、速度中继和 RViz。RViz 固定
@@ -62,8 +90,13 @@ ros2 run nav2_map_server map_saver_cli -f ~/ros2_ws/maps/kiwi_site
 ## 已知地图定位与导航
 
 ```bash
+# E110
 ros2 launch kiwi_navigation localization_navigation.launch.py \
-  map:=$HOME/ros2_ws/maps/kiwi_site.yaml
+  map:=$HOME/ros2_ws/maps/kiwi_site.yaml lidar_type:=pace
+
+# Mid-360
+ros2 launch kiwi_navigation localization_navigation.launch.py \
+  map:=$HOME/ros2_ws/maps/kiwi_site.yaml lidar_type:=mid360
 ```
 
 该模式关闭 SLAM Toolbox，由 AMCL 独占 `map -> odom`。AMCL 使用

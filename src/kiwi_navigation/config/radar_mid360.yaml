@@ -1,0 +1,17 @@
+# Mid-360 到统一 LaserScan 接口的适配参数。
+livox_scan_adapter:
+  ros__parameters:
+    use_sim_time: false
+    input_topic: /livox/lidar
+    output_topic: /scan
+    # livox_frame 由 URDF 连接到 base_link；SLAM/Nav2 不关心雷达具体型号。
+    output_frame: livox_frame
+    angle_min_rad: -3.141592653589793
+    angle_max_rad: 3.141592653589793
+    angle_increment_rad: 0.017453292519943295
+    range_min_m: 0.20
+    range_max_m: 30.0
+    # 只取机器人周围水平切片，避免地面和顶部结构污染二维地图。
+    min_height_m: -0.20
+    max_height_m: 0.30
+    scan_time_s: 0.10

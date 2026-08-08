@@ -44,9 +44,21 @@ def test_launch_modes_do_not_mix_slam_and_amcl():
     localization = (PACKAGE / "launch" / "localization_navigation.launch.py").read_text(
         encoding="utf-8"
     )
-    assert '"start_slam": start_slam' in mapping
-    assert '"start_slam": "false"' in localization
+    assert "condition=IfCondition(start_slam)" in mapping
+    assert "slam_toolbox" not in localization
     assert "localization_launch.py" in localization
+    assert "radar_source.launch.py" in mapping
+    assert "radar_source.launch.py" in localization
+
+
+def test_radar_adapter_exposes_one_scan_contract():
+    """E110 和 Mid-360 都必须落到算法层统一的 /scan."""
+    source = (PACKAGE / "launch" / "radar_source.launch.py").read_text(encoding="utf-8")
+    radar = load_yaml("radar_mid360.yaml")["livox_scan_adapter"]["ros__parameters"]
+    assert '"pace"' in source
+    assert '"mid360"' in source
+    assert "kiwi_livox_scan_adapter" in source
+    assert radar["output_topic"] == "/scan"
 
 
 def test_navigation_rviz_uses_map_frame():

@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+"""kiwi_livox_scan_adapter 的 ROS 2 可执行入口."""
+
+from kiwi_navigation.livox_scan_adapter import main
+
+
+if __name__ == "__main__":
+    main()

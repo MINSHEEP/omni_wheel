@@ -1,56 +1,99 @@
 #!/usr/bin/env python3
-"""启动 Pace、底盘、已知地图 AMCL 和 Nav2 全向导航."""
+"""启动可替换雷达、已知地图定位和 Nav2 全向导航."""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import IfElseSubstitution, LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import (
+    IfElseSubstitution,
+    LaunchConfiguration,
+    PathJoinSubstitution,
+    PythonExpression,
+)
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    """定位模式关闭 SLAM Toolbox，由 AMCL 独占 map 到 odom 的动态 TF."""
-    package_share = FindPackageShare("kiwi_navigation")
+    """让 AMCL/Nav2 只消费统一 /scan，雷达型号由 lidar_type 选择."""
+    navigation_share = FindPackageShare("kiwi_navigation")
+    slam_share = FindPackageShare("kiwi_slam")
+    lidar_type = LaunchConfiguration("lidar_type")
     map_file = LaunchConfiguration("map")
     nav2_params = LaunchConfiguration("nav2_params_file")
     relay_params = LaunchConfiguration("relay_params_file")
+    base_params = LaunchConfiguration("base_params_file")
+    ekf_params = LaunchConfiguration("ekf_params_file")
     rviz_config = LaunchConfiguration("rviz_config_file")
     use_rviz = LaunchConfiguration("use_rviz")
     rviz_software_rendering = LaunchConfiguration("rviz_software_rendering")
 
+    chassis_ekf = PathJoinSubstitution(
+        [FindPackageShare("kiwi_base"), "config", "ekf_chassis.yaml"]
+    )
+    mid360_ekf = PathJoinSubstitution([slam_share, "config", "ekf_mid360.yaml"])
+
     arguments = [
         DeclareLaunchArgument("map", description="已保存地图的绝对 YAML 路径"),
         DeclareLaunchArgument(
+            "lidar_type",
+            default_value="pace",
+            description="雷达适配器：pace 或 mid360；算法层统一消费 /scan",
+        ),
+        DeclareLaunchArgument(
             "nav2_params_file",
-            default_value=PathJoinSubstitution([package_share, "config", "nav2.yaml"]),
+            default_value=PathJoinSubstitution([navigation_share, "config", "nav2.yaml"]),
         ),
         DeclareLaunchArgument(
             "relay_params_file",
-            default_value=PathJoinSubstitution([package_share, "config", "cmd_relay.yaml"]),
+            default_value=PathJoinSubstitution(
+                [navigation_share, "config", "cmd_relay.yaml"]
+            ),
+        ),
+        DeclareLaunchArgument(
+            "base_params_file",
+            default_value=PathJoinSubstitution(
+                [FindPackageShare("kiwi_base"), "config", "kiwi_base.yaml"]
+            ),
+        ),
+        DeclareLaunchArgument(
+            "ekf_params_file",
+            default_value=IfElseSubstitution(
+                PythonExpression(["'", lidar_type, "' == 'mid360'"]),
+                mid360_ekf,
+                chassis_ekf,
+            ),
+            description="按雷达类型自动选择底盘或 Mid-360 IMU EKF YAML",
         ),
         DeclareLaunchArgument(
             "rviz_config_file",
-            default_value=PathJoinSubstitution([package_share, "config", "navigation.rviz"]),
+            default_value=PathJoinSubstitution(
+                [navigation_share, "config", "navigation.rviz"]
+            ),
         ),
         DeclareLaunchArgument("use_rviz", default_value="true"),
         DeclareLaunchArgument("rviz_software_rendering", default_value="true"),
     ]
 
-    platform = IncludeLaunchDescription(
+    robot_stack = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            PathJoinSubstitution([FindPackageShare("kiwi_slam"), "launch", "kiwi_slam.launch.py"])
+            PathJoinSubstitution([slam_share, "launch", "kiwi_robot.launch.py"])
         ),
         launch_arguments={
+            "base_params_file": base_params,
+            "ekf_params_file": ekf_params,
             "start_base": "true",
             "start_ekf": "true",
-            "start_lidar": "true",
-            "start_slam": "false",
-            "start_monitor": "false",
             "start_description": "true",
-            "use_rviz": "false",
         }.items(),
+    )
+
+    radar_source = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([navigation_share, "launch", "radar_source.launch.py"])
+        ),
+        launch_arguments={"lidar_type": lidar_type, "start_lidar": "true"}.items(),
     )
 
     localization = IncludeLaunchDescription(
@@ -108,4 +151,6 @@ def generate_launch_description():
         },
     )
 
-    return LaunchDescription(arguments + [platform, localization, navigation, relay, rviz])
+    return LaunchDescription(
+        arguments + [robot_stack, radar_source, localization, navigation, relay, rviz]
+    )

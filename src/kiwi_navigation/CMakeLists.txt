@@ -8,7 +8,9 @@ find_package(ament_cmake_python REQUIRED)
 ament_python_install_package(${PROJECT_NAME})
 
 install(
-  PROGRAMS scripts/kiwi_nav_cmd_relay
+  PROGRAMS
+    scripts/kiwi_nav_cmd_relay
+    scripts/kiwi_livox_scan_adapter
   DESTINATION lib/${PROJECT_NAME})
 
 install(
@@ -18,6 +20,7 @@ install(
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(test_cmd_relay test/test_cmd_relay.py)
+  ament_add_pytest_test(test_livox_scan_adapter test/test_livox_scan_adapter.py)
   ament_add_pytest_test(test_config test/test_config.py)
 endif()
 

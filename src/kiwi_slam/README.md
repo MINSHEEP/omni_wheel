@@ -11,7 +11,7 @@ kiwi_base              USB、运动学、底盘 IMU、轮式 odom、关节状态
 kiwi_robot.launch.py   底盘 + 可替换 EKF YAML + URDF 公共层
 kiwi_lio.launch.py     Mid-360S + IMU 适配 + FAST-LIO2 主路线
 kiwi_slam.launch.py    Pace E110 + SLAM Toolbox 备用二维路线
-kiwi_navigation        Pace SLAM + AMCL + Nav2 全向导航组合层
+kiwi_navigation        可替换雷达 + SLAM/AMCL + Nav2 全向导航组合层
 ```
 
 传感器选择只发生在 EKF YAML：
@@ -41,9 +41,10 @@ FAST-LIO2 直接读取原始 `/livox/imu`，适配节点只为平面 EKF 复制�
 Nav2 所需的二维 `nav_msgs/OccupancyGrid /map`。
 
 Mid-360S 三维建图和 Pace 二维建图均可独立运行。二维导航由新增的
-`kiwi_navigation` 负责：建图模式组合 Pace + SLAM Toolbox + Nav2，定位模式组合
-Pace + map_server + Omni AMCL + Nav2。Mid-360 的 `/Laser_map` 仍是三维点云，暂不冒充
-Nav2 的二维 `/map`；若主路线切换到 Mid-360 导航，需要另行增加点云投影或三维代价地图。
+`kiwi_navigation` 负责：E110 直接提供 `/scan`，Mid-360 通过独立点云投影节点提供相同
+的 `/scan`，上层 SLAM Toolbox、AMCL 和 Nav2 不感知雷达型号。Mid-360 的 `/Laser_map`
+仍是三维点云，不冒充 Nav2 的二维 `/map`；二维路线使用 `radar_mid360.yaml` 的水平
+切片生成 `/scan`。
 
 ## 3. Pace 备用路线
 
@@ -251,6 +252,12 @@ Pace 建图并同时启动 Nav2：
 
 ```bash
 ros2 launch kiwi_navigation mapping_navigation.launch.py
+```
+
+切换到 Mid-360 作为二维建图输入：
+
+```bash
+ros2 launch kiwi_navigation mapping_navigation.launch.py lidar_type:=mid360
 ```
 
 已保存地图的 AMCL 导航：
