@@ -221,9 +221,14 @@ source install/setup.bash
 Mid-360S 主路线：
 
 ```bash
-ping -c 3 192.168.1.12
+ping -c 3 192.168.1.117
 ros2 launch kiwi_slam kiwi_lio.launch.py
 ```
+
+三维 RViz 的 Fixed Frame 使用 `camera_init`。这是 FAST-LIO2 硬编码的初始世界坐标系，
+与摄像头硬件无关；`/cloud_registered` 和 `/Laser_map` 都使用该坐标系。若 RViz 没有点云，
+优先确认 `/livox/lidar` 存在发布者，以及 `/cloud_registered` 的 `width` 大于 0。
+主路线默认使用硬件 OpenGL；若远程桌面出现黑屏，再加 `rviz_software_rendering:=true` 回退到软件渲染。
 
 无桌面工控机：
 
@@ -247,6 +252,7 @@ ros2 launch kiwi_slam kiwi_robot.launch.py
 
 ```bash
 # Mid-360S 输入
+ros2 topic info /livox/lidar --verbose
 ros2 topic hz /livox/lidar
 ros2 topic hz /livox/imu
 ros2 topic echo /livox/imu --once
@@ -263,6 +269,7 @@ ros2 topic hz /odometry/filtered
 ros2 topic echo /odometry/filtered --once
 ros2 topic hz /cloud_registered
 ros2 topic hz /Laser_map
+ros2 topic echo /cloud_registered --once
 ros2 topic echo /Odometry --once
 
 # TF 所有权和安装外参

@@ -110,8 +110,10 @@ def test_mid360s_network_and_fast_lio_contract():
     )
     host = network["Mid360s"]["host_net_info"][0]
     lidar = network["lidar_configs"][0]
+    extrinsic = lidar["extrinsic_parameter"]
     assert host["host_ip"] == "192.168.1.50"
-    assert lidar["ip"] == "192.168.1.12"
+    assert lidar["ip"] == "192.168.1.117"
+    assert all(isinstance(extrinsic[key], int) for key in ("x", "y", "z"))
     assert len(
         {
             host["cmd_data_port"],
@@ -128,6 +130,12 @@ def test_mid360s_network_and_fast_lio_contract():
     assert params["preprocess"]["lidar_type"] == 1
     assert params["mapping"]["extrinsic_est_en"] is False
     assert params["publish"]["map_en"] is True
+
+
+def test_lio_rviz_prefers_hardware_rendering():
+    """工控机有 Intel 核显时，三维 RViz 默认不强制软件渲染。"""
+    launch = (PACKAGE / "launch" / "kiwi_lio.launch.py").read_text(encoding="utf-8")
+    assert '"rviz_software_rendering", default_value="false"' in launch
 
     driver = load_parameters("livox_mid360s.yaml", "livox_lidar_publisher")
     assert driver["xfer_format"] == 1

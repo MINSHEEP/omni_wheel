@@ -48,7 +48,7 @@ def generate_launch_description():
             "use_rviz", default_value="true", description="是否启动三维建图 RViz"
         ),
         DeclareLaunchArgument(
-            "rviz_software_rendering", default_value="true", description="RViz 是否使用软件 OpenGL"
+            "rviz_software_rendering", default_value="false", description="RViz 是否使用软件 OpenGL"
         ),
         DeclareLaunchArgument(
             "lidar_config_file",
