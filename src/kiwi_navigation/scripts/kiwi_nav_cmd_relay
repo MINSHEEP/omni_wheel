@@ -1,8 +1,0 @@
-#!/usr/bin/env python3
-"""kiwi_nav_cmd_relay 的 ROS 2 可执行入口。"""
-
-from kiwi_navigation.cmd_relay import main
-
-
-if __name__ == "__main__":
-    main()

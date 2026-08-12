@@ -111,8 +111,8 @@ namespace kiwi_base
   /**
    * 将 ROS 机体速度转换为三个轮输出轴角速度。
    *
-   * ROS/雷达坐标轴相对轮组解析式坐标轴固定逆时针偏置 180°，因此先将
-   * vx、vy 取反，wz 保持不变；R 为轮半径，L 为中心到轮心距离：
+   * 坐标遵循 ROS 平面约定：vx 向前、vy 向左、wz 逆时针；
+   * R 为轮半径，L 为中心到轮心距离：
    *   w1 = ( sin60*vx + 0.5*vy - L*wz) / R
    *   w2 = (            -vy         - L*wz) / R
    *   w3 = (-sin60*vx + 0.5*vy - L*wz) / R
@@ -123,13 +123,10 @@ namespace kiwi_base
     // 停用原因：输入有限值处理和三轴限幅已集中在 limit_twist()，避免重复判断。
     // if (!std::isfinite(t.vx) || !std::isfinite(t.vy) || !std::isfinite(t.wz))
     //   return out;
-    // 180° 平面旋转等价于线速度两个分量同时取反，角速度符号不变。
-    const double vx = -t.vx;
-    const double vy = -t.vy;
     const double rotation_speed = wheel_center_distance_m_ * t.wz;
-    out[0] = (kSin60 * vx + 0.5 * vy - rotation_speed) / wheel_radius_m_;
-    out[1] = (-vy - rotation_speed) / wheel_radius_m_;
-    out[2] = (-kSin60 * vx + 0.5 * vy - rotation_speed) / wheel_radius_m_;
+    out[0] = (kSin60 * t.vx + 0.5 * t.vy - rotation_speed) / wheel_radius_m_;
+    out[1] = (-t.vy - rotation_speed) / wheel_radius_m_;
+    out[2] = (-kSin60 * t.vx + 0.5 * t.vy - rotation_speed) / wheel_radius_m_;
     return out;
   }
 
@@ -143,15 +140,11 @@ namespace kiwi_base
     // 停用原因：decode_feedback() 已拒绝非有限 float，运动学层不重复校验协议数据。
     // if (!std::isfinite(w[0]) || !std::isfinite(w[1]) || !std::isfinite(w[2]))
     //   return t;
-    // 先按轮组解析式恢复速度，再将线速度变换回 ROS/雷达坐标系。
-    const Twist2D wheel_frame_twist{
-      wheel_radius_m_ * (w[0] - w[2]) / (2.0 * kSin60),
-      wheel_radius_m_ * (w[0] + w[2] - 2.0 * w[1]) / 3.0,
-      -wheel_radius_m_ * (w[0] + w[1] + w[2]) /
-      (3.0 * wheel_center_distance_m_)};
-    t.vx = -wheel_frame_twist.vx;
-    t.vy = -wheel_frame_twist.vy;
-    t.wz = wheel_frame_twist.wz;
+    // 与上面的 w1/w2/w3 逆解严格对应，直接恢复 ROS 机体速度。
+    t.vx = wheel_radius_m_ * (w[0] - w[2]) / (2.0 * kSin60);
+    t.vy = wheel_radius_m_ * (w[0] + w[2] - 2.0 * w[1]) / 3.0;
+    t.wz = -wheel_radius_m_ * (w[0] + w[1] + w[2]) /
+      (3.0 * wheel_center_distance_m_);
     return t;
   }
   // 停用原因：当前只限制机体 Twist，不在轮速层做二次缩放，避免改变运动方向比例。

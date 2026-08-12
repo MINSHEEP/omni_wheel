@@ -34,14 +34,14 @@ TEST(KiwiKinematics, MatchesPhysicalBasisMotions)
   KiwiKinematics kinematics(kWheelRadius, kCenterDistance);
 
   const auto forward = kinematics.inverse({1.0, 0.0, 0.0});
-  EXPECT_NEAR(forward[0], -kSin60 / kWheelRadius, 1e-10);
+  EXPECT_NEAR(forward[0], kSin60 / kWheelRadius, 1e-10);
   EXPECT_NEAR(forward[1], 0.0, 1e-10);
-  EXPECT_NEAR(forward[2], kSin60 / kWheelRadius, 1e-10);
+  EXPECT_NEAR(forward[2], -kSin60 / kWheelRadius, 1e-10);
 
   const auto left = kinematics.inverse({0.0, 1.0, 0.0});
-  EXPECT_NEAR(left[0], -0.5 / kWheelRadius, 1e-10);
-  EXPECT_NEAR(left[1], 1.0 / kWheelRadius, 1e-10);
-  EXPECT_NEAR(left[2], -0.5 / kWheelRadius, 1e-10);
+  EXPECT_NEAR(left[0], 0.5 / kWheelRadius, 1e-10);
+  EXPECT_NEAR(left[1], -1.0 / kWheelRadius, 1e-10);
+  EXPECT_NEAR(left[2], 0.5 / kWheelRadius, 1e-10);
 
   const auto rotate = kinematics.inverse({0.0, 0.0, 1.0});
   const double yaw_wheel_speed = -kCenterDistance / kWheelRadius;
@@ -55,19 +55,19 @@ TEST(KiwiKinematics, UsesConfiguredGeometry)
   KiwiKinematics kinematics(0.2, 0.3);
   const auto wheel_speed = kinematics.inverse({1.0, 0.0, 1.0});
 
-  EXPECT_NEAR(wheel_speed[0], (-kSin60 - 0.3) / 0.2, 1e-10);
+  EXPECT_NEAR(wheel_speed[0], (kSin60 - 0.3) / 0.2, 1e-10);
   EXPECT_NEAR(wheel_speed[1], -0.3 / 0.2, 1e-10);
-  EXPECT_NEAR(wheel_speed[2], (kSin60 - 0.3) / 0.2, 1e-10);
+  EXPECT_NEAR(wheel_speed[2], (-kSin60 - 0.3) / 0.2, 1e-10);
 }
 
-TEST(KiwiKinematics, ForwardUsesTheSame180DegreeFrameOffset)
+TEST(KiwiKinematics, ForwardRestoresPositiveXDirection)
 {
   KiwiKinematics kinematics(kWheelRadius, kCenterDistance);
   const auto wheel_speed = std::array<double, 3>{kSin60 / kWheelRadius, 0.0,
     -kSin60 / kWheelRadius};
 
   const Twist2D output = kinematics.forward(wheel_speed);
-  EXPECT_NEAR(output.vx, -1.0, 1e-10);
+  EXPECT_NEAR(output.vx, 1.0, 1e-10);
   EXPECT_NEAR(output.vy, 0.0, 1e-10);
   EXPECT_NEAR(output.wz, 0.0, 1e-10);
 }

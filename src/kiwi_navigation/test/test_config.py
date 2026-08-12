@@ -1,4 +1,4 @@
-"""Nav2 参数、启动模式和 RViz 坐标系静态检查."""
+"""检查 E110 Nav2 参数和启动模式。"""
 
 from pathlib import Path
 
@@ -9,12 +9,10 @@ PACKAGE = Path(__file__).resolve().parents[1]
 
 
 def load_yaml(name: str):
-    """读取被测配置文件."""
     return yaml.safe_load((PACKAGE / "config" / name).read_text(encoding="utf-8"))
 
 
 def test_nav2_uses_omni_frames_and_lateral_sampling():
-    """DWB、AMCL 和 costmap 必须按三轮全向底盘配置."""
     config = load_yaml("nav2.yaml")
     amcl = config["amcl"]["ros__parameters"]
     controller = config["controller_server"]["ros__parameters"]
@@ -28,16 +26,15 @@ def test_nav2_uses_omni_frames_and_lateral_sampling():
     assert config["local_costmap"]["local_costmap"]["ros__parameters"]["global_frame"] == "odom"
 
 
-def test_speed_relay_matches_base_input():
-    """Nav2 最终速度必须进入底盘现有的 /cmd_vel_safe."""
-    relay = load_yaml("cmd_relay.yaml")["kiwi_nav_cmd_relay"]["ros__parameters"]
-    assert relay["input_topic"] == "/cmd_vel"
-    assert relay["output_topic"] == "/cmd_vel_safe"
-    assert relay["command_timeout_s"] <= 0.30
+def test_velocity_smoother_is_the_direct_cmd_vel_output():
+    config = load_yaml("nav2.yaml")
+    smoother = config["velocity_smoother"]["ros__parameters"]
+    assert smoother["max_velocity"] == [0.30, 0.30, 0.80]
+    assert smoother["velocity_timeout"] == 0.50
+    assert not (PACKAGE / "config" / "cmd_relay.yaml").exists()
 
 
-def test_launch_modes_do_not_mix_slam_and_amcl():
-    """建图模式启动 SLAM，已知地图模式关闭 SLAM 并启动 AMCL."""
+def test_launch_modes_use_e110_without_adapter_or_relay():
     mapping = (PACKAGE / "launch" / "mapping_navigation.launch.py").read_text(
         encoding="utf-8"
     )
@@ -47,22 +44,14 @@ def test_launch_modes_do_not_mix_slam_and_amcl():
     assert "condition=IfCondition(start_slam)" in mapping
     assert "slam_toolbox" not in localization
     assert "localization_launch.py" in localization
-    assert "radar_source.launch.py" in mapping
-    assert "radar_source.launch.py" in localization
-
-
-def test_radar_adapter_exposes_one_scan_contract():
-    """E110 和 Mid-360 都必须落到算法层统一的 /scan."""
-    source = (PACKAGE / "launch" / "radar_source.launch.py").read_text(encoding="utf-8")
-    radar = load_yaml("radar_mid360.yaml")["livox_scan_adapter"]["ros__parameters"]
-    assert '"pace"' in source
-    assert '"mid360"' in source
-    assert "kiwi_livox_scan_adapter" in source
-    assert radar["output_topic"] == "/scan"
+    for launch in (mapping, localization):
+        assert 'FindPackageShare("bluesea2")' in launch
+        assert "lidar_type" not in launch
+        assert "radar_source.launch.py" not in launch
+        assert "kiwi_nav_cmd_relay" not in launch
 
 
 def test_navigation_rviz_uses_map_frame():
-    """Nav2 RViz 固定坐标系必须属于二维 map-odom-base TF 树."""
     rviz = (PACKAGE / "config" / "navigation.rviz").read_text(encoding="utf-8")
     assert "Fixed Frame: map" in rviz
     assert "camera_init" not in rviz

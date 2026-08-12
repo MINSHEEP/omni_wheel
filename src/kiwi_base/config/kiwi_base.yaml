@@ -1,25 +1,28 @@
-# Kiwi 底盘硬件唯一参数入口（ROS 2 Humble）。
-# 本文件只描述底盘、键盘、调试节点和结构尺寸；EKF 传感器选择放在独立 YAML。
+# Kiwi 底盘唯一参数入口（ROS 2 Humble）。
+# 底盘、EKF、键盘、调试节点和结构尺寸均在本文件维护。
 kiwi_base_node:
   ros__parameters:
     use_sim_time: false
     # USB CDC 设备。没有硬件时节点仍可启动，但不会产生 TX 日志。
     device: /dev/robomaster_c
     publish_rate: 50.0
-    log_serial_frames: false
+    log_serial_frames: true
 
     # 反馈电机数值 -> 轮输出轴 rad/s 的倍率。
     # 若 C 板回传的是电机轴 rad/s，保持 1.0；主机随后除以 19。
     feedback_motor_scale_to_rad_s: 1.0
     motor_reduction_ratio: [19.0, 19.0, 19.0]
+    # C 板回传的电机转子 rad/s 静止死区；先过滤电机反馈，再做减速比换算和正解。
+    # 0.20 rad/s 对应轮输出约 0.0105 rad/s，仅抑制零速附近的微小编码器抖动。
+    motor_feedback_deadband_rad_s: [0.20, 0.20, 0.20]
 
     # 实车几何：203 mm 轮径；中心到轮心距离 322.56 mm。
     wheel_radius_m: 0.1015
     wheel_center_distance_m: 0.32256
 
-    # /cmd_vel_safe 入口限幅：分别对应前后、左右和旋转速度的绝对值上限。
-    max_linear_speed_m_s: 0.6
-    max_lateral_speed_m_s: 0.6
+    # /cmd_vel 入口限幅：分别对应前后、左右和旋转速度的绝对值上限。
+    max_linear_speed_m_s: 0.8
+    max_lateral_speed_m_s: 0.8
     max_angular_speed_rad_s: 1.5
 
     # 测量协方差对角线（方差，不是标准差），顺序均为 x、y、z。
@@ -37,8 +40,11 @@ kiwi_base_node:
     # 顺序为 vx(m/s)、vy(m/s)、wz(rad/s)，过滤静止编码器抖动后再积分和发布。
     wheel_twist_deadband: [0.015, 0.015, 0.022]
 
-    # ROS 话题入口；Nav2、键盘或测试脚本只需要发布 cmd_vel_topic。
-    cmd_vel_topic: /cmd_vel_safe
+    # 轮组解析坐标相对 ROS 机体坐标固定逆时针偏置 180 度；该偏置已经由
+    # KiwiKinematics 正逆解成对处理，不能再在 cmd_vel、odom 或 TF 中重复旋转。
+
+    # Nav2、键盘或测试脚本统一向底盘速度入口发布 Twist。
+    cmd_vel_topic: /cmd_vel
     wheel_odom_topic: /chassis/odom/raw
     imu_topic: /chassis/imu/data_raw
     # 0x3B 解码调试消息；字段为电机、欧拉角、原始角速度、原始加速度。
@@ -53,11 +59,57 @@ kiwi_base_node:
 
 # 暂不启用：加速度斜坡、命令超时、反馈联锁和软件急停。
 
+# 平面 EKF：融合轮式 vx/vy/wz 与 C 板 IMU 的相对 yaw 和 gyro_z。
+ekf_filter_node:
+  ros__parameters:
+    use_sim_time: false
+    frequency: 50.0
+    sensor_timeout: 0.20
+    two_d_mode: true
+    publish_tf: true
+    print_diagnostics: true
+
+    # EKF 独占 odom -> base_footprint；SLAM/定位模块负责 map -> odom。
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_footprint
+    world_frame: odom
+
+    # 状态顺序固定为：
+    # [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
+    odom0: /chassis/odom/raw
+    odom0_config: [
+      false, false, false,  # x, y, z：不重复融合轮速积分位置
+      false, false, false,  # roll, pitch, yaw：不使用轮式积分姿态
+      true,  true,  false,  # vx, vy, vz：融合全向底盘平面线速度
+      false, false, true,   # vroll, vpitch, vyaw：融合轮速正解的 wz
+      false, false, false   # ax, ay, az：轮式里程计不提供加速度
+    ]
+    odom0_queue_size: 10
+    odom0_differential: false
+    odom0_relative: false
+
+    # C 板 IMU 同时提供欧拉角转换后的 yaw 和符号修正后的 gyro_z。
+    imu0: /chassis/imu/data_raw
+    imu0_config: [
+      false, false, false,  # x, y, z：IMU 不提供位置
+      false, false, true,   # roll, pitch, yaw：只融合平面航向 yaw
+      false, false, false,  # vx, vy, vz：IMU 不提供线速度
+      false, false, true,   # vroll, vpitch, vyaw：只融合 z 轴角速度
+      false, false, false   # ax, ay, az：当前平面 EKF 不融合加速度
+    ]
+    imu0_queue_size: 20
+    imu0_differential: false
+    imu0_relative: true
+    imu0_remove_gravitational_acceleration: false
+    imu0_pose_rejection_threshold: 1.0
+    imu0_twist_rejection_threshold: 1.0
+
 # 键盘节点不再在 C++ 中保存速度默认值，修改手动控制速度只改这里。
 kiwi_teleop_keyboard:
   ros__parameters:
-    use_sim_time: false
-    cmd_vel_topic: /cmd_vel_safe
+    # 键盘与 Nav2 使用同一个底盘速度入口；两者不要同时控制机器人。
+    cmd_vel_topic: /cmd_vel
     speed_m_s: 0.25
     yaw_rad_s: 0.8
     deadman_timeout_ms: 200
@@ -65,11 +117,11 @@ kiwi_teleop_keyboard:
 # 滤波里程计终端调试节点。
 kiwi_odom_test:
   ros__parameters:
-    use_sim_time: false
     odom_topic: /odometry/filtered
 
-# 只供 Xacro 读取的底盘结构尺寸；传感器安装外参不放在这里。
-# IMU 和雷达相对 base_link 的安装标定只维护 urdf/kiwi.urdf.xacro。
+# 只供结构描述和兼容工具读取的底盘尺寸；传感器安装外参不放在这里。
+# base_radius_m 历史字段实际表示“中心到轮心距离”，不是 Nav2 的机身外接半径。
+# Nav2 的安全半径单独维护在 kiwi_navigation/config/nav2.yaml。
 kiwi_robot_model:
   ros__parameters:
     base_z_m: 0.0

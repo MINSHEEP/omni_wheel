@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""启动 Kiwi 底盘、可替换 EKF 配置和由 Xacro 生成的 RobotModel。"""
+"""启动 Kiwi 底盘、平面 EKF 和由 Xacro 生成的 RobotModel。"""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -10,11 +10,9 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    """底盘公共入口；硬件参数与 EKF 传感器选择由两个 YAML 独立管理。"""
+    """底盘与 EKF 共用统一 YAML，结构尺寸由 Xacro 从该文件读取。"""
     package_share = FindPackageShare("kiwi_slam")
     base_params = LaunchConfiguration("base_params_file")
-    ekf_params = LaunchConfiguration("ekf_params_file")
-    robot_params = LaunchConfiguration("robot_params_file")
     start_base = LaunchConfiguration("start_base")
     start_ekf = LaunchConfiguration("start_ekf")
     start_description = LaunchConfiguration("start_description")
@@ -31,20 +29,6 @@ def generate_launch_description():
                 [FindPackageShare("kiwi_base"), "config", "kiwi_base.yaml"]
             ),
             description="底盘硬件、话题、测量和结构参数 YAML",
-        ),
-        DeclareLaunchArgument(
-            "ekf_params_file",
-            default_value=PathJoinSubstitution(
-                [FindPackageShare("kiwi_base"), "config", "ekf_chassis.yaml"]
-            ),
-            description="EKF 传感器选择和融合参数 YAML",
-        ),
-        DeclareLaunchArgument(
-            "robot_params_file",
-            default_value=PathJoinSubstitution(
-                [package_share, "config", "robot_state_publisher.yaml"]
-            ),
-            description="robot_state_publisher 参数 YAML",
         ),
         DeclareLaunchArgument(
             "start_base", default_value="true", description="是否启动 USB 底盘节点"
@@ -64,7 +48,7 @@ def generate_launch_description():
             name="robot_state_publisher",
             condition=IfCondition(start_description),
             output="screen",
-            parameters=[robot_params, {"robot_description": robot_description}],
+            parameters=[base_params, {"robot_description": robot_description}],
         ),
         Node(
             package="kiwi_base",
@@ -80,7 +64,7 @@ def generate_launch_description():
             name="ekf_filter_node",
             condition=IfCondition(start_ekf),
             output="screen",
-            parameters=[ekf_params],
+            parameters=[base_params],
         ),
     ]
     return LaunchDescription(arguments + nodes)

@@ -3,7 +3,7 @@
  * @brief Kiwi 三轮底盘最小联调节点。
  *
  * 运行链路只有四步：
- *   /cmd_vel_safe -> 三轴限幅 -> 三行物理公式 -> USB 0x3A -> C 板反馈话题。
+ *   /cmd_vel -> 三轴限幅 -> 三行物理公式 -> USB 0x3A -> C 板反馈话题。
  * 加速度斜坡、急停和反馈联锁暂不放入运行路径。
  */
 #include "kiwi_base/kiwi_kinematics.hpp"
@@ -131,8 +131,10 @@ public:
       throw std::invalid_argument("motor reduction ratio must contain three finite positive values");
     for (size_t i = 0; i < 3; ++i)
       motor_ratio_[i] = ratios[i];
+    motor_feedback_deadband_rad_s_ = declare_vector3(
+      *this, "motor_feedback_deadband_rad_s");
 
-    // 几何参数只在 kiwi_base.yaml 保存一份，运动学和 URDF 读取同一组数值。
+    // 运动学只从 kiwi_base.yaml 读取轮半径和中心到轮心距离；URDF/Nav2 的外形参数单独维护。
     const double wheel_radius_m = declare_required<double>(*this, "wheel_radius_m");
     const double wheel_center_distance_m =
       declare_required<double>(*this, "wheel_center_distance_m");
@@ -168,6 +170,9 @@ public:
     if (std::any_of(
         imu_angular_velocity_deadband_.begin(), imu_angular_velocity_deadband_.end(),
         negative_deadband) ||
+        std::any_of(
+          motor_feedback_deadband_rad_s_.begin(), motor_feedback_deadband_rad_s_.end(),
+          negative_deadband) ||
         std::any_of(wheel_twist_deadband_.begin(), wheel_twist_deadband_.end(), negative_deadband))
       throw std::invalid_argument("measurement deadbands must be non-negative");
 
@@ -355,10 +360,19 @@ private:
     const auto steady_now = Clock::now();
     const double dt = have_feedback_time_ ?
       std::chrono::duration<double>(steady_now - last_feedback_time_).count() : 0.0;
+    const Vector3 scaled_motor_velocity{
+      state.motor_actual[0] * feedback_scale_,
+      state.motor_actual[1] * feedback_scale_,
+      state.motor_actual[2] * feedback_scale_};
+    const auto motor_velocity = correct_vector(
+      scaled_motor_velocity,
+      {1.0, 1.0, 1.0}, motor_feedback_deadband_rad_s_);
     // 除减速比得到真实的轮子转速
     for (size_t i = 0; i < 3; ++i)
     {
-      wheel_velocity_[i] = state.motor_actual[i] * feedback_scale_ / motor_ratio_[i];
+      // 先在电机轴 rad/s 上清零静止抖动，再除减速比；这样三轮噪声
+      // 不会经过正运动学重新组合成假的 vx、vy 或 wz。
+      wheel_velocity_[i] = motor_velocity[i] / motor_ratio_[i];
       if (dt > 0.0 && dt < 1.0)
         wheel_position_[i] += wheel_velocity_[i] * dt;
     }
@@ -498,6 +512,7 @@ private:
   double feedback_scale_{};
   bool log_serial_frames_{};
   std::array<double, 3> motor_ratio_{};
+  Vector3 motor_feedback_deadband_rad_s_{};
   std::array<double, 3> wheel_pose_variance_{};
   std::array<double, 3> wheel_twist_variance_{};
   std::array<double, 3> imu_orientation_variance_{};

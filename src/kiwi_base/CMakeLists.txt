@@ -6,6 +6,7 @@ if(NOT CMAKE_CXX_STANDARD)
 endif()
 add_compile_options(-Wall -Wextra -Wpedantic)
 find_package(ament_cmake REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
@@ -30,14 +31,18 @@ ament_target_dependencies(kiwi_base_node rclcpp geometry_msgs nav_msgs sensor_ms
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 target_link_libraries(kiwi_base_node "${cpp_typesupport_target}")
 add_executable(kiwi_teleop_keyboard src/kiwi_teleop_keyboard.cpp)
-ament_target_dependencies(kiwi_teleop_keyboard rclcpp geometry_msgs)
+ament_target_dependencies(kiwi_teleop_keyboard ament_index_cpp rclcpp geometry_msgs)
 add_executable(kiwi_odom_test src/kiwi_odom_test.cpp)
 ament_target_dependencies(kiwi_odom_test rclcpp nav_msgs)
 install(TARGETS kiwi_base_node kiwi_teleop_keyboard kiwi_odom_test kiwi_base_core ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY msg/ DESTINATION share/${PROJECT_NAME}/msg)
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
-install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
+install(
+  FILES
+    launch/kiwi_base.launch.py
+    launch/kiwi_base_ekf.launch.py
+  DESTINATION share/${PROJECT_NAME}/launch)
 # 安装命令发送工具和 0x3B 组合反馈接收工具，便于脱离 ROS 节点进行串口联调。
 install(
   PROGRAMS tools/kiwi_serial_test.py tools/kiwi_feedback_receiver.py

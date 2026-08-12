@@ -1,8 +1,0 @@
-#!/usr/bin/env python3
-"""Mid-360S IMU EKF 适配节点安装入口。"""
-
-from kiwi_slam.mid360_imu_adapter import main
-
-
-if __name__ == "__main__":
-    main()

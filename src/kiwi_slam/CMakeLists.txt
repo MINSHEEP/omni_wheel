@@ -11,19 +11,23 @@ install(
   PROGRAMS
     scripts/kiwi_slam_monitor
     scripts/kiwi_slam_compatibility
-    scripts/kiwi_mid360_imu_adapter
   DESTINATION lib/${PROJECT_NAME})
 
+install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 install(
-  DIRECTORY config launch urdf
-  DESTINATION share/${PROJECT_NAME})
+  FILES
+    launch/kiwi_robot.launch.py
+    launch/kiwi_slam.launch.py
+  DESTINATION share/${PROJECT_NAME}/launch)
+install(
+  FILES urdf/kiwi.urdf.xacro
+  DESTINATION share/${PROJECT_NAME}/urdf)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(test_monitor test/test_monitor.py)
   ament_add_pytest_test(test_config test/test_config.py)
   ament_add_pytest_test(test_compatibility test/test_compatibility.py)
-  ament_add_pytest_test(test_mid360_imu_adapter test/test_mid360_imu_adapter.py)
 endif()
 
 ament_package()

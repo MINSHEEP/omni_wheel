@@ -20,9 +20,7 @@ def generate_launch_description():
     lidar_params = LaunchConfiguration("lidar_params_file")
     slam_params = LaunchConfiguration("slam_params_file")
     base_params = LaunchConfiguration("base_params_file")
-    ekf_params = LaunchConfiguration("ekf_params_file")
     monitor_params = LaunchConfiguration("monitor_params_file")
-    robot_params = LaunchConfiguration("robot_params_file")
     rviz_config = LaunchConfiguration("rviz_config_file")
 
     start_base = LaunchConfiguration("start_base")
@@ -56,20 +54,6 @@ def generate_launch_description():
                 [FindPackageShare("kiwi_base"), "config", "kiwi_base.yaml"]
             ),
             description="底盘硬件参数 YAML",
-        ),
-        DeclareLaunchArgument(
-            "ekf_params_file",
-            default_value=PathJoinSubstitution(
-                [FindPackageShare("kiwi_base"), "config", "ekf_chassis.yaml"]
-            ),
-            description="C 板 IMU 备用 EKF 参数 YAML",
-        ),
-        DeclareLaunchArgument(
-            "robot_params_file",
-            default_value=PathJoinSubstitution(
-                [package_share, "config", "robot_state_publisher.yaml"]
-            ),
-            description="robot_state_publisher 参数 YAML",
         ),
         DeclareLaunchArgument(
             "rviz_config_file",
@@ -121,8 +105,6 @@ def generate_launch_description():
         ),
         launch_arguments={
             "base_params_file": base_params,
-            "ekf_params_file": ekf_params,
-            "robot_params_file": robot_params,
             "start_base": start_base,
             "start_ekf": start_ekf,
             "start_description": start_description,
