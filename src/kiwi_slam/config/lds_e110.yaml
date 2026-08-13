@@ -19,8 +19,8 @@ bluesea_node:
     output_cloud: false
     output_cloud2: false
     with_angle_filter: true
-    min_angle: -1.5707963
-    max_angle: 1.5707963
+    min_angle: -2.3561945
+    max_angle: 2.3561945
     from_zero: false
     inverted: false
     reversed: true
