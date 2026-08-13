@@ -1,4 +1,4 @@
-# C 板 0x3B 反馈帧的可视化调试消息；字段顺序与 48 字节 payload 一致。
+# C 板反馈 payload 的可视化调试消息；字段顺序与 48 字节 payload 一致。
 std_msgs/Header header              # 接收时间戳；frame_id 为 chassis_imu_link
 float32 motor_1_actual_rad_s        # 电机 1 转子轴实际角速度，单位 rad/s
 float32 motor_2_actual_rad_s        # 电机 2 转子轴实际角速度，单位 rad/s

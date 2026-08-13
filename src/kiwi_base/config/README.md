@@ -16,10 +16,14 @@ kiwi_robot_model      URDF 使用的底盘结构尺寸
 /cmd_vel                 底盘速度输入
 /chassis/odom/raw        原始轮式里程计
 /chassis/imu/data_raw    C 板 IMU
-/chassis/feedback/raw    0x3B 解码调试数据
+/chassis/feedback/raw    反馈 payload 解码调试数据
 /joint_states            三个轮关节状态
 /odometry/filtered       EKF 输出
 ```
+
+现场 C 板默认不发送 `0x33/0x3B/CRC` 封装，只连续输出 48 字节的 12 个 `float32`；
+节点按该 payload 发布 `/chassis/feedback/raw`。若切回标准反馈帧，将
+`kiwi_base.yaml` 中 `feedback_framed` 改为 `true`。
 
 传感器相对底盘的安装外参维护在 `kiwi_slam/urdf/kiwi.urdf.xacro`；导航避障半径维护在
 `kiwi_navigation/config/nav2.yaml`。本目录不再保留按雷达型号拆分的 EKF 文件。

@@ -120,6 +120,8 @@ public:
     device_ = declare_required<std::string>(*this, "device");
     publish_rate_ = declare_required<double>(*this, "publish_rate");
     log_serial_frames_ = declare_required<bool>(*this, "log_serial_frames");
+    // 现场 C 板只输出 48 字节反馈 payload，没有 0x33/0x3B/CRC 封装。
+    feedback_framed_ = declare_required<bool>(*this, "feedback_framed");
     feedback_scale_ = declare_required<double>(*this, "feedback_motor_scale_to_rad_s");
     if (!std::isfinite(publish_rate_) || publish_rate_ <= 0.0 ||
         !std::isfinite(feedback_scale_) || feedback_scale_ <= 0.0)
@@ -251,9 +253,10 @@ private:
       close(fd_);
     fd_ = -1;
     parser_.reset();
+    raw_feedback_buffer_.clear();
   }
 
-  /** 读取当前可用的 USB 字节，交给 FrameParser 处理半帧和粘包。 */
+  /** 读取当前可用的 USB 字节，按配置选择严格帧或无帧 payload 解码。 */
   void read_serial()
   {
     if (fd_ < 0)
@@ -268,7 +271,10 @@ private:
       const ssize_t count = read(fd_, buffer, sizeof(buffer));
       if (count > 0)
       {
-        parser_.feed(buffer, static_cast<size_t>(count));
+        if (feedback_framed_)
+          parser_.feed(buffer, static_cast<size_t>(count));
+        else
+          queue_raw_feedback(buffer, static_cast<size_t>(count));
         continue;
       }
       if (count == 0 || (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)))
@@ -346,6 +352,31 @@ private:
     pending_feedback_ = state;
   }
 
+  /**
+   * 现场协议没有头尾帧，按固定 48 字节（12 个 float32）拼接反馈。
+   * read() 可能返回半包或多个包，因此不能直接把一次 read 当成一帧。
+   */
+  void queue_raw_feedback(const uint8_t *data, size_t size)
+  {
+    raw_feedback_buffer_.insert(raw_feedback_buffer_.end(), data, data + size);
+    while (raw_feedback_buffer_.size() >= kFeedbackPayloadLength)
+    {
+      const auto payload = std::vector<uint8_t>(
+        raw_feedback_buffer_.begin(),
+        raw_feedback_buffer_.begin() + kFeedbackPayloadLength);
+      FeedbackFrame state{};
+      if (decode_feedback(payload, state))
+        pending_feedback_ = state;
+      else
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 5000,
+          "raw feedback payload is not 12 finite float32 values; drop 48 bytes");
+      raw_feedback_buffer_.erase(
+        raw_feedback_buffer_.begin(),
+        raw_feedback_buffer_.begin() + kFeedbackPayloadLength);
+    }
+  }
+
   /** 在固定 ROS 周期处理一帧反馈并发布轮速、IMU 和调试消息。 */
   void process_feedback(const FeedbackFrame &state)
   {
@@ -354,7 +385,7 @@ private:
       {state.gyro[0], state.gyro[1], state.gyro[2]},
       imu_angular_velocity_sign_, imu_angular_velocity_deadband_);
 
-    // 0x3B 已通过版本、长度、CRC 和有限值检查；这里打印解码后的 12 个字段，
+    // 数据已通过布局和有限值检查；这里打印解码后的 12 个字段，
     // 便于直接观察电机反馈和 IMU 原始角速度/加速度，避免手工拆 float32。
     if (log_serial_frames_)
     {
@@ -455,7 +486,7 @@ private:
     joint_pub_->publish(message);
   }
 
-  /** 把 0x3B 的姿态、符号修正角速度和原始加速度发布到独立底盘 IMU 话题。 */
+  /** 把反馈 payload 的姿态、符号修正角速度和原始加速度发布到独立底盘 IMU 话题。 */
   void publish_imu(
     const FeedbackFrame &state, const Vector3 &angular_velocity, const rclcpp::Time &stamp)
   {
@@ -500,7 +531,7 @@ private:
     imu_pub_->publish(message);
   }
 
-  /** 独立发布 C 板 0x3B 的 12 个原始标量，便于 Foxglove 直接选字段绘图。 */
+  /** 独立发布 C 板反馈 payload 的 12 个原始标量，便于 Foxglove 直接选字段绘图。 */
   void publish_feedback_debug(const FeedbackFrame &state, const rclcpp::Time &stamp)
   {
     kiwi_base::msg::FeedbackDebug debug;
@@ -534,6 +565,7 @@ private:
   double publish_rate_{};
   double feedback_scale_{};
   bool log_serial_frames_{};
+  bool feedback_framed_{};
   bool imu_publish_orientation_{};
   std::array<double, 3> motor_ratio_{};
   Vector3 motor_feedback_deadband_rad_s_{};
@@ -557,6 +589,7 @@ private:
   bool have_feedback_time_{false};
   Clock::time_point last_feedback_time_{};
   std::optional<FeedbackFrame> pending_feedback_;
+  std::vector<uint8_t> raw_feedback_buffer_;
   FrameParser parser_;
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_sub_;

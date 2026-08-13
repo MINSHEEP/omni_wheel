@@ -1,6 +1,6 @@
 /**
  * @file robomaster_protocol.hpp
- * @brief RoboMaster C 板 USB CDC 的 0x3A 命令和 0x3B 反馈协议。
+ * @brief RoboMaster C 板 USB CDC 的 0x3A 命令和反馈 payload 解码。
  */
 #pragma once
 
@@ -55,7 +55,7 @@ uint16_t crc16_ccitt(const uint8_t *data, size_t size);
 std::vector<uint8_t> encode_command(const CommandFrame &command);
 
 /**
- * 增量解析 C 板唯一的 0x3B/48 字节反馈帧。
+ * 增量解析带 0x33/0x3B/CRC 封装的 48 字节反馈帧。
  * 支持半帧、粘包、CRC 错误和错误字节后的重新同步。
  */
 class FrameParser

@@ -33,9 +33,8 @@ ID     方向          payload  总长度  含义
 0x3B   C 板 -> 主机  48 B     54 B    三电机实际速度 + RPY + 六轴 IMU
 ```
 
-主机接收解析器只接受 `sof=0x33`、`id=0x3B`、`len=48` 的帧；控制帧不应回传给
-接收解析器。收到未知 ID、错误长度、CRC 错误或非有限浮点值时，丢弃当前字节并继续
-搜索下一个 `0x33`，这样可以从粘包和半帧中恢复。
+兼容模式下主机接收解析器只接受 `sof=0x33`、`id=0x3B`、`len=48` 的帧；现场默认
+使用无帧模式，直接按 48 字节 payload 拼包。运行参数 `feedback_framed` 控制两种模式。
 
 ## 2. CRC
 
@@ -107,15 +106,14 @@ payload 偏移  帧偏移  长度  类型  字段
 ### 4.2 接收和 ROS 发布
 
 ```text
-USB read -> FrameParser::feed()
-         -> FrameParser::FeedbackCallback
-         -> KiwiBaseNode::on_feedback()
+USB read -> 严格帧解析或 48 字节无帧拼包
          -> decode_feedback()
-         -> /wheel/odom、/joint_states、/imu/data_raw
+         -> KiwiBaseNode::process_feedback()
+         -> /chassis/odom/raw、/joint_states、/chassis/imu/data_raw、/chassis/feedback/raw
 ```
 
-`/wheel/odom` 使用三个实际轮速按固定公式正解并积分；节点只发布消息，不发布
-`odom -> base_footprint` TF。`/imu/data_raw` 将 roll/pitch/yaw 转为四元数，同时原样
+`/chassis/odom/raw` 使用三个实际轮速按固定公式正解并积分；节点只发布消息，不发布
+`odom -> base_footprint` TF。`/chassis/imu/data_raw` 将 roll/pitch/yaw 转为四元数，同时原样
 发布角速度和加速度。当前反馈帧没有电压、故障位或温度字段，因此节点不发布
 `sensor_msgs/msg/BatteryState` 或旧的独立状态话题。
 

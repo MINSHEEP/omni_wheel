@@ -33,9 +33,8 @@ ID     方向          payload  总长度  含义
 0x3B   C 板 -> 主机  48 B     54 B    三电机实际速度 + RPY + 六轴 IMU
 ```
 
-主机接收解析器只接受 `sof=0x33`、`id=0x3B`、`len=48` 的帧；控制帧不应回传给
-接收解析器。收到未知 ID、错误长度、CRC 错误或非有限浮点值时，丢弃当前字节并继续
-搜索下一个 `0x33`，这样可以从粘包和半帧中恢复。
+兼容模式下主机接收解析器只接受 `sof=0x33`、`id=0x3B`、`len=48` 的帧；现场默认
+使用无帧模式，直接按 48 字节 payload 拼包。运行参数 `feedback_framed` 控制两种模式。
 
 ## 2. CRC
 
@@ -108,23 +107,22 @@ payload 偏移  帧偏移  长度  类型  字段
 ### 4.2 接收和 ROS 发布
 
 ```text
-USB read -> FrameParser::feed()
-         -> FrameParser::FeedbackCallback
-         -> KiwiBaseNode::on_feedback()
+USB read -> 严格帧解析或 48 字节无帧拼包
          -> decode_feedback()
-         -> /wheel/odom_raw、/joint_states、/imu/data_raw、/kiwi_base/feedback_debug
+         -> KiwiBaseNode::process_feedback()
+         -> /chassis/odom/raw、/joint_states、/chassis/imu/data_raw、/chassis/feedback/raw
 ```
 
-`/wheel/odom_raw` 使用三个实际轮速按固定公式正解并积分；节点只发布消息，不发布
+`/chassis/odom/raw` 使用三个实际轮速按固定公式正解并积分；节点只发布消息，不发布
 `odom -> base_footprint` TF。EKF 融合死区后的轮速 `vx/vy`、相对 Euler yaw 与修正后
-`gyro_z`，并发布 `/odometry/filtered` 和该 TF。`/imu/data_raw` 将 roll/pitch/yaw 转为
+`gyro_z`，并发布 `/odometry/filtered` 和该 TF。`/chassis/imu/data_raw` 将 roll/pitch/yaw 转为
 四元数，角速度按 YAML 修正符号并应用静止死区，加速度保持原值，同时发布非零协方差。
 当前反馈帧没有电压、故障位或温度字段，因此节点不发布
 `sensor_msgs/msg/BatteryState` 或旧的独立状态话题。
 
-`/kiwi_base/feedback_debug` 是 `kiwi_base/msg/FeedbackDebug` 调试话题，将三路电机、
+`/chassis/feedback/raw` 是 `kiwi_base/msg/FeedbackDebug` 调试话题，将三路电机、
 roll/pitch/yaw、三轴原始角速度和三轴原始加速度发布为 12 个独立标量。Foxglove 可直接
-按字段名绘图，不需要访问数组下标；该话题不改变 `/imu/data_raw` 等既有接口。
+按字段名绘图，不需要访问数组下标；该话题不改变 `/chassis/imu/data_raw` 等既有接口。
 
 ### 4.3 抓包示例
 

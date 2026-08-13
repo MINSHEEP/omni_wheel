@@ -93,6 +93,9 @@ ros2 topic hz /odometry/filtered
 ros2 run tf2_ros tf2_echo odom base_footprint
 ```
 
+现场 C 板的反馈默认按无帧 48 字节 payload 读取；标准 `0x33/0x3B/CRC` 设备需把
+`config/kiwi_base.yaml` 的 `feedback_framed` 改为 `true`。
+
 静止时原始和滤波速度应接近零；运动时应验证前进使 `x` 增加、左移使 `y` 增加、逆时针使
 yaw 增加。方向错误应检查电机编号和反馈符号，不要在 TF 中额外旋转 180 度。
 

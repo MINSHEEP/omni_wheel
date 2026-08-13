@@ -8,6 +8,8 @@ kiwi_base_node:
     publish_rate: 50.0
     # 结构化反馈话题已包含调试字段；关闭逐帧终端日志，避免 I/O 造成运行卡顿。
     log_serial_frames: false
+    # 现场 C 板不发送 0x33/0x3B/CRC 帧，只连续输出 48 字节 float32 payload。
+    feedback_framed: false
 
     # 反馈电机数值 -> 轮输出轴 rad/s 的倍率。
     # 若 C 板回传的是电机轴 rad/s，保持 1.0；主机随后除以 19。

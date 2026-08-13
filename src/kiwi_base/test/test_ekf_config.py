@@ -21,6 +21,7 @@ def test_chassis_ekf_uses_wheel_twist_and_chassis_imu_from_one_yaml():
     assert base["wheel_odom_topic"] == ekf["odom0"] == "/chassis/odom/raw"
     assert base["imu_topic"] == ekf["imu0"] == "/chassis/imu/data_raw"
     assert base["feedback_debug_topic"] == "/chassis/feedback/raw"
+    assert base["feedback_framed"] is False
     assert ekf["two_d_mode"] is True
     assert ekf["publish_tf"] is True
     assert ekf["world_frame"] == ekf["odom_frame"] == "odom"
@@ -50,6 +51,7 @@ def test_chassis_imu_and_feedback_debug_are_always_published():
     assert "void publish_imu(" in source
     assert "publish_feedback_debug(state, stamp);" in active_source
     assert "pending_feedback_" in source
+    assert "queue_raw_feedback" in source
 
 
 def test_static_measurement_filters_match_observed_noise_and_ros_yaw_sign():
