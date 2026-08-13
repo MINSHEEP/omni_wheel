@@ -22,9 +22,20 @@ def test_e110_sdk_parameters_match_slam_contract():
     assert params["scan_topic"] == "/scan"
     assert params["output_scan"] is True
     assert params["output_360"] is True
+    assert params["scan_points"] == 400
+    assert params["min_range"] == 0.05
+    assert params["max_range"] == 12.0
     assert params["with_checksum"] is True
     assert params["min_dist"] == 0.05
     assert params["max_dist"] == 12.0
+
+
+def test_laser_scan_uses_true_angles_and_fixed_grid():
+    """防止 E110 的 398/399/400 点帧重新按点数均分而造成整圈跳变。"""
+    source = (PACKAGE.parent / "bluesea-ros2" / "src" / "node.cpp").read_text(encoding="utf-8")
+    assert "std::llround" in source
+    assert "argdata.scan_points > 0" in source
+    assert "for (const auto &point : hub->consume)" in source
 
 
 def test_slam_frames_ranges_and_mode_match_base_and_lidar():

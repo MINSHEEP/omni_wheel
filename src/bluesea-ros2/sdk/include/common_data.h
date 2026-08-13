@@ -430,6 +430,7 @@ struct ArgData
 	double min_angle;
 	double max_angle;
 	bool output_360;
+	int scan_points;
 	double min_dist;
 	double max_dist;
 	std::vector<Range>masks;

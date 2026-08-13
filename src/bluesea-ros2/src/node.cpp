@@ -8,6 +8,8 @@
 //#include "sensor_msgs/point_cloud_conversion.hpp"
 #include "base/srv/control.hpp"
 #include <sys/time.h>
+#include <cmath>
+#include <limits>
 #include "../sdk/include/bluesea.h"
 
 BlueSeaLidarDriver *m_driver = NULL;
@@ -70,8 +72,12 @@ void PublishLaserScan(rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr 
 {
 	PubHub *hub = (PubHub *)pub;
 	sensor_msgs::msg::LaserScan msg;
-	int N = hub->consume.size();
-	// make  min_ang max_ang  convert to mask
+	if (hub->consume.empty())
+		return;
+	// 点的真实角度已经包含在 DataPoint.degree 中，不能再按本帧点数均分角度。
+	// E110 在帧边界处可能收到 398/399/400 个点，按固定栅格发布可避免整圈角度跳变。
+	(void)counterclockwise;
+	const int N = argdata.scan_points > 0 ? argdata.scan_points : static_cast<int>(hub->consume.size());
 	msg.header.stamp.sec = hub->ts_beg[0];
 	msg.header.stamp.nanosec = hub->ts_beg[1];
 
@@ -79,105 +85,49 @@ void PublishLaserScan(rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr 
 	double tx = double(hub->ts_end[0]) + double(hub->ts_end[1]) / 1000000000.0;
 
 	msg.scan_time = tx - ti; // nfan/(nfan-1);
-	msg.time_increment = msg.scan_time / N;
 
 	msg.header.frame_id = argdata.frame_id;
+	const double full_scan_increment = 2.0 * M_PI / N;
+	msg.time_increment = msg.scan_time / N;
 
 	double min_deg = argdata.min_angle * 180 / M_PI;
 	double max_deg = argdata.max_angle * 180 / M_PI;
 
 	msg.range_min = argdata.min_dist;
-	msg.range_max = argdata.max_dist; // 8.0;
-	if (argdata.with_angle_filter)
+	msg.range_max = argdata.max_dist;
+	msg.angle_min = argdata.from_zero ? 0.0 : -M_PI;
+	msg.angle_increment = full_scan_increment;
+	msg.angle_max = msg.angle_min + full_scan_increment * (N - 1);
+	msg.ranges.assign(N, std::numeric_limits<float>::infinity());
+	msg.intensities.assign(N, 0.0F);
+	const auto publish_point = [&](const DataPoint &point)
 	{
-		double min_pos, max_pos;
-		N = m_driver->GetCount(hub->consume, min_deg, max_deg, min_pos, max_pos);
-		msg.angle_min = min_pos * M_PI / 180;
-		msg.angle_max = max_pos * M_PI / 180;
-		msg.angle_increment = (msg.angle_max - msg.angle_min) / (N - 1);
-		// printf("data1:deg:%lf   %lf  angle:%lf   %lf   %d\n",min_deg,max_deg,msg.angle_min,msg.angle_max,N);
-	}
-	else
-	{
-		if (argdata.from_zero)
+		double deg = m_driver->ROSAng(point.degree);
+		if (argdata.with_angle_filter && (deg < min_deg || deg > max_deg))
+			return;
+		double angle = deg * M_PI / 180.0;
+		if (argdata.from_zero && angle < 0.0)
+			angle += 2.0 * M_PI;
+		int bin = static_cast<int>(std::llround((angle - msg.angle_min) / msg.angle_increment));
+		if (bin == N)
+			bin = 0;
+		if (bin < 0 || bin >= N)
+			return;
+		double distance = point.distance / 1000.0;
+		bool custom = false;
+		for (unsigned int k = 0; k < argdata.masks.size() && !custom; k++)
+			custom = argdata.with_angle_filter && argdata.masks[k].min <= deg && deg <= argdata.masks[k].max;
+		if (point.distance == 0 || distance > argdata.max_dist || distance < argdata.min_dist || custom)
+			return;
+		// 同一角度 bin 出现重复点时取最近回波，避免远距离噪声覆盖近处障碍物。
+		if (!std::isfinite(msg.ranges[bin]) || distance < msg.ranges[bin])
 		{
-			msg.angle_min = 0;
-			msg.angle_max = 2 * M_PI * (N - 1) / N;
-			msg.angle_increment = M_PI * 2 / N;
+			msg.ranges[bin] = static_cast<float>(distance);
+			msg.intensities[bin] = point.confidence;
 		}
-		else
-		{
-			msg.angle_min = -M_PI;
-			msg.angle_max = M_PI - (2 * M_PI) / N;
-			msg.angle_increment = M_PI * 2 / N;
-		}
-	}
-	msg.intensities.resize(N);
-	msg.ranges.resize(N);
-	int idx = 0;
-	// reversed 打开数据倒转     顺时针旋转    数据也要倒转
-	if (argdata.reversed + counterclockwise != 1)
-	{
-		for (int i = hub->consume.size() - 1; i >= 0; i--)
-		{
-			double deg = m_driver->ROSAng(hub->consume[i].degree);
-			if (argdata.with_angle_filter)
-			{
-				if (deg < min_deg)
-					continue;
-				if (deg > max_deg)
-					continue;
-			}
-			double d = hub->consume[i].distance / 1000.0;
-			bool custom = false;
-			for (unsigned int k = 0; k < argdata.masks.size() && !custom; k++)
-			{
-				if (argdata.with_angle_filter && argdata.masks[k].min <= deg && deg <= argdata.masks[k].max)
-					custom = true;
-			}
-
-			if (hub->consume[i].distance == 0 || d > argdata.max_dist || d < argdata.min_dist || custom)
-				msg.ranges[idx] = std::numeric_limits<float>::infinity();
-			else
-				msg.ranges[idx] = d;
-
-			msg.intensities[idx] = hub->consume[i].confidence;
-			idx++;
-		}
-	}
-	else
-	{
-
-		// DEBUG("%s %d %f %f\n", __FUNCTION__, __LINE__, hub->consume[0].degree,hub->consume[hub->consume.size()-1].degree);
-		for (unsigned int i = 0; i <= hub->consume.size() - 1; i++)
-		{
-			double deg = m_driver->ROSAng(hub->consume[i].degree);
-			if (argdata.with_angle_filter)
-			{
-				// DEBUG("%lf %lf %lf %lf",hub->consume[i].degree,deg,min_deg,max_deg);
-				if (deg < min_deg)
-					continue;
-				if (deg > max_deg)
-					continue;
-			}
-			double d = hub->consume[i].distance / 1000.0;
-			bool custom = false;
-			for (unsigned int k = 0; k < argdata.masks.size() && !custom; k++)
-			{
-				if (argdata.with_angle_filter && argdata.masks[k].min <= deg && deg <= argdata.masks[k].max)
-					custom = true;
-			}
-
-			if (hub->consume[i].distance == 0 || d > argdata.max_dist || d < argdata.min_dist || custom)
-				msg.ranges[idx] = std::numeric_limits<float>::infinity();
-			else
-				msg.ranges[idx] = d;
-
-			msg.intensities[idx] = hub->consume[i].confidence;
-
-			idx++;
-		}
-	}
+	};
+	for (const auto &point : hub->consume)
+		publish_point(point);
 	laser_pub->publish(msg);
 }
 
@@ -563,6 +513,7 @@ bool ProfileInit(std::shared_ptr<rclcpp::Node> node, ArgData &argdata)
 	READ_PARAM(bool, "output_cloud", argdata.output_cloud, false);	 // false: enable output xyz format, 0 : disable
 	READ_PARAM(bool, "output_cloud2", argdata.output_cloud2, false); // false: enable output xyz format, 0 : disable
 	READ_PARAM(bool, "output_360", argdata.output_360, true);		 // true: packet data of 360 degree (multiple RawData), publish once
+	READ_PARAM(int, "scan_points", argdata.scan_points, -1);		 // E110 配置显式设置固定输出栅格；其他型号保持原始点数
 																	 // false: publish every RawData (36 degree)
 	//  angle filter
 	READ_PARAM(bool, "with_angle_filter", argdata.with_angle_filter, false); // true: enable angle filter, false: disable

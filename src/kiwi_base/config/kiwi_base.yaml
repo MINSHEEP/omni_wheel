@@ -6,7 +6,8 @@ kiwi_base_node:
     # USB CDC 设备。没有硬件时节点仍可启动，但不会产生 TX 日志。
     device: /dev/robomaster_c
     publish_rate: 50.0
-    log_serial_frames: true
+    # 结构化反馈话题已包含调试字段；关闭逐帧终端日志，避免 I/O 造成运行卡顿。
+    log_serial_frames: false
 
     # 反馈电机数值 -> 轮输出轴 rad/s 的倍率。
     # 若 C 板回传的是电机轴 rad/s，保持 1.0；主机随后除以 19。
@@ -30,6 +31,8 @@ kiwi_base_node:
     wheel_pose_variance: [0.10, 0.10, 0.20]
     wheel_twist_variance: [0.02, 0.02, 0.04]
     imu_orientation_variance: [0.05, 0.05, 0.05]
+    # 当前包显示 C 板绝对 yaw 在静止时持续漂移，完成六面标定前不发布姿态。
+    imu_publish_orientation: false
     imu_angular_velocity_variance: [0.01, 0.01, 0.01]
     imu_linear_acceleration_variance: [0.10, 0.10, 0.10]
 
@@ -59,7 +62,7 @@ kiwi_base_node:
 
 # 暂不启用：加速度斜坡、命令超时、反馈联锁和软件急停。
 
-# 平面 EKF：融合轮式 vx/vy/wz 与 C 板 IMU 的相对 yaw 和 gyro_z。
+# 平面 EKF：融合轮式 vx/vy/wz 与 C 板 IMU 的 gyro_z；绝对 yaw 暂不可信。
 ekf_filter_node:
   ros__parameters:
     use_sim_time: false
@@ -89,18 +92,18 @@ ekf_filter_node:
     odom0_differential: false
     odom0_relative: false
 
-    # C 板 IMU 同时提供欧拉角转换后的 yaw 和符号修正后的 gyro_z。
+    # C 板绝对 yaw 在静止时有明显漂移，先只使用符号修正后的 gyro_z。
     imu0: /chassis/imu/data_raw
     imu0_config: [
       false, false, false,  # x, y, z：IMU 不提供位置
-      false, false, true,   # roll, pitch, yaw：只融合平面航向 yaw
+      false, false, false,  # roll, pitch, yaw：待完成 IMU 安装轴/航向标定后再启用
       false, false, false,  # vx, vy, vz：IMU 不提供线速度
       false, false, true,   # vroll, vpitch, vyaw：只融合 z 轴角速度
       false, false, false   # ax, ay, az：当前平面 EKF 不融合加速度
     ]
     imu0_queue_size: 20
     imu0_differential: false
-    imu0_relative: true
+    imu0_relative: false
     imu0_remove_gravitational_acceleration: false
     imu0_pose_rejection_threshold: 1.0
     imu0_twist_rejection_threshold: 1.0

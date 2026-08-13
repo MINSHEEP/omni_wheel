@@ -1,5 +1,5 @@
 # PaceCat LDS-E110-R parameters for the existing bluesea2 UART SDK.
-# Manual V1.5: 230400 8N1, 7 Hz, 0.05-12 m, 360 degrees, 0.6 degree resolution.
+# 当前使用 E110-R 10 Hz 变体（R-1/R-3）：固定输出 400 点，避免 N 变化造成角度跳变。
 bluesea_node:
   ros__parameters:
     use_sim_time: false
@@ -14,17 +14,18 @@ bluesea_node:
     raw_bytes: 3
 
     output_360: true
+    scan_points: 400
     output_scan: true
     output_cloud: false
     output_cloud2: false
-    with_angle_filter: false
-    min_angle: -3.1415926
-    max_angle: 3.1415926
+    with_angle_filter: true
+    min_angle: -1.5707963
+    max_angle: 1.5707963
     from_zero: false
     inverted: false
     reversed: true
 
-    min_dist: 0.05
+    min_dist: 0.1
     max_dist: 12.0
     with_checksum: true
     hard_resample: false
@@ -45,6 +46,13 @@ bluesea_node:
     direction: -1
     ats: -1
 
-    filter_open: false
+    # 仅删除单帧孤立回波；不做跨帧平滑，避免运动时产生拖影。
+    filter_open: true
+    filter_type: 1
+    # 滤波器范围必须与 E110 的实际测距范围一致，不能使用 SDK 默认的 0.5/20 m。
+    min_range: 0.05
+    max_range: 12.0
+    max_range_difference: 0.25
+    filter_window: 1
     log_enable: false
     log_path: /tmp/lds_e110_sdk.log

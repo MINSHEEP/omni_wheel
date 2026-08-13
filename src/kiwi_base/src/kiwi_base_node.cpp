@@ -111,7 +111,7 @@ public:
   : Node("kiwi_base_node"),
     parser_(
       [this](uint8_t version, const std::vector<uint8_t> &payload)
-      { on_feedback(version, payload); }
+      { queue_feedback(version, payload); }
       // 暂停原因：解码后的结构化日志已足够联调；需要检查 CRC 原始字节时再恢复此回调。
       // ,[this](const std::vector<uint8_t> &frame){ log_frame("RX", frame); }
     )
@@ -154,6 +154,8 @@ public:
     wheel_pose_variance_ = declare_variance(*this, "wheel_pose_variance");
     wheel_twist_variance_ = declare_variance(*this, "wheel_twist_variance");
     imu_orientation_variance_ = declare_variance(*this, "imu_orientation_variance");
+    // C 板绝对欧拉角在静止时仍会漂移；默认不把它伪装成有效 ROS 姿态。
+    imu_publish_orientation_ = declare_required<bool>(*this, "imu_publish_orientation");
     imu_angular_velocity_variance_ = declare_variance(*this, "imu_angular_velocity_variance");
     imu_linear_acceleration_variance_ = declare_variance(*this, "imu_linear_acceleration_variance");
 
@@ -282,6 +284,13 @@ private:
   void update()
   {
     read_serial();
+    // 串口可能一次读出多个反馈帧；只处理最新一帧，按定时器频率稳定发布。
+    if (pending_feedback_)
+    {
+      const auto state = *pending_feedback_;
+      pending_feedback_.reset();
+      process_feedback(state);
+    }
     // Twist -> 三轮轮输出轴速度。
     const auto wheel_speed = kinematics_->inverse(command_);
 
@@ -325,8 +334,8 @@ private:
       RCLCPP_INFO(get_logger(), "%s[%zu] %s", direction, frame.size(), to_hex(frame).c_str());
   }
 
-  /** 解码 C 板唯一的 0x3B/48 字节反馈，并发布轮速和 IMU。 */
-  void on_feedback(uint8_t version, const std::vector<uint8_t> &payload)
+  /** 只缓存最新的合法反馈，避免粘包时在一个 ROS 周期内连续发布多条测量。 */
+  void queue_feedback(uint8_t version, const std::vector<uint8_t> &payload)
   {
     if (version != kProtocolVersion)
       return;
@@ -334,6 +343,12 @@ private:
     FeedbackFrame state{};
     if (!decode_feedback(payload, state))
       return;
+    pending_feedback_ = state;
+  }
+
+  /** 在固定 ROS 周期处理一帧反馈并发布轮速、IMU 和调试消息。 */
+  void process_feedback(const FeedbackFrame &state)
+  {
 
     const auto angular_velocity = correct_vector(
       {state.gyro[0], state.gyro[1], state.gyro[2]},
@@ -444,20 +459,28 @@ private:
   void publish_imu(
     const FeedbackFrame &state, const Vector3 &angular_velocity, const rclcpp::Time &stamp)
   {
-    const auto quaternion = rpy_to_quaternion(state.euler[0], state.euler[1], state.euler[2]);
     sensor_msgs::msg::Imu message;
     // Header 使用整帧统一接收时间；frame_id 对应 URDF 中的 chassis_imu_link。
     message.header.stamp = stamp;
     message.header.frame_id = imu_frame_;
-    // orientation：C 板欧拉角转换后的四元数，顺序为 x、y、z、w。
-    message.orientation.x = quaternion[0];
-    message.orientation.y = quaternion[1];
-    message.orientation.z = quaternion[2];
-    message.orientation.w = quaternion[3];
-    // orientation_covariance：roll、pitch、yaw 的方差，单位 rad^2。
-    message.orientation_covariance[0] = imu_orientation_variance_[0];
-    message.orientation_covariance[4] = imu_orientation_variance_[1];
-    message.orientation_covariance[8] = imu_orientation_variance_[2];
+    if (imu_publish_orientation_)
+    {
+      // 只有完成安装轴和航向标定后才发布 C 板欧拉角转换的四元数。
+      const auto quaternion = rpy_to_quaternion(state.euler[0], state.euler[1], state.euler[2]);
+      message.orientation.x = quaternion[0];
+      message.orientation.y = quaternion[1];
+      message.orientation.z = quaternion[2];
+      message.orientation.w = quaternion[3];
+      // orientation_covariance：roll、pitch、yaw 的方差，单位 rad^2。
+      message.orientation_covariance[0] = imu_orientation_variance_[0];
+      message.orientation_covariance[4] = imu_orientation_variance_[1];
+      message.orientation_covariance[8] = imu_orientation_variance_[2];
+    }
+    else
+    {
+      // ROS 约定 covariance[0] = -1 表示姿态不可用，防止下游误融合漂移 yaw。
+      message.orientation_covariance[0] = -1.0;
+    }
     // angular_velocity：已按 ROS 右手系修正符号并应用静止死区，单位 rad/s。
     message.angular_velocity.x = angular_velocity[0];
     message.angular_velocity.y = angular_velocity[1];
@@ -511,6 +534,7 @@ private:
   double publish_rate_{};
   double feedback_scale_{};
   bool log_serial_frames_{};
+  bool imu_publish_orientation_{};
   std::array<double, 3> motor_ratio_{};
   Vector3 motor_feedback_deadband_rad_s_{};
   std::array<double, 3> wheel_pose_variance_{};
@@ -532,6 +556,7 @@ private:
   double odom_yaw_{0.0};
   bool have_feedback_time_{false};
   Clock::time_point last_feedback_time_{};
+  std::optional<FeedbackFrame> pending_feedback_;
   FrameParser parser_;
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_sub_;
