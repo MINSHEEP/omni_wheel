@@ -1,4 +1,4 @@
-"""检查 E110 Nav2 参数和启动模式。"""
+"""检查镭神 M10P 的 Nav2 参数和启动模式。"""
 
 from pathlib import Path
 
@@ -34,7 +34,7 @@ def test_velocity_smoother_is_the_direct_cmd_vel_output():
     assert not (PACKAGE / "config" / "cmd_relay.yaml").exists()
 
 
-def test_launch_modes_use_e110_without_adapter_or_relay():
+def test_launch_modes_use_m10p_without_adapter_or_relay():
     mapping = (PACKAGE / "launch" / "mapping_navigation.launch.py").read_text(
         encoding="utf-8"
     )
@@ -45,8 +45,11 @@ def test_launch_modes_use_e110_without_adapter_or_relay():
     assert "slam_toolbox" not in localization
     assert "localization_launch.py" in localization
     for launch in (mapping, localization):
-        assert 'FindPackageShare("bluesea2")' in launch
-        assert "lidar_type" not in launch
+        # 雷达统一复用 kiwi_slam 的 M10P 封装；bluesea2 不再被任何入口启动，
+        # 保证运行时 /scan 只有一个发布者。断言针对 FindPackageShare 调用。
+        assert '"m10p_uart_lidar.launch.py"' in launch
+        assert '"ls_m10p_uart.yaml"' in launch
+        assert 'FindPackageShare("bluesea2")' not in launch
         assert "radar_source.launch.py" not in launch
         assert "kiwi_nav_cmd_relay" not in launch
 

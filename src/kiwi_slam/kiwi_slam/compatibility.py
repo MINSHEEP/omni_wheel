@@ -16,8 +16,9 @@ from ament_index_python.packages import (
 
 
 REQUIRED_PACKAGES = (
-    "bluesea2",
     "kiwi_base",
+    "lslidar_driver",
+    "lslidar_msgs",
     "robot_localization",
     "robot_state_publisher",
     "slam_toolbox",
@@ -114,13 +115,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--lidar-params-file",
         type=Path,
-        default=Path(get_package_share_directory("kiwi_slam")) / "config" / "lds_e110.yaml",
+        default=Path(get_package_share_directory("kiwi_slam"))
+        / "config"
+        / "ls_m10p_uart.yaml",
     )
     parser.add_argument("--require-hardware", action="store_true")
     args = parser.parse_args(argv)
 
     base_device = str(load_parameter(args.base_params_file, "kiwi_base_node", "device"))
-    lidar_port = str(load_parameter(args.lidar_params_file, "bluesea_node", "port"))
+    # M10P 驱动的串口参数是 lslidar_driver_node.serial_port（非 bluesea 的 port）。
+    lidar_port = str(
+        load_parameter(args.lidar_params_file, "lslidar_driver_node", "serial_port")
+    )
     checks = run_checks(base_device, lidar_port, args.require_hardware)
     for check in checks:
         print(f"[{check.level:5}] {check.name}: {check.message}")

@@ -1,0 +1,36 @@
+# 镭神 LSLIDAR M10P 串口驱动参数（lslidar_driver v5.1.1，lslidar_driver_node）。
+# M10P 串口波特率 500000 由驱动按型号硬编码，YAML 不需要也无法配置。
+# 点云发布器在该版驱动中无条件创建，无参数开关；话题保持默认相对名，
+# 无订阅者时仅有少量 DDS 开销，不为此修改驱动源码。
+lslidar_driver_node:
+  ros__parameters:
+    use_sim_time: false
+    # X10 大类 + M10P 型号：决定串口协议解析（0xA5 0x5A 帧头、变长包）。
+    lidar_type: "X10"
+    lidar_model: "M10P"
+    # 串口设备；非空即走 UART 链路（为空驱动会转走网口）。
+    # 默认使用 udev 符号链接 /dev/wheeltec_lidar，与参考底盘约定一致。
+    serial_port: "/dev/wheeltec_lidar"
+    # TF 与 URDF 中的雷达系名称保持 lidar_link，不引入新坐标系。
+    frame_id: "lidar_link"
+    # 绝对话题名保证 /scan 与 SLAM Toolbox、AMCL、Nav2 costmap 合约一致。
+    laserscan_topic: "/scan"
+    publish_scan: true
+    # 不使用雷达 GPS/授时，时间戳取驱动接收时刻的 ROS 时间。
+    use_time_service: false
+    use_first_point_time: false
+    use_high_precision: false
+    enable_noise_filter: false
+    publish_multiecholaserscan: false
+    # 量程按当前 SLAM/Nav2 合约取 12.0 m（slam_toolbox max_laser_range 12.0，
+    # costmap obstacle/raytrace 8/10 m 均在其内）；M10P 参考模板上限 50.0 m
+    # 只是钳制值。min_range 0.15 取驱动模板值，覆盖 M10P 近距盲区。
+    min_range: 0.15
+    max_range: 12.0
+    # 扫描裁剪扇区，单位 0.01 度，基于「雷达 0° 标记朝机器人正前方安装」的
+    # 假设屏蔽后方 135°~225°，保持与 E110 时代 ±135° 前向视场一致。
+    # 注意：安装朝向未实测，该扇区待实机校准后再修正，禁止照抄参考车数值。
+    angle_disable_min: [13500]
+    angle_disable_max: [22500]
+    # 不做点云平移旋转预处理；外参统一由 URDF 的 base_link->lidar_link 表达。
+    is_pretreatment: false

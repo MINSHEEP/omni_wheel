@@ -1,4 +1,4 @@
-"""检查 E110、SLAM、统一底盘参数和 URDF 接口。"""
+"""检查镭神 M10P、SLAM、统一底盘参数和 URDF 接口。"""
 
 from pathlib import Path
 import xml.etree.ElementTree as element_tree
@@ -14,28 +14,35 @@ def load_parameters(name, node):
     return data[node]["ros__parameters"]
 
 
-def test_e110_sdk_parameters_match_slam_contract():
-    params = load_parameters("lds_e110.yaml", "bluesea_node")
-    assert params["type"] == "uart"
-    assert params["baud_rate"] == 230400
+def test_m10p_driver_parameters_match_slam_contract():
+    """锁定 M10P 驱动的节点名、话题、frame 与量程，防止与消费方脱节。"""
+    params = load_parameters("ls_m10p_uart.yaml", "lslidar_driver_node")
+    assert params["lidar_type"] == "X10"
+    assert params["lidar_model"] == "M10P"
+    assert params["serial_port"] == "/dev/wheeltec_lidar"
     assert params["frame_id"] == "lidar_link"
-    assert params["scan_topic"] == "/scan"
-    assert params["output_scan"] is True
-    assert params["output_360"] is True
-    assert params["scan_points"] == 400
-    assert params["min_range"] == 0.05
+    assert params["laserscan_topic"] == "/scan"
+    assert params["publish_scan"] is True
+    assert params["use_time_service"] is False
+    assert params["min_range"] == 0.15
     assert params["max_range"] == 12.0
-    assert params["with_checksum"] is True
-    assert params["min_dist"] == 0.05
-    assert params["max_dist"] == 12.0
+    # 裁剪扇区单位 0.01 度；当前值基于「0° 朝前」安装假设屏蔽后方 135°~225°，
+    # 与 E110 时代 ±135° 前向视场一致，实机校准后允许修改此断言。
+    assert params["angle_disable_min"] == [13500]
+    assert params["angle_disable_max"] == [22500]
 
 
-def test_laser_scan_uses_true_angles_and_fixed_grid():
-    """防止 E110 的 398/399/400 点帧重新按点数均分而造成整圈跳变。"""
-    source = (PACKAGE.parent / "bluesea-ros2" / "src" / "node.cpp").read_text(encoding="utf-8")
-    assert "std::llround" in source
-    assert "argdata.scan_points > 0" in source
-    assert "for (const auto &point : hub->consume)" in source
+def test_m10p_range_and_scan_masking_match_consumers():
+    """驱动量程必须覆盖 SLAM 与 costmap 的读数范围，避免静默丢数据。"""
+    driver = load_parameters("ls_m10p_uart.yaml", "lslidar_driver_node")
+    slam = load_parameters("slam_toolbox.yaml", "slam_toolbox")
+    assert driver["max_range"] == slam["max_laser_range"]
+    assert driver["min_range"] < 1.0
+    # 裁剪扇区必须成对且为 0.01 度整数。
+    assert len(driver["angle_disable_min"]) == len(driver["angle_disable_max"])
+    for low, high in zip(driver["angle_disable_min"], driver["angle_disable_max"]):
+        assert isinstance(low, int) and isinstance(high, int)
+        assert 0 <= low <= high <= 36000
 
 
 def test_slam_frames_ranges_and_mode_match_base_and_lidar():
@@ -68,7 +75,8 @@ def test_urdf_has_required_tf_links_and_joint_names():
     assert set(arguments) == {"hardware_config"}
     text = (PACKAGE / "urdf" / "kiwi.urdf.xacro").read_text(encoding="utf-8")
     assert 'name="chassis_imu_xyz" value="0.0115 -0.149 0.0"' in text
-    assert 'name="lidar_xyz" value="0.0 0.0 0.20"' in text
+    # 与 kiwi.urdf.xacro 当前标定值保持一致；换雷达不改外参，待实机复测。
+    assert 'name="lidar_xyz" value="0.32 0.0 0.20"' in text
     assert "wheel_radius_m" in text
     assert "wheel_center_distance_m" in text
 
@@ -77,11 +85,25 @@ def test_launch_uses_one_base_yaml_for_base_and_ekf():
     launch = (PACKAGE / "launch" / "kiwi_slam.launch.py").read_text(encoding="utf-8")
     for name in ("start_base", "start_ekf", "start_lidar", "start_slam", "start_monitor"):
         assert f'"{name}"' in launch
-    assert 'FindPackageShare("bluesea2")' in launch
+    # 雷达只允许经 kiwi_slam 的 M10P 封装启动；bluesea2 仅留在源码树供回退，
+    # 断言针对 FindPackageShare 调用而非注释文字。
+    assert '"m10p_uart_lidar.launch.py"' in launch
+    assert 'FindPackageShare("bluesea2")' not in launch
     assert 'executable="sync_slam_toolbox_node"' in launch
     assert '"kiwi_robot.launch.py"' in launch
     assert "ekf_params_file" not in launch
     assert "kiwi_lio.launch.py" not in launch
+
+    lidar_launch = (PACKAGE / "launch" / "m10p_uart_lidar.launch.py").read_text(
+        encoding="utf-8"
+    )
+    # 驱动可执行文件创建普通 rclcpp::Node，封装内禁止引入生命周期管理；
+    # 断言针对实际的动作调用与 import，不匹配注释文字。
+    assert 'executable="lslidar_driver_node"' in lidar_launch
+    assert 'name="lslidar_driver_node"' in lidar_launch
+    assert "LifecycleNode(" not in lidar_launch
+    assert "import LifecycleNode" not in lidar_launch
+    assert '"ls_m10p_uart.yaml"' in lidar_launch
 
     robot_launch = (PACKAGE / "launch" / "kiwi_robot.launch.py").read_text(
         encoding="utf-8"

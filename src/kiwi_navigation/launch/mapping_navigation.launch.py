@@ -36,8 +36,10 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "lidar_params_file",
-            default_value=PathJoinSubstitution([slam_share, "config", "lds_e110.yaml"]),
-            description="Pace E110 串口和 LaserScan 参数 YAML",
+            default_value=PathJoinSubstitution(
+                [slam_share, "config", "ls_m10p_uart.yaml"]
+            ),
+            description="镭神 M10P 串口和 LaserScan 参数 YAML",
         ),
         DeclareLaunchArgument(
             "slam_params_file",
@@ -84,9 +86,11 @@ def generate_launch_description():
         }.items(),
     )
 
+    # 复用 kiwi_slam 的 M10P 封装，避免三个入口各自复制节点定义；
+    # 旧 bluesea2 只保留在源码树供回退，任何入口不再启动它。
     lidar = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            PathJoinSubstitution([FindPackageShare("bluesea2"), "launch", "uart_lidar.launch"])
+            PathJoinSubstitution([slam_share, "launch", "m10p_uart_lidar.launch.py"])
         ),
         condition=IfCondition(start_lidar),
         launch_arguments={"params_file": lidar_params}.items(),

@@ -243,7 +243,7 @@ class KiwiSlamMonitor(Node):
         """Create one diagnostic status with stable hardware and key names."""
         status = DiagnosticStatus()
         status.name = f"kiwi_slam/{name}"
-        status.hardware_id = "kiwi_base+LDS-E110-R"
+        status.hardware_id = "kiwi_base+LSLIDAR-M10P"
         status.level = level
         status.message = message
         status.values = [value(key, data) for key, data in details.items()]

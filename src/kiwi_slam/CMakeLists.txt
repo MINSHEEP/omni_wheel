@@ -18,6 +18,7 @@ install(
   FILES
     launch/kiwi_robot.launch.py
     launch/kiwi_slam.launch.py
+    launch/m10p_uart_lidar.launch.py
   DESTINATION share/${PROJECT_NAME}/launch)
 install(
   FILES urdf/kiwi.urdf.xacro

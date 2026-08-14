@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""启动 Kiwi 底盘、Pace E110、SLAM Toolbox、模型和诊断。"""
+"""启动 Kiwi 底盘、镭神 M10P 雷达、SLAM Toolbox、模型和诊断。"""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
@@ -35,8 +35,10 @@ def generate_launch_description():
     arguments = [
         DeclareLaunchArgument(
             "lidar_params_file",
-            default_value=PathJoinSubstitution([package_share, "config", "lds_e110.yaml"]),
-            description="Pace E110 串口和 LaserScan 参数 YAML",
+            default_value=PathJoinSubstitution(
+                [package_share, "config", "ls_m10p_uart.yaml"]
+            ),
+            description="镭神 M10P 串口和 LaserScan 参数 YAML",
         ),
         DeclareLaunchArgument(
             "slam_params_file",
@@ -69,7 +71,7 @@ def generate_launch_description():
             "start_ekf", default_value="true", description="是否启动 C 板 IMU 平面 EKF"
         ),
         DeclareLaunchArgument(
-            "start_lidar", default_value="true", description="是否启动 Pace E110 驱动"
+            "start_lidar", default_value="true", description="是否启动镭神 M10P 驱动"
         ),
         DeclareLaunchArgument(
             "start_slam", default_value="true", description="是否启动 SLAM Toolbox"
@@ -91,9 +93,11 @@ def generate_launch_description():
         ),
     ]
 
+    # 雷达统一走 kiwi_slam 内的 M10P 封装；旧 bluesea2 仅保留在源码树供回退，
+    # 任何入口不再启动它，保证 /scan 只有一个发布者。
     lidar = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            PathJoinSubstitution([FindPackageShare("bluesea2"), "launch", "uart_lidar.launch"])
+            PathJoinSubstitution([package_share, "launch", "m10p_uart_lidar.launch.py"])
         ),
         condition=IfCondition(start_lidar),
         launch_arguments={"params_file": lidar_params}.items(),
@@ -111,7 +115,7 @@ def generate_launch_description():
         }.items(),
     )
 
-    # 二维建图层只保留 E110、SLAM、诊断和 RViz；底盘层由 kiwi_robot.launch.py 管理。
+    # 二维建图层只保留 M10P、SLAM、诊断和 RViz；底盘层由 kiwi_robot.launch.py 管理。
     nodes = [
         Node(
             package="slam_toolbox",

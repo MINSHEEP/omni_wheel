@@ -8,7 +8,7 @@
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
-  <exec_depend>bluesea2</exec_depend>
+  <exec_depend>lslidar_driver</exec_depend>
   <exec_depend>kiwi_base</exec_depend>
   <exec_depend>kiwi_slam</exec_depend>
   <exec_depend>launch</exec_depend>

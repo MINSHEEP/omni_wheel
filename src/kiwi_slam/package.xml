@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
-<!-- Kiwi 三轮全向底盘与 LDS-E110-R 的二维建图集成包。 -->
+<!-- Kiwi 三轮全向底盘与镭神 M10P 的二维建图集成包。 -->
 <package format="3">
   <name>kiwi_slam</name>
   <version>0.1.0</version>
-  <description>SLAM Toolbox integration for the Kiwi base and PaceCat LDS-E110-R.</description>
+  <description>SLAM Toolbox integration for the Kiwi base and LSLIDAR M10P.</description>
   <maintainer email="maintainer@example.com">MSHEEP</maintainer>
   <license>Apache-2.0</license>
 
@@ -11,7 +11,7 @@
   <buildtool_depend>ament_cmake_python</buildtool_depend>
 
   <exec_depend>ament_index_python</exec_depend>
-  <exec_depend>bluesea2</exec_depend>
+  <exec_depend>lslidar_driver</exec_depend>
   <exec_depend>diagnostic_msgs</exec_depend>
   <exec_depend>kiwi_base</exec_depend>
   <exec_depend>launch</exec_depend>

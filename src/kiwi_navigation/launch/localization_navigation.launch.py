@@ -30,7 +30,9 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "lidar_params_file",
-            default_value=PathJoinSubstitution([slam_share, "config", "lds_e110.yaml"]),
+            default_value=PathJoinSubstitution(
+                [slam_share, "config", "ls_m10p_uart.yaml"]
+            ),
         ),
         DeclareLaunchArgument(
             "base_params_file",
@@ -61,9 +63,10 @@ def generate_launch_description():
         }.items(),
     )
 
+    # 复用 kiwi_slam 的 M10P 封装；本入口历史上无 start_lidar 开关，保持原接口。
     lidar = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            PathJoinSubstitution([FindPackageShare("bluesea2"), "launch", "uart_lidar.launch"])
+            PathJoinSubstitution([slam_share, "launch", "m10p_uart_lidar.launch.py"])
         ),
         launch_arguments={"params_file": lidar_params}.items(),
     )
