@@ -8,6 +8,7 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import IfElseSubstitution, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from nav2_common.launch import RewrittenYaml
 
 
 def generate_launch_description():
@@ -114,6 +115,27 @@ def generate_launch_description():
         parameters=[monitor_params],
     )
 
+    # 后方无传感器：把 bt_navigator 的行为树重写为无 BackUp 版本（路径按本机
+    # kiwi_navigation share 解析）。移除 behavior_server 的 backup 插件后，默认
+    # 行为树会因等不到 backup action server 而导致 bt_navigator 激活失败。
+    nav2_params_no_backup = RewrittenYaml(
+        source_file=nav2_params,
+        root_key="",
+        param_rewrites={
+            "default_nav_to_pose_bt_xml": PathJoinSubstitution(
+                [navigation_share, "behavior_trees", "navigate_to_pose_no_backup.xml"]
+            ),
+            "default_nav_through_poses_bt_xml": PathJoinSubstitution(
+                [
+                    navigation_share,
+                    "behavior_trees",
+                    "navigate_through_poses_no_backup.xml",
+                ]
+            ),
+        },
+        convert_types=True,
+    )
+
     navigation = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
@@ -123,7 +145,7 @@ def generate_launch_description():
         launch_arguments={
             "use_sim_time": "false",
             "autostart": "true",
-            "params_file": nav2_params,
+            "params_file": nav2_params_no_backup,
             "use_composition": "False",
             "use_respawn": "False",
             "log_level": "info",

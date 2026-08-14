@@ -8,6 +8,7 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import IfElseSubstitution, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from nav2_common.launch import RewrittenYaml
 
 
 def generate_launch_description():
@@ -88,6 +89,26 @@ def generate_launch_description():
         }.items(),
     )
 
+    # 同 mapping 入口：注入无 BackUp 行为树，避免 bt_navigator 因缺 backup
+    # action server 激活失败；后方补传感器后与 behavior_server 一起恢复。
+    nav2_params_no_backup = RewrittenYaml(
+        source_file=nav2_params,
+        root_key="",
+        param_rewrites={
+            "default_nav_to_pose_bt_xml": PathJoinSubstitution(
+                [navigation_share, "behavior_trees", "navigate_to_pose_no_backup.xml"]
+            ),
+            "default_nav_through_poses_bt_xml": PathJoinSubstitution(
+                [
+                    navigation_share,
+                    "behavior_trees",
+                    "navigate_through_poses_no_backup.xml",
+                ]
+            ),
+        },
+        convert_types=True,
+    )
+
     navigation = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
@@ -97,7 +118,7 @@ def generate_launch_description():
         launch_arguments={
             "use_sim_time": "false",
             "autostart": "true",
-            "params_file": nav2_params,
+            "params_file": nav2_params_no_backup,
             "use_composition": "False",
             "use_respawn": "False",
             "log_level": "info",
