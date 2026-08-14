@@ -6,38 +6,63 @@
 amcl:
   ros__parameters:
     use_sim_time: false                    # 是否使用仿真时间（Gazebo 中设为 true）
-    alpha1: 0.2                            # 里程计旋转噪声系数（影响角度估计）
-    alpha2: 0.2                            # 里程计平移噪声系数（影响角度估计）
-    alpha3: 0.2                            # 里程计平移噪声系数（影响位置估计）
-    alpha4: 0.2                            # 里程计旋转噪声系数（影响位置估计）
-    alpha5: 0.2                            # 里程计平移噪声系数（额外噪声项）
+
+    # 里程计噪声模型（全向底盘适度保守值）
+    # 静止漂移根因已在 EKF 层修复（陀螺死区 0.025→0.050），此处反映真实轮滑水平
+    alpha1: 0.3                            # 旋转→旋转噪声（全向轮转向轻微打滑）
+    alpha2: 0.2                            # 平移→旋转噪声
+    alpha3: 0.2                            # 平移→平移噪声
+    alpha4: 0.2                            # 旋转→平移噪声
+    alpha5: 0.15                           # 全向横移噪声（omni 专有项）
+
     base_frame_id: base_footprint          # 机器人本体坐标系
     global_frame_id: map                   # 全局地图坐标系
     odom_frame_id: odom                    # 里程计坐标系
     scan_topic: /scan                      # 激光雷达话题名
     robot_model_type: nav2_amcl::OmniMotionModel   # 全向运动模型（三轮全向底盘适用）
+
+    # 激光模型配置
     laser_model_type: likelihood_field     # 激光模型类型：似然场模型
     laser_min_range: 0.05                  # 激光最小有效距离 (m)
-    laser_max_range: 15.0                  # 激光最大有效距离 (m)
-    laser_likelihood_max_dist: 2.0       # 似然场最大影响距离 (m)
-    max_beams: 90                          # 每次更新使用的激光束数量
-    min_particles: 500                     # 粒子滤波器最小粒子数
-    max_particles: 2000                    # 粒子滤波器最大粒子数
-    pf_err: 0.05                           # 粒子滤波器期望误差（决定自适应重采样）
-    pf_z: 0.99                             # 粒子滤波器置信度
-    update_min_d: 0.05                     # 最小位移触发更新阈值 (m)
-    update_min_a: 0.05                     # 最小旋转触发更新阈值 (rad)
+    laser_max_range: 12.0                  # 与 ls_m10p_uart.yaml max_range 对齐（M10P 实际量程）
+    laser_likelihood_max_dist: 1.0         # 降低到 1.0m，提高匹配精度要求
+    max_beams: 120                         # 增加到 120，提升扫描匹配质量
+
+    # 激光测量模型权重（提高 z_hit 权重，降低随机噪声影响）
+    z_hit: 0.75                            # 提高到 0.75（从 0.5）
+    z_rand: 0.20                           # 降低到 0.20（从 0.5）
+    z_short: 0.03                          # 微调到 0.03
+    z_max: 0.02                            # 微调到 0.02
+    sigma_hit: 0.15                        # 降低到 0.15，提高匹配严格度
+    lambda_short: 0.1                      # 短读数的指数衰减系数
+
+    # 粒子滤波器配置（增加粒子数以应对不确定性）
+    min_particles: 1000                    # 提高到 1000（从 500）
+    max_particles: 5000                    # 提高到 5000（从 2000）
+    pf_err: 0.03                           # 降低到 0.03（从 0.05），要求更高精度
+    pf_z: 0.99                             # 粒子滤波器置信度保持不变
+
+    # 更新阈值（根因已在 EKF 层修复，恢复正常值允许激光及时纠偏）
+    update_min_d: 0.05                     # 移动 5cm 触发更新
+    update_min_a: 0.05                     # 旋转 2.9° 触发更新（原0.15会让漂移积累到8.6°才矫正）
     resample_interval: 1                   # 重采样间隔（每几次更新重采样一次）
+
+    # 恢复机制（启用自动恢复）
+    recovery_alpha_slow: 0.001             # 慢衰减滤波器（启用从 0.0）
+    recovery_alpha_fast: 0.1               # 快衰减滤波器（启用从 0.0）
+
     transform_tolerance: 0.5               # TF 变换容忍时间 (s)
     tf_broadcast: true                     # 是否广播 map→odom 的 TF 变换
-    z_hit: 0.5                             # 激光击中障碍物概率权重
-    z_rand: 0.5                            # 随机测量噪声概率权重
-    z_short: 0.05                          # 短读数概率权重（传感器误差）
-    z_max: 0.05                            # 最大读数概率权重（传感器误差）
-    sigma_hit: 0.2                         # 击中障碍物时的高斯标准差
-    lambda_short: 0.1                      # 短读数的指数衰减系数
     do_beamskip: false                     # 是否启用光束跳过（处理动态障碍物）
+    beam_skip_distance: 0.5                # 光束跳过距离
+    beam_skip_threshold: 0.3               # 光束跳过阈值
+    beam_skip_error_threshold: 0.9         # 光束跳过误差阈值
     save_pose_rate: 0.5                    # 保存位姿到文件的频率 (Hz)
+
+    # 初始位姿设置（通过 RViz 2D Pose Estimate 或 /initialpose 话题提供）
+    set_initial_pose: false                # 是否使用下面的初始位姿
+    always_reset_initial_pose: false       # 是否总是重置为下面的初始位姿
+    first_map_only: false                  # 是否只在第一张地图上定位
 
 # --- Behavior Tree Navigator: 行为树导航器 ---
 bt_navigator:
@@ -185,13 +210,13 @@ controller_server:
       stateful: true                       # 控制器是否有状态
       # --- 评价函数 (Critics): 轨迹评分项 ---
       critics: [RotateToGoal, Oscillation, BaseObstacle, GoalAlign, PathAlign, PathDist, GoalDist]
-      BaseObstacle.scale: 0.02             # 障碍物代价权重
-      PathAlign.scale: 24.0                # 路径对齐代价权重
+      BaseObstacle.scale: 0.15             # 障碍物代价权重
+      PathAlign.scale: 16.0                # 路径对齐代价权重
       # 前瞻过短会使航向对齐信号发噪、行走摆动；0.325 为 DWB 默认值。
-      PathAlign.forward_point_distance: 0.325  # 路径对齐前瞻距离 (m)
+      PathAlign.forward_point_distance: 0.5  # 路径对齐前瞻距离 (m)
       GoalAlign.scale: 20.0                # 目标对齐代价权重
-      GoalAlign.forward_point_distance: 0.325  # 目标对齐前瞻距离 (m)
-      PathDist.scale: 24.0                 # 路径距离代价权重
+      GoalAlign.forward_point_distance: 0.5  # 目标对齐前瞻距离 (m)
+      PathDist.scale: 20.0                 # 路径距离代价权重
       GoalDist.scale: 20.0                 # 目标距离代价权重
       RotateToGoal.scale: 24.0             # 朝向目标旋转代价权重
       RotateToGoal.slowing_factor: 5.0     # 接近目标时减速因子
@@ -236,8 +261,8 @@ local_costmap:
         plugin: nav2_costmap_2d::InflationLayer
         # 膨胀半径必须大于 robot_radius 0.323（必撞区覆盖），且要铺得足够宽：
         # 半径外代价立刻归零会让贴边路径与走廊中央代价相同，规划器就会贴边。
-        inflation_radius: 0.50             # 膨胀半径 (m)，铺宽形成推离障碍的代价梯度
-        cost_scaling_factor: 3.0           # 代价衰减系数（放缓衰减，梯度铺满膨胀区）
+        inflation_radius: 0.80             # 膨胀半径 (m)，铺宽形成推离障碍的代价梯度
+        cost_scaling_factor: 2.0           # 代价衰减系数（放缓衰减，梯度铺满膨胀区）
       always_send_full_costmap: true       # 始终发送完整地图（非增量更新）
 
 # --- Global Costmap: 全局代价地图 ---

@@ -37,7 +37,7 @@ kiwi_base_node:
     imu_orientation_variance: [0.05, 0.05, 0.05]
     # 当前包显示 C 板绝对 yaw 在静止时持续漂移，完成六面标定前不发布姿态。
     imu_publish_orientation: false
-    imu_angular_velocity_variance: [0.01, 0.01, 0.01]
+    imu_angular_velocity_variance: [0.01, 0.01, 0.05]
     imu_linear_acceleration_variance: [0.10, 0.10, 0.10]
 
     # 下位机 gyro_z 为逆时针负，ROS 要求逆时针正，因此只翻转 Z 轴。
@@ -47,11 +47,15 @@ kiwi_base_node:
     # 死区在零漂扣除和低通之后应用，阈值针对去零漂、乘 scale 后的残余噪声。
     # z 轴按 incident_20260814_101732 静止段实测调整：去零漂后 ×1.69 的残余
     # 噪声 max≈0.028、std≈0.007，0.015 会泄漏 2.4%，0.025 仅 0.4%。
-    imu_angular_velocity_deadband_rad_s: [0.015, 0.015, 0.025]
+    # 2026-08-14 下午实测：0.025 死区仍有正偏置泄漏导致 AMCL 静止时 CCW 漂移；
+    # 提高到 0.050（约 1.8×max）以完全覆盖温漂范围，代价是 <0.05 rad/s 的极慢
+    # 旋转无法反馈，实际最低操作速度 ≥0.4 rad/s，影响可忽略。
+    imu_angular_velocity_deadband_rad_s: [0.015, 0.015, 0.050]
     # 陀螺零漂处理：上电后累计 100 个静止样本（50 Hz 下约 2 s）取均值作为
     # 初始零漂；此后仅在静止时按 EMA 缓慢跟踪温漂，运动样本从不参与估计。
+    # 时间常数从 30s 缩短到 10s，使偏置估计更快跟上温漂变化。
     imu_gyro_calibration_samples: 100
-    imu_gyro_bias_time_constant_s: 30.0
+    imu_gyro_bias_time_constant_s: 10.0
     # 零漂估计的绝对值上限；超出说明传感器异常，钳制以防污染角速度。
     imu_gyro_max_bias_rad_s: 0.05
     # 一阶低通截止频率；50 Hz 反馈下 10 Hz 保留机动响应并抑制高频抖动。
