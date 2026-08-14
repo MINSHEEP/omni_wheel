@@ -21,7 +21,8 @@ def test_chassis_ekf_uses_wheel_twist_and_chassis_imu_from_one_yaml():
     assert base["wheel_odom_topic"] == ekf["odom0"] == "/chassis/odom/raw"
     assert base["imu_topic"] == ekf["imu0"] == "/chassis/imu/data_raw"
     assert base["feedback_debug_topic"] == "/chassis/feedback/raw"
-    assert base["feedback_framed"] is False
+    # 新 C 板固件（2026-08-14 起）发送 54 字节 CRC 封装帧。
+    assert base["feedback_framed"] is True
     assert ekf["two_d_mode"] is True
     assert ekf["publish_tf"] is True
     assert ekf["world_frame"] == ekf["odom_frame"] == "odom"
@@ -70,7 +71,8 @@ def test_static_measurement_filters_match_observed_noise_and_ros_yaw_sign():
 
     assert base["imu_angular_velocity_sign"] == [1.0, 1.0, -1.0]
     assert base["imu_angular_velocity_scale"] == [1.0, 1.0, 1.69]
-    assert base["imu_angular_velocity_deadband_rad_s"] == [0.015, 0.015, 0.015]
+    # z 轴阈值作用于去零漂并乘 1.69 后的值，依据 20260814 静止段实测噪声。
+    assert base["imu_angular_velocity_deadband_rad_s"] == [0.015, 0.015, 0.025]
     assert base["wheel_twist_deadband"] == [0.015, 0.015, 0.022]
     assert base["motor_feedback_deadband_rad_s"] == [0.20, 0.20, 0.20]
 

@@ -8,8 +8,10 @@ kiwi_base_node:
     publish_rate: 50.0
     # 结构化反馈话题已包含调试字段；关闭逐帧终端日志，避免 I/O 造成运行卡顿。
     log_serial_frames: false
-    # 现场 C 板不发送 0x33/0x3B/CRC 帧，只连续输出 48 字节 float32 payload。
-    feedback_framed: false
+    # 2026-08-14 C 板固件更新后输出 0x33/0x3B/CRC 封装帧（54 字节/帧）：
+    # 串口采样 178/178 帧 CRC 全部通过。裸 48 字节模式仅适用于旧固件；
+    # 配错模式的症状是节点报 "not 12 finite float32" 且 EKF 输出 NaN。
+    feedback_framed: true
 
     # 反馈电机数值 -> 轮输出轴 rad/s 的倍率。
     # 若 C 板回传的是电机轴 rad/s，保持 1.0；主机随后除以 19。
@@ -42,9 +44,10 @@ kiwi_base_node:
     imu_angular_velocity_sign: [1.0, 1.0, -1.0]
     # 旋转标定得到 C 板 Z 轴角速度约偏小 1/1.69；比例只作用于有效 IMU 测量。
     imu_angular_velocity_scale: [1.0, 1.0, 1.69]
-    # 本次静止样本绝对值最大约 0.012 rad/s；0.015 可阻止零偏持续积分。
-    # 死区在零漂扣除和低通之后应用，阈值只针对去零漂后的残余噪声。
-    imu_angular_velocity_deadband_rad_s: [0.015, 0.015, 0.015]
+    # 死区在零漂扣除和低通之后应用，阈值针对去零漂、乘 scale 后的残余噪声。
+    # z 轴按 incident_20260814_101732 静止段实测调整：去零漂后 ×1.69 的残余
+    # 噪声 max≈0.028、std≈0.007，0.015 会泄漏 2.4%，0.025 仅 0.4%。
+    imu_angular_velocity_deadband_rad_s: [0.015, 0.015, 0.025]
     # 陀螺零漂处理：上电后累计 100 个静止样本（50 Hz 下约 2 s）取均值作为
     # 初始零漂；此后仅在静止时按 EMA 缓慢跟踪温漂，运动样本从不参与估计。
     imu_gyro_calibration_samples: 100
