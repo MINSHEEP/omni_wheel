@@ -1,6 +1,6 @@
 # kiwi_navigation
 
-`kiwi_navigation` 集成 E110、SLAM Toolbox、AMCL 和 Nav2，为 Kiwi 三轮全向底盘提供二维
+`kiwi_navigation` 集成镭神 M10P、SLAM Toolbox、AMCL 和 Nav2，为 Kiwi 三轮全向底盘提供二维
 建图和已知地图导航。速度链路为：
 
 ```text
@@ -35,7 +35,7 @@ source install/setup.bash
 
 ## 在线建图
 
-组合建图导航启动文件会启动底盘、EKF、E110、SLAM Toolbox、Nav2 和 RViz：
+组合建图导航启动文件会启动底盘、EKF、M10P、SLAM Toolbox、Nav2 和 RViz：
 
 ```bash
 ros2 launch kiwi_navigation mapping_navigation.launch.py use_rviz:=true
