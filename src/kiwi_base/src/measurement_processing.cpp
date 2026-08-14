@@ -13,12 +13,18 @@ namespace kiwi_base
 Vector3 correct_vector(
   const Vector3 &raw, const Vector3 &sign, const Vector3 &deadband)
 {
+  return correct_vector(raw, sign, deadband, Vector3{1.0, 1.0, 1.0});
+}
+
+Vector3 correct_vector(
+  const Vector3 &raw, const Vector3 &sign, const Vector3 &deadband, const Vector3 &scale)
+{
   Vector3 output{};
   for (std::size_t i = 0; i < output.size(); ++i)
   {
     const double corrected = raw[i] * sign[i];
-    output[i] = std::isfinite(corrected) && std::abs(corrected) > deadband[i] ?
-      corrected : 0.0;
+    output[i] = std::isfinite(corrected) && std::isfinite(scale[i]) &&
+      scale[i] > 0.0 && std::abs(corrected) > deadband[i] ? corrected * scale[i] : 0.0;
   }
   return output;
 }

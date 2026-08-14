@@ -41,6 +41,17 @@ def test_keyboard_and_base_use_direct_cmd_vel_interface():
     assert base["cmd_vel_topic"] == keyboard["cmd_vel_topic"] == "/cmd_vel"
 
 
+def test_keyboard_speeds_do_not_exceed_base_limits():
+    config = load_config()
+    base = config["kiwi_base_node"]["ros__parameters"]
+    keyboard = config["kiwi_teleop_keyboard"]["ros__parameters"]
+
+    # 唯一限幅入口在 kiwi_base_node；键盘期望速度超限只会被静默截断，视为配置错误。
+    assert 0.0 < keyboard["speed_m_s"] <= base["max_linear_speed_m_s"]
+    assert keyboard["speed_m_s"] <= base["max_lateral_speed_m_s"]
+    assert 0.0 < keyboard["yaw_rad_s"] <= base["max_angular_speed_rad_s"]
+
+
 def test_chassis_imu_and_feedback_debug_are_always_published():
     source = (PACKAGE / "src" / "kiwi_base_node.cpp").read_text(encoding="utf-8")
     active_lines = [
@@ -58,6 +69,7 @@ def test_static_measurement_filters_match_observed_noise_and_ros_yaw_sign():
     base = load_config()["kiwi_base_node"]["ros__parameters"]
 
     assert base["imu_angular_velocity_sign"] == [1.0, 1.0, -1.0]
+    assert base["imu_angular_velocity_scale"] == [1.0, 1.0, 1.69]
     assert base["imu_angular_velocity_deadband_rad_s"] == [0.015, 0.015, 0.015]
     assert base["wheel_twist_deadband"] == [0.015, 0.015, 0.022]
     assert base["motor_feedback_deadband_rad_s"] == [0.20, 0.20, 0.20]

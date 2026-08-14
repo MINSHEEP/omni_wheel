@@ -40,6 +40,8 @@ kiwi_base_node:
 
     # 下位机 gyro_z 为逆时针负，ROS 要求逆时针正，因此只翻转 Z 轴。
     imu_angular_velocity_sign: [1.0, 1.0, -1.0]
+    # 旋转标定得到 C 板 Z 轴角速度约偏小 1/1.69；比例只作用于有效 IMU 测量。
+    imu_angular_velocity_scale: [1.0, 1.0, 1.69]
     # 本次静止样本绝对值最大约 0.012 rad/s；0.015 可阻止零偏持续积分。
     imu_angular_velocity_deadband_rad_s: [0.015, 0.015, 0.015]
     # 顺序为 vx(m/s)、vy(m/s)、wz(rad/s)，过滤静止编码器抖动后再积分和发布。
@@ -115,8 +117,10 @@ kiwi_teleop_keyboard:
   ros__parameters:
     # 键盘与 Nav2 使用同一个底盘速度入口；两者不要同时控制机器人。
     cmd_vel_topic: /cmd_vel
-    speed_m_s: 0.25
-    yaw_rad_s: 0.8
+    # 键盘只声明期望速度，唯一限幅在 kiwi_base_node 的 max_*；
+    # 这里的数值不得超过上面的限幅，否则会被静默截断（有 pytest 契约保护）。
+    speed_m_s: 0.2
+    yaw_rad_s: 0.2
     deadman_timeout_ms: 200
 
 # 滤波里程计终端调试节点。

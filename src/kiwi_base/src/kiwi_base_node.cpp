@@ -163,6 +163,8 @@ public:
 
     // 下位机 gyro_z 为逆时针负；按 ROS 右手系翻转 Z，并过滤实测静止噪声。
     imu_angular_velocity_sign_ = declare_vector3(*this, "imu_angular_velocity_sign");
+    // 对已确认单位正确但量程偏小的 IMU 轴做独立比例修正，不影响轮速里程计。
+    imu_angular_velocity_scale_ = declare_vector3(*this, "imu_angular_velocity_scale");
     imu_angular_velocity_deadband_ = declare_vector3(
       *this, "imu_angular_velocity_deadband_rad_s");
     wheel_twist_deadband_ = declare_vector3(*this, "wheel_twist_deadband");
@@ -171,6 +173,10 @@ public:
         [](double value) { return std::abs(value) != 1.0; }))
       throw std::invalid_argument("imu angular velocity signs must be +1 or -1");
     const auto negative_deadband = [](double value) { return value < 0.0; };
+    if (std::any_of(
+        imu_angular_velocity_scale_.begin(), imu_angular_velocity_scale_.end(),
+        [](double value) { return value <= 0.0; }))
+      throw std::invalid_argument("imu angular velocity scales must be positive");
     if (std::any_of(
         imu_angular_velocity_deadband_.begin(), imu_angular_velocity_deadband_.end(),
         negative_deadband) ||
@@ -383,7 +389,7 @@ private:
 
     const auto angular_velocity = correct_vector(
       {state.gyro[0], state.gyro[1], state.gyro[2]},
-      imu_angular_velocity_sign_, imu_angular_velocity_deadband_);
+      imu_angular_velocity_sign_, imu_angular_velocity_deadband_, imu_angular_velocity_scale_);
 
     // 数据已通过布局和有限值检查；这里打印解码后的 12 个字段，
     // 便于直接观察电机反馈和 IMU 原始角速度/加速度，避免手工拆 float32。
@@ -575,6 +581,7 @@ private:
   std::array<double, 3> imu_angular_velocity_variance_{};
   std::array<double, 3> imu_linear_acceleration_variance_{};
   Vector3 imu_angular_velocity_sign_{};
+  Vector3 imu_angular_velocity_scale_{};
   Vector3 imu_angular_velocity_deadband_{};
   Vector3 wheel_twist_deadband_{};
   std::vector<std::string> wheel_names_;

@@ -32,3 +32,16 @@ TEST(MeasurementProcessing, ZerosThresholdAndNonFiniteValues)
 
   EXPECT_EQ(output, (Vector3{0.0, 0.0, 0.0}));
 }
+
+TEST(MeasurementProcessing, AppliesScaleAfterDeadband)
+{
+  const auto output = correct_vector(
+    Vector3{0.010, -0.020, -0.030},
+    Vector3{1.0, 1.0, -1.0},
+    Vector3{0.015, 0.015, 0.015},
+    Vector3{2.0, 3.0, 1.69});
+
+  EXPECT_DOUBLE_EQ(output[0], 0.0);
+  EXPECT_DOUBLE_EQ(output[1], -0.060);
+  EXPECT_DOUBLE_EQ(output[2], 0.0507);
+}
