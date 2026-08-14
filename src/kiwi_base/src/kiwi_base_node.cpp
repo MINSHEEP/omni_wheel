@@ -168,6 +168,25 @@ public:
     imu_angular_velocity_deadband_ = declare_vector3(
       *this, "imu_angular_velocity_deadband_rad_s");
     wheel_twist_deadband_ = declare_vector3(*this, "wheel_twist_deadband");
+
+    // 陀螺零漂/低通处理参数：标定样本数、EMA 时间常数、零漂上限、截止频率、静止确认时长。
+    const auto calibration_samples =
+      declare_required<int64_t>(*this, "imu_gyro_calibration_samples");
+    GyroFilterConfig gyro_config{};
+    gyro_config.bias_time_constant_s =
+      declare_required<double>(*this, "imu_gyro_bias_time_constant_s");
+    gyro_config.max_bias_rad_s = declare_required<double>(*this, "imu_gyro_max_bias_rad_s");
+    gyro_config.lowpass_cutoff_hz =
+      declare_required<double>(*this, "imu_gyro_lowpass_cutoff_hz");
+    imu_stationary_hold_s_ = declare_required<double>(*this, "imu_stationary_hold_s");
+    if (calibration_samples < 0 ||
+        !std::isfinite(gyro_config.bias_time_constant_s) || gyro_config.bias_time_constant_s < 0.0 ||
+        !std::isfinite(gyro_config.max_bias_rad_s) || gyro_config.max_bias_rad_s < 0.0 ||
+        !std::isfinite(gyro_config.lowpass_cutoff_hz) || gyro_config.lowpass_cutoff_hz < 0.0 ||
+        !std::isfinite(imu_stationary_hold_s_) || imu_stationary_hold_s_ < 0.0)
+      throw std::invalid_argument("imu gyro filter parameters must be finite and non-negative");
+    gyro_config.calibration_samples = static_cast<std::size_t>(calibration_samples);
+    gyro_filter_.emplace(gyro_config);
     if (std::any_of(
         imu_angular_velocity_sign_.begin(), imu_angular_velocity_sign_.end(),
         [](double value) { return std::abs(value) != 1.0; }))
@@ -386,29 +405,6 @@ private:
   /** 在固定 ROS 周期处理一帧反馈并发布轮速、IMU 和调试消息。 */
   void process_feedback(const FeedbackFrame &state)
   {
-
-    const auto angular_velocity = correct_vector(
-      {state.gyro[0], state.gyro[1], state.gyro[2]},
-      imu_angular_velocity_sign_, imu_angular_velocity_deadband_, imu_angular_velocity_scale_);
-
-    // 数据已通过布局和有限值检查；这里打印解码后的 12 个字段，
-    // 便于直接观察电机反馈和 IMU 原始角速度/加速度，避免手工拆 float32。
-    if (log_serial_frames_)
-    {
-      RCLCPP_INFO(
-        get_logger(),
-        "\nRT 电机=[%6.4f %6.4f %6.4f]\n"
-        "欧拉角=[%6.4f %6.4f %6.4f]\n"
-        "角速度原始=[%6.4f %6.4f %6.4f]\n"
-        "角速度ROS=[%6.4f %6.4f %6.4f]\n"
-        "加速度=[%6.4f %6.4f %6.4f]",
-        state.motor_actual[0], state.motor_actual[1], state.motor_actual[2],
-        state.euler[0], state.euler[1], state.euler[2],
-        state.gyro[0], state.gyro[1], state.gyro[2],
-        angular_velocity[0], angular_velocity[1], angular_velocity[2],
-        state.accel[0], state.accel[1], state.accel[2]);
-    }
-
     const auto steady_now = Clock::now();
     const double dt = have_feedback_time_ ?
       std::chrono::duration<double>(steady_now - last_feedback_time_).count() : 0.0;
@@ -430,6 +426,57 @@ private:
     }
     last_feedback_time_ = steady_now;
     have_feedback_time_ = true;
+
+    // 陀螺零漂只能用真静止样本估计：要求目标速度为零且电机反馈过死区后
+    // 也为零，并持续 imu_stationary_hold_s 以让停车后的机械振动衰减。
+    const bool at_rest =
+      command_.vx == 0.0 && command_.vy == 0.0 && command_.wz == 0.0 &&
+      motor_velocity[0] == 0.0 && motor_velocity[1] == 0.0 && motor_velocity[2] == 0.0;
+    if (at_rest && !stationary_candidate_)
+    {
+      stationary_candidate_ = true;
+      stationary_since_ = steady_now;
+    }
+    else if (!at_rest)
+      stationary_candidate_ = false;
+    const bool stationary = stationary_candidate_ &&
+      std::chrono::duration<double>(steady_now - stationary_since_).count() >=
+      imu_stationary_hold_s_;
+
+    // 陀螺管线：符号/比例修正 -> 零漂扣除 + 低通 -> 静止死区。
+    // 死区放在最后，阈值作用于去零漂后的残余噪声，不再兼职吸收零偏。
+    const auto gyro_corrected = correct_vector(
+      {state.gyro[0], state.gyro[1], state.gyro[2]},
+      imu_angular_velocity_sign_, Vector3{0.0, 0.0, 0.0}, imu_angular_velocity_scale_);
+    const auto gyro_filtered = gyro_filter_->process(gyro_corrected, stationary, dt);
+    const auto angular_velocity = correct_vector(
+      gyro_filtered, {1.0, 1.0, 1.0}, imu_angular_velocity_deadband_);
+    if (!gyro_bias_logged_ && gyro_filter_->calibrated())
+    {
+      const auto &bias = gyro_filter_->bias();
+      RCLCPP_INFO(
+        get_logger(), "陀螺零漂标定完成: [%.5f %.5f %.5f] rad/s",
+        bias[0], bias[1], bias[2]);
+      gyro_bias_logged_ = true;
+    }
+
+    // 数据已通过布局和有限值检查；这里打印解码后的 12 个字段，
+    // 便于直接观察电机反馈和 IMU 原始角速度/加速度，避免手工拆 float32。
+    if (log_serial_frames_)
+    {
+      RCLCPP_INFO(
+        get_logger(),
+        "\nRT 电机=[%6.4f %6.4f %6.4f]\n"
+        "欧拉角=[%6.4f %6.4f %6.4f]\n"
+        "角速度原始=[%6.4f %6.4f %6.4f]\n"
+        "角速度ROS=[%6.4f %6.4f %6.4f]\n"
+        "加速度=[%6.4f %6.4f %6.4f]",
+        state.motor_actual[0], state.motor_actual[1], state.motor_actual[2],
+        state.euler[0], state.euler[1], state.euler[2],
+        state.gyro[0], state.gyro[1], state.gyro[2],
+        angular_velocity[0], angular_velocity[1], angular_velocity[2],
+        state.accel[0], state.accel[1], state.accel[2]);
+    }
     // 同一 0x3B 包中的轮速和 IMU 使用同一 ROS 时间戳，便于 EKF 对齐测量。
     const auto stamp = this->now();
     publish_odom(stamp, dt);
@@ -584,6 +631,11 @@ private:
   Vector3 imu_angular_velocity_scale_{};
   Vector3 imu_angular_velocity_deadband_{};
   Vector3 wheel_twist_deadband_{};
+  double imu_stationary_hold_s_{};
+  std::optional<GyroBiasFilter> gyro_filter_;
+  bool stationary_candidate_{false};
+  Clock::time_point stationary_since_{};
+  bool gyro_bias_logged_{false};
   std::vector<std::string> wheel_names_;
   std::optional<KiwiKinematics> kinematics_;
   Twist2D command_limits_{};

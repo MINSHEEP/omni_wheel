@@ -75,6 +75,21 @@ def test_static_measurement_filters_match_observed_noise_and_ros_yaw_sign():
     assert base["motor_feedback_deadband_rad_s"] == [0.20, 0.20, 0.20]
 
 
+def test_gyro_bias_filter_parameters_are_consistent():
+    base = load_config()["kiwi_base_node"]["ros__parameters"]
+
+    # 上电静止标定至少要有一个样本；EMA 与静止确认时间必须为正。
+    assert base["imu_gyro_calibration_samples"] >= 1
+    assert base["imu_gyro_bias_time_constant_s"] > 0.0
+    assert base["imu_stationary_hold_s"] > 0.0
+    # 零漂上限须能覆盖死区级别的零偏，否则钳制会低估真实零漂。
+    assert base["imu_gyro_max_bias_rad_s"] >= max(
+        base["imu_angular_velocity_deadband_rad_s"]
+    )
+    # 低通截止频率必须低于反馈采样率的奈奎斯特频率。
+    assert 0.0 < base["imu_gyro_lowpass_cutoff_hz"] < base["publish_rate"] / 2.0
+
+
 def test_filter_inputs_have_positive_covariances():
     base = load_config()["kiwi_base_node"]["ros__parameters"]
     names = [

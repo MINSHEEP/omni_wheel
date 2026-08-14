@@ -43,7 +43,18 @@ kiwi_base_node:
     # 旋转标定得到 C 板 Z 轴角速度约偏小 1/1.69；比例只作用于有效 IMU 测量。
     imu_angular_velocity_scale: [1.0, 1.0, 1.69]
     # 本次静止样本绝对值最大约 0.012 rad/s；0.015 可阻止零偏持续积分。
+    # 死区在零漂扣除和低通之后应用，阈值只针对去零漂后的残余噪声。
     imu_angular_velocity_deadband_rad_s: [0.015, 0.015, 0.015]
+    # 陀螺零漂处理：上电后累计 100 个静止样本（50 Hz 下约 2 s）取均值作为
+    # 初始零漂；此后仅在静止时按 EMA 缓慢跟踪温漂，运动样本从不参与估计。
+    imu_gyro_calibration_samples: 100
+    imu_gyro_bias_time_constant_s: 30.0
+    # 零漂估计的绝对值上限；超出说明传感器异常，钳制以防污染角速度。
+    imu_gyro_max_bias_rad_s: 0.05
+    # 一阶低通截止频率；50 Hz 反馈下 10 Hz 保留机动响应并抑制高频抖动。
+    imu_gyro_lowpass_cutoff_hz: 10.0
+    # 判定静止需目标速度与电机反馈同时为零并保持该时长，避开停车瞬间的振动。
+    imu_stationary_hold_s: 0.5
     # 顺序为 vx(m/s)、vy(m/s)、wz(rad/s)，过滤静止编码器抖动后再积分和发布。
     wheel_twist_deadband: [0.015, 0.015, 0.022]
 
@@ -119,8 +130,8 @@ kiwi_teleop_keyboard:
     cmd_vel_topic: /cmd_vel
     # 键盘只声明期望速度，唯一限幅在 kiwi_base_node 的 max_*；
     # 这里的数值不得超过上面的限幅，否则会被静默截断（有 pytest 契约保护）。
-    speed_m_s: 0.2
-    yaw_rad_s: 0.2
+    speed_m_s: 0.4
+    yaw_rad_s: 0.4
     deadman_timeout_ms: 200
 
 # 滤波里程计终端调试节点。
