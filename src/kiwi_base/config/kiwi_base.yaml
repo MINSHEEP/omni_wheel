@@ -42,6 +42,12 @@ kiwi_base_node:
     imu_angular_velocity_variance: [0.01, 0.01, 0.046]
     imu_linear_acceleration_variance: [0.10, 0.10, 0.10]
 
+    # yaw 零漂补偿：静止时自动标定并持续跟踪漂移率，实时补偿累积误差
+    imu_yaw_drift_compensation: true               # 启用 yaw 零漂补偿
+    imu_yaw_drift_time_constant_s: 300.0           # EMA 时间常数(s)，5分钟
+    imu_yaw_drift_max_rate_rad_s: 0.0001           # 最大漂移率(rad/s)，约 0.36 rad/小时
+    imu_yaw_drift_calibration_samples: 500         # 初始标定样本数（50Hz 下 10 秒）
+
     # 下位机 gyro_z 为逆时针负，ROS 要求逆时针正，因此只翻转 Z 轴。
     imu_angular_velocity_sign: [1.0, 1.0, -1.0]
     # 旋转标定得到 C 板 Z 轴角速度约偏小 1/1.69；比例只作用于有效 IMU 测量。
