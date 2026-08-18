@@ -30,8 +30,9 @@ def test_chassis_ekf_uses_wheel_twist_and_chassis_imu_from_one_yaml():
     assert base["base_frame_id"] == ekf["base_link_frame"] == "base_footprint"
     assert base["imu_frame_id"] == "chassis_imu_link"
     assert [i for i, enabled in enumerate(ekf["odom0_config"]) if enabled] == [6, 7, 11]
-    assert [i for i, enabled in enumerate(ekf["imu0_config"]) if enabled] == [11]
-    assert base["imu_publish_orientation"] is False
+    # 2026-08-18: C 板 yaw 零漂已控制，启用 yaw(索引5) 和 vyaw(索引11) 融合
+    assert [i for i, enabled in enumerate(ekf["imu0_config"]) if enabled] == [5, 11]
+    assert base["imu_publish_orientation"] is True
 
 
 def test_keyboard_and_base_use_direct_cmd_vel_interface():
@@ -71,8 +72,8 @@ def test_static_measurement_filters_match_observed_noise_and_ros_yaw_sign():
 
     assert base["imu_angular_velocity_sign"] == [1.0, 1.0, -1.0]
     assert base["imu_angular_velocity_scale"] == [1.0, 1.0, 1.69]
-    # z 轴阈值作用于去零漂并乘 1.69 后的值，依据 20260814 静止段实测噪声。
-    assert base["imu_angular_velocity_deadband_rad_s"] == [0.015, 0.015, 0.025]
+    # z 轴阈值 2026-08-14 调整到 0.050 以完全覆盖温漂范围
+    assert base["imu_angular_velocity_deadband_rad_s"] == [0.015, 0.015, 0.050]
     assert base["wheel_twist_deadband"] == [0.015, 0.015, 0.022]
     assert base["motor_feedback_deadband_rad_s"] == [0.20, 0.20, 0.20]
 

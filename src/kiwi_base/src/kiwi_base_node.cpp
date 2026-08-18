@@ -550,7 +550,29 @@ private:
     if (imu_publish_orientation_)
     {
       // 只有完成安装轴和航向标定后才发布 C 板欧拉角转换的四元数。
-      const auto quaternion = rpy_to_quaternion(state.euler[0], state.euler[1], state.euler[2]);
+      // 展开 yaw 角度以处理 -π 到 π 的跳变
+      double yaw = state.euler[2];
+      if (have_previous_yaw_)
+      {
+        // 计算与上一次的角度差
+        double delta = yaw - previous_yaw_raw_;
+        // 检测跳变并展开
+        if (delta > M_PI)
+        {
+          yaw_unwrap_offset_ -= 2.0 * M_PI;
+        }
+        else if (delta < -M_PI)
+        {
+          yaw_unwrap_offset_ += 2.0 * M_PI;
+        }
+      }
+      previous_yaw_raw_ = yaw;
+      have_previous_yaw_ = true;
+
+      // 应用展开偏移得到连续的 yaw
+      const double yaw_unwrapped = yaw + yaw_unwrap_offset_;
+
+      const auto quaternion = rpy_to_quaternion(state.euler[0], state.euler[1], yaw_unwrapped);
       message.orientation.x = quaternion[0];
       message.orientation.y = quaternion[1];
       message.orientation.z = quaternion[2];
@@ -647,6 +669,10 @@ private:
   double odom_yaw_{0.0};
   bool have_feedback_time_{false};
   Clock::time_point last_feedback_time_{};
+  // yaw 角度展开状态
+  bool have_previous_yaw_{false};
+  double previous_yaw_raw_{0.0};
+  double yaw_unwrap_offset_{0.0};
   std::optional<FeedbackFrame> pending_feedback_;
   std::vector<uint8_t> raw_feedback_buffer_;
   FrameParser parser_;

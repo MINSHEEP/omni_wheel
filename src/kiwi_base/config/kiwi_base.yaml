@@ -34,10 +34,12 @@ kiwi_base_node:
     # 当前是保守初值；完成静止和匀速采样后再用实测方差替换。
     wheel_pose_variance: [0.10, 0.10, 0.20]
     wheel_twist_variance: [0.02, 0.02, 0.04]
-    imu_orientation_variance: [0.05, 0.05, 0.05]
-    # 当前包显示 C 板绝对 yaw 在静止时持续漂移，完成六面标定前不发布姿态。
-    imu_publish_orientation: false
-    imu_angular_velocity_variance: [0.01, 0.01, 0.05]
+    # 2026-08-18 实测：C 板 yaw 零漂已明显控制，可信度较高，启用融合。
+    # yaw 方差基于角速度积分估算（wz方差 0.046448 在 50Hz下累积）。
+    imu_orientation_variance: [0.05, 0.05, 0.001]
+    # C 板现在发布连续 yaw（已在 kiwi_base_node 中添加角度展开处理 -π/π 跳变）。
+    imu_publish_orientation: true
+    imu_angular_velocity_variance: [0.01, 0.01, 0.046]
     imu_linear_acceleration_variance: [0.10, 0.10, 0.10]
 
     # 下位机 gyro_z 为逆时针负，ROS 要求逆时针正，因此只翻转 Z 轴。
@@ -114,13 +116,13 @@ ekf_filter_node:
     odom0_differential: false
     odom0_relative: false
 
-    # C 板绝对 yaw 在静止时有明显漂移，先只使用符号修正后的 gyro_z。
+    # C 板绝对 yaw 在 2026-08-18 实测零漂已控制，可信度较高，启用融合。
     imu0: /chassis/imu/data_raw
     imu0_config: [
       false, false, false,  # x, y, z：IMU 不提供位置
-      false, false, false,  # roll, pitch, yaw：待完成 IMU 安装轴/航向标定后再启用
+      false, false, true,   # roll, pitch, yaw：融合 yaw（已添加角度展开处理）
       false, false, false,  # vx, vy, vz：IMU 不提供线速度
-      false, false, true,   # vroll, vpitch, vyaw：只融合 z 轴角速度
+      false, false, true,   # vroll, vpitch, vyaw：继续融合 z 轴角速度
       false, false, false   # ax, ay, az：当前平面 EKF 不融合加速度
     ]
     imu0_queue_size: 20
