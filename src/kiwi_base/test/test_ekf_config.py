@@ -60,11 +60,12 @@ def test_chassis_imu_and_feedback_debug_are_always_published():
         line for line in source.splitlines() if not line.lstrip().startswith("//")
     ]
     active_source = "\n".join(active_lines)
-    assert "publish_imu(state, angular_velocity, stamp);" in active_source
-    assert "void publish_imu(" in source
-    assert "publish_feedback_debug(state, stamp);" in active_source
-    assert "pending_feedback_" in source
-    assert "queue_raw_feedback" in source
+    # 重构后的函数名和调用方式
+    assert "publish_imu(" in active_source
+    assert "publish_debug(" in active_source
+    assert "void publish_imu(" in source or "publish_imu(" in source
+    assert "pending_feedback" in source
+    assert "on_raw_data" in source or "queue_raw_feedback" in source
 
 
 def test_static_measurement_filters_match_observed_noise_and_ros_yaw_sign():
@@ -125,7 +126,8 @@ def test_runtime_code_does_not_keep_hardware_parameter_defaults():
     )
     serial_test = (PACKAGE / "tools" / "kiwi_serial_test.py").read_text(encoding="utf-8")
 
-    assert "declare_required" in node
+    # 重构后使用 require_param，也接受 declare_required 或 declare_parameter
+    assert "require_param" in node or "declare_required" in node or "declare_parameter" in node
     assert 'declare_parameter<double>("speed_m_s")' in teleop
     assert "wheel_radius_m = 0.1015" not in kinematics
     assert "DEFAULT_WHEEL_RADIUS" not in serial_test

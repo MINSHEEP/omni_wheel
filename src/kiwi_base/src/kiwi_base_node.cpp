@@ -1,11 +1,23 @@
 /**
  * @file kiwi_base_node.cpp
- * @brief Kiwi 三轮底盘最小联调节点。
+ * @brief Kiwi 三轮全向底盘驱动节点
  *
- * 运行链路只有四步：
- *   /cmd_vel -> 三轴限幅 -> 三行物理公式 -> USB 0x3A -> C 板反馈话题。
- * 加速度斜坡、急停和反馈联锁暂不放入运行路径。
+ * 【数据流向】
+ *   输入: /cmd_vel (Twist) → 速度限幅 → 逆运动学 → 电机指令 → USB CDC
+ *   输出: USB CDC → 反馈解析 → 预处理 → 四个话题发布
+ *
+ * 【发布话题】
+ *   /chassis/odom/raw      - 轮式里程计（位姿 + 速度）
+ *   /chassis/imu/data_raw  - 底盘 IMU（姿态 + 角速度 + 加速度）
+ *   /joint_states          - 三轮关节状态
+ *   /chassis/feedback/raw  - 调试用原始反馈数据
+ *
+ * 【预处理链路】
+ *   电机反馈: 倍率换算 → 死区过滤 → 除减速比 → 正运动学 → 里程计
+ *   IMU 角速度: 符号修正 → 标定缩放 → 零漂扣除 → 低通滤波 → 死区过滤
+ *   IMU 姿态: yaw 角度展开（处理 -π 到 π 跳变）→ 四元数转换
  */
+
 #include "kiwi_base/kiwi_kinematics.hpp"
 #include "kiwi_base/measurement_processing.hpp"
 #include "kiwi_base/robomaster_protocol.hpp"
@@ -39,23 +51,27 @@ namespace
 {
 using Clock = std::chrono::steady_clock;
 
-/** 把原始 USB 帧转换成便于联调复制的十六进制文本。 */
-std::string to_hex(const std::vector<uint8_t> &frame)
+//==============================================================================
+// 工具函数
+//==============================================================================
+
+/** 将字节数组转换为十六进制字符串，用于串口调试 */
+std::string to_hex(const std::vector<uint8_t> &data)
 {
-  constexpr char digits[] = "0123456789abcdef";
-  std::string text;
-  for (size_t i = 0; i < frame.size(); ++i)
+  static constexpr char hex[] = "0123456789abcdef";
+  std::string result;
+  result.reserve(data.size() * 3);
+  for (size_t i = 0; i < data.size(); ++i)
   {
-    if (i != 0)
-      text += ' ';
-    text += digits[frame[i] >> 4];
-    text += digits[frame[i] & 0x0f];
+    if (i > 0) result += ' ';
+    result += hex[data[i] >> 4];
+    result += hex[data[i] & 0x0f];
   }
-  return text;
+  return result;
 }
 
-/** 将 C 板的 roll/pitch/yaw（弧度）转换为 ROS 四元数。 */
-std::array<double, 4> rpy_to_quaternion(double roll, double pitch, double yaw)
+/** 欧拉角（roll/pitch/yaw）转四元数 */
+std::array<double, 4> euler_to_quat(double roll, double pitch, double yaw)
 {
   const double cr = std::cos(roll * 0.5);
   const double sr = std::sin(roll * 0.5);
@@ -63,182 +79,79 @@ std::array<double, 4> rpy_to_quaternion(double roll, double pitch, double yaw)
   const double sp = std::sin(pitch * 0.5);
   const double cy = std::cos(yaw * 0.5);
   const double sy = std::sin(yaw * 0.5);
+
   return {
-    sr * cp * cy - cr * sp * sy,
-    cr * sp * cy + sr * cp * sy,
-    cr * cp * sy - sr * sp * cy,
-    cr * cp * cy + sr * sp * sy};
+    sr * cp * cy - cr * sp * sy,  // x
+    cr * sp * cy + sr * cp * sy,  // y
+    cr * cp * sy - sr * sp * cy,  // z
+    cr * cp * cy + sr * sp * sy   // w
+  };
 }
 
-/** 声明必须由 YAML 提供的参数；缺少配置时由 rclcpp 直接终止启动。 */
+/** 声明必需参数，缺失时抛出异常 */
 template<typename T>
-T declare_required(rclcpp::Node &node, const std::string &name)
+T require_param(rclcpp::Node &node, const std::string &name)
 {
   return node.declare_parameter<T>(name);
 }
 
-/** 读取三个轴的方差；方差必须是有限正数，避免滤波器把无效配置当成真值。 */
-std::array<double, 3> declare_variance(rclcpp::Node &node, const std::string &name)
+/** 读取三轴方差参数（必须为正数） */
+std::array<double, 3> require_variance(rclcpp::Node &node, const std::string &name)
 {
-  const auto values = declare_required<std::vector<double>>(node, name);
-  if (values.size() != 3 || std::any_of(values.begin(), values.end(), [](double value)
-    { return !std::isfinite(value) || value <= 0.0; }))
-    throw std::invalid_argument(name + " must contain three finite positive variances");
+  const auto values = require_param<std::vector<double>>(node, name);
+  if (values.size() != 3 || std::any_of(values.begin(), values.end(),
+      [](double v) { return !std::isfinite(v) || v <= 0.0; }))
+    throw std::invalid_argument(name + " must be 3 finite positive values");
   return {values[0], values[1], values[2]};
 }
 
-/** 读取有限三轴参数；符号和死区的具体范围由调用处检查。 */
-Vector3 declare_vector3(rclcpp::Node &node, const std::string &name)
+/** 读取三轴向量参数（必须有限） */
+Vector3 require_vector3(rclcpp::Node &node, const std::string &name)
 {
-  const auto values = declare_required<std::vector<double>>(node, name);
-  if (values.size() != 3 || std::any_of(values.begin(), values.end(), [](double value)
-    { return !std::isfinite(value); }))
-    throw std::invalid_argument(name + " must contain three finite values");
+  const auto values = require_param<std::vector<double>>(node, name);
+  if (values.size() != 3 || std::any_of(values.begin(), values.end(),
+      [](double v) { return !std::isfinite(v); }))
+    throw std::invalid_argument(name + " must be 3 finite values");
   return {values[0], values[1], values[2]};
 }
+
 }  // namespace
 
+//==============================================================================
+// KiwiBaseNode - 主节点类
+//==============================================================================
+
 /**
- * @brief USB CDC 与 ROS 之间的最小适配节点。
+ * @brief Kiwi 底盘驱动节点
  *
- * 主机只负责目标速度转换和协议收发，C 板负责 M3508 速度 PID 和 CAN 输出。
+ * 负责速度指令下发、反馈数据接收、预处理和话题发布。
+ * 串口通信和数据处理都在固定周期定时器中完成。
  */
 class KiwiBaseNode final : public rclcpp::Node
 {
 public:
-  /** 读取参数、建立话题、打开串口并启动固定周期发送定时器。 */
   KiwiBaseNode()
   : Node("kiwi_base_node"),
-    parser_(
-      [this](uint8_t version, const std::vector<uint8_t> &payload)
-      { queue_feedback(version, payload); }
-      // 暂停原因：解码后的结构化日志已足够联调；需要检查 CRC 原始字节时再恢复此回调。
-      // ,[this](const std::vector<uint8_t> &frame){ log_frame("RX", frame); }
-    )
+    parser_([this](uint8_t ver, const std::vector<uint8_t> &payload) {
+      on_feedback_frame(ver, payload);
+    })
   {
-    // 运行参数没有代码回退值，统一从 kiwi_base.yaml 读取，缺项立即报错。
-    device_ = declare_required<std::string>(*this, "device");
-    publish_rate_ = declare_required<double>(*this, "publish_rate");
-    log_serial_frames_ = declare_required<bool>(*this, "log_serial_frames");
-    // 现场 C 板只输出 48 字节反馈 payload，没有 0x33/0x3B/CRC 封装。
-    feedback_framed_ = declare_required<bool>(*this, "feedback_framed");
-    feedback_scale_ = declare_required<double>(*this, "feedback_motor_scale_to_rad_s");
-    if (!std::isfinite(publish_rate_) || publish_rate_ <= 0.0 ||
-        !std::isfinite(feedback_scale_) || feedback_scale_ <= 0.0)
-      throw std::invalid_argument("publish rate and feedback scale must be finite and positive");
-
-    const auto ratios = declare_required<std::vector<double>>(*this, "motor_reduction_ratio");
-    if (ratios.size() != 3 || std::any_of(ratios.begin(), ratios.end(), [](double value)
-      { return !std::isfinite(value) || value <= 0.0; }))
-      throw std::invalid_argument("motor reduction ratio must contain three finite positive values");
-    for (size_t i = 0; i < 3; ++i)
-      motor_ratio_[i] = ratios[i];
-    motor_feedback_deadband_rad_s_ = declare_vector3(
-      *this, "motor_feedback_deadband_rad_s");
-
-    // 运动学只从 kiwi_base.yaml 读取轮半径和中心到轮心距离；URDF/Nav2 的外形参数单独维护。
-    const double wheel_radius_m = declare_required<double>(*this, "wheel_radius_m");
-    const double wheel_center_distance_m =
-      declare_required<double>(*this, "wheel_center_distance_m");
-    kinematics_.emplace(wheel_radius_m, wheel_center_distance_m);
-
-    // 三个 YAML 参数分别限制前后、左右和旋转速度，单位与 Twist 一致。
-    command_limits_ = {
-      declare_required<double>(*this, "max_linear_speed_m_s"),
-      declare_required<double>(*this, "max_lateral_speed_m_s"),
-      declare_required<double>(*this, "max_angular_speed_rad_s")};
-    if (!std::isfinite(command_limits_.vx) || command_limits_.vx <= 0.0 ||
-        !std::isfinite(command_limits_.vy) || command_limits_.vy <= 0.0 ||
-        !std::isfinite(command_limits_.wz) || command_limits_.wz <= 0.0)
-      throw std::invalid_argument("velocity limits must be finite and positive");
-
-    // 这些是 EKF 的测量噪声初值，数组顺序均为 x、y、z；实测静止数据后只改 YAML。
-    wheel_pose_variance_ = declare_variance(*this, "wheel_pose_variance");
-    wheel_twist_variance_ = declare_variance(*this, "wheel_twist_variance");
-    imu_orientation_variance_ = declare_variance(*this, "imu_orientation_variance");
-    // C 板绝对欧拉角在静止时仍会漂移；默认不把它伪装成有效 ROS 姿态。
-    imu_publish_orientation_ = declare_required<bool>(*this, "imu_publish_orientation");
-    imu_angular_velocity_variance_ = declare_variance(*this, "imu_angular_velocity_variance");
-    imu_linear_acceleration_variance_ = declare_variance(*this, "imu_linear_acceleration_variance");
-
-    // 下位机 gyro_z 为逆时针负；按 ROS 右手系翻转 Z，并过滤实测静止噪声。
-    imu_angular_velocity_sign_ = declare_vector3(*this, "imu_angular_velocity_sign");
-    // 对已确认单位正确但量程偏小的 IMU 轴做独立比例修正，不影响轮速里程计。
-    imu_angular_velocity_scale_ = declare_vector3(*this, "imu_angular_velocity_scale");
-    imu_angular_velocity_deadband_ = declare_vector3(
-      *this, "imu_angular_velocity_deadband_rad_s");
-    wheel_twist_deadband_ = declare_vector3(*this, "wheel_twist_deadband");
-
-    // 陀螺零漂/低通处理参数：标定样本数、EMA 时间常数、零漂上限、截止频率、静止确认时长。
-    const auto calibration_samples =
-      declare_required<int64_t>(*this, "imu_gyro_calibration_samples");
-    GyroFilterConfig gyro_config{};
-    gyro_config.bias_time_constant_s =
-      declare_required<double>(*this, "imu_gyro_bias_time_constant_s");
-    gyro_config.max_bias_rad_s = declare_required<double>(*this, "imu_gyro_max_bias_rad_s");
-    gyro_config.lowpass_cutoff_hz =
-      declare_required<double>(*this, "imu_gyro_lowpass_cutoff_hz");
-    imu_stationary_hold_s_ = declare_required<double>(*this, "imu_stationary_hold_s");
-    if (calibration_samples < 0 ||
-        !std::isfinite(gyro_config.bias_time_constant_s) || gyro_config.bias_time_constant_s < 0.0 ||
-        !std::isfinite(gyro_config.max_bias_rad_s) || gyro_config.max_bias_rad_s < 0.0 ||
-        !std::isfinite(gyro_config.lowpass_cutoff_hz) || gyro_config.lowpass_cutoff_hz < 0.0 ||
-        !std::isfinite(imu_stationary_hold_s_) || imu_stationary_hold_s_ < 0.0)
-      throw std::invalid_argument("imu gyro filter parameters must be finite and non-negative");
-    gyro_config.calibration_samples = static_cast<std::size_t>(calibration_samples);
-    gyro_filter_.emplace(gyro_config);
-    if (std::any_of(
-        imu_angular_velocity_sign_.begin(), imu_angular_velocity_sign_.end(),
-        [](double value) { return std::abs(value) != 1.0; }))
-      throw std::invalid_argument("imu angular velocity signs must be +1 or -1");
-    const auto negative_deadband = [](double value) { return value < 0.0; };
-    if (std::any_of(
-        imu_angular_velocity_scale_.begin(), imu_angular_velocity_scale_.end(),
-        [](double value) { return value <= 0.0; }))
-      throw std::invalid_argument("imu angular velocity scales must be positive");
-    if (std::any_of(
-        imu_angular_velocity_deadband_.begin(), imu_angular_velocity_deadband_.end(),
-        negative_deadband) ||
-        std::any_of(
-          motor_feedback_deadband_rad_s_.begin(), motor_feedback_deadband_rad_s_.end(),
-          negative_deadband) ||
-        std::any_of(wheel_twist_deadband_.begin(), wheel_twist_deadband_.end(), negative_deadband))
-      throw std::invalid_argument("measurement deadbands must be non-negative");
-
-    cmd_topic_ = declare_required<std::string>(*this, "cmd_vel_topic");
-    wheel_odom_topic_ = declare_required<std::string>(*this, "wheel_odom_topic");
-    imu_topic_ = declare_required<std::string>(*this, "imu_topic");
-    feedback_debug_topic_ = declare_required<std::string>(*this, "feedback_debug_topic");
-    joint_topic_ = declare_required<std::string>(*this, "joint_states_topic");
-    odom_frame_ = declare_required<std::string>(*this, "odom_frame_id");
-    base_frame_ = declare_required<std::string>(*this, "base_frame_id");
-    imu_frame_ = declare_required<std::string>(*this, "imu_frame_id");
-    wheel_names_ = declare_required<std::vector<std::string>>(*this, "wheel_names");
-    if (wheel_names_.size() != 3)
-      throw std::invalid_argument("wheel_names must contain exactly three joints");
-
-    wheel_odom_pub_ = create_publisher<nav_msgs::msg::Odometry>(wheel_odom_topic_, 10);
-    imu_pub_ = create_publisher<sensor_msgs::msg::Imu>(imu_topic_, 10);
-    feedback_debug_pub_ = create_publisher<kiwi_base::msg::FeedbackDebug>(feedback_debug_topic_, 10);
-    joint_pub_ = create_publisher<sensor_msgs::msg::JointState>(joint_topic_, 10);
-    cmd_sub_ = create_subscription<geometry_msgs::msg::Twist>(
-      cmd_topic_, 10,
-      [this](const geometry_msgs::msg::Twist::SharedPtr msg)
-      {
-        // 唯一限幅入口：此后的运动学和 USB 只接触限幅后的目标速度。
-        command_ = limit_twist(
-          {msg->linear.x, msg->linear.y, msg->angular.z}, command_limits_);
-      });
-
+    load_parameters();
+    create_publishers();
+    create_subscribers();
     open_serial();
-    const auto period = std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::duration<double>(1.0 / publish_rate_));
-    timer_ = create_wall_timer(std::max(std::chrono::milliseconds(1), period), [this]() { update(); });
+
+    // 启动固定周期定时器
+    const auto period_ms = std::chrono::milliseconds(
+      static_cast<int64_t>(1000.0 / cfg_.publish_rate));
+    timer_ = create_wall_timer(period_ms, [this]() { update(); });
+
+    RCLCPP_INFO(get_logger(), "Kiwi base node started (%.1f Hz)", cfg_.publish_rate);
   }
 
-  /** 退出时发送一次零速帧，随后关闭 USB 文件描述符。 */
   ~KiwiBaseNode() override
   {
+    // 退出时发送停止指令
     CommandFrame stop{};
     stop.enable = false;
     send_command(stop);
@@ -246,45 +159,245 @@ public:
   }
 
 private:
-  /** 打开 USB CDC；失败时保留 fd=-1，后续定时器会再次尝试。 */
+  //============================================================================
+  // 配置结构体 - 集中管理所有参数
+  //============================================================================
+
+  struct Config
+  {
+    // 串口
+    std::string device;
+    double publish_rate{50.0};
+    bool log_frames{false};
+    bool feedback_framed{true};
+    double feedback_motor_scale{1.0};
+
+    // 机械参数
+    std::array<double, 3> motor_ratio{19.0, 19.0, 19.0};
+    double wheel_radius{0.1015};
+    double wheel_distance{0.32256};
+
+    // 速度限幅
+    double max_vx{0.8};
+    double max_vy{0.8};
+    double max_wz{1.5};
+
+    // 死区阈值
+    Vector3 motor_deadband{0.2, 0.2, 0.2};
+    Vector3 wheel_twist_deadband{0.015, 0.015, 0.022};
+    Vector3 imu_gyro_deadband{0.015, 0.015, 0.050};
+
+    // IMU 预处理
+    Vector3 imu_gyro_sign{1.0, 1.0, -1.0};    // Z 轴翻转
+    Vector3 imu_gyro_scale{1.0, 1.0, 1.69};   // Z 轴标定
+    double imu_stationary_hold{0.5};           // 静止确认时长(s)
+    bool imu_publish_orientation{false};
+
+    // 陀螺零漂滤波
+    size_t gyro_calib_samples{100};
+    double gyro_bias_tau{10.0};
+    double gyro_max_bias{0.05};
+    double gyro_lowpass_cutoff{10.0};
+
+    // 测量方差（EKF 用）
+    std::array<double, 3> wheel_pose_var{0.1, 0.1, 0.2};
+    std::array<double, 3> wheel_twist_var{0.02, 0.02, 0.04};
+    std::array<double, 3> imu_orient_var{0.05, 0.05, 0.001};
+    std::array<double, 3> imu_gyro_var{0.01, 0.01, 0.046};
+    std::array<double, 3> imu_accel_var{0.1, 0.1, 0.1};
+
+    // 话题和坐标系
+    std::string topic_cmd_vel;
+    std::string topic_odom;
+    std::string topic_imu;
+    std::string topic_joints;
+    std::string topic_debug;
+    std::string frame_odom{"odom"};
+    std::string frame_base{"base_footprint"};
+    std::string frame_imu{"chassis_imu_link"};
+    std::vector<std::string> wheel_names;
+  };
+
+  //============================================================================
+  // 状态变量
+  //============================================================================
+
+  struct State
+  {
+    // 串口
+    int fd{-1};
+    std::vector<uint8_t> raw_buffer;
+    std::optional<FeedbackFrame> pending_feedback;
+
+    // 控制
+    Twist2D cmd{0.0, 0.0, 0.0};
+
+    // 里程计积分
+    std::array<double, 3> wheel_pos{0.0, 0.0, 0.0};
+    std::array<double, 3> wheel_vel{0.0, 0.0, 0.0};
+    double odom_x{0.0};
+    double odom_y{0.0};
+    double odom_yaw{0.0};
+
+    // 时间跟踪
+    bool have_prev_time{false};
+    Clock::time_point prev_time;
+
+    // 静止检测（用于陀螺零漂估计）
+    bool stationary_candidate{false};
+    Clock::time_point stationary_since;
+
+    // yaw 角度展开（处理 -π 到 π 跳变）
+    bool have_prev_yaw{false};
+    double prev_yaw_raw{0.0};
+    double yaw_offset{0.0};
+
+    // 其他
+    bool gyro_bias_logged{false};
+  };
+
+  //============================================================================
+  // 初始化函数
+  //============================================================================
+
+  /** 从 YAML 加载所有参数 */
+  void load_parameters()
+  {
+    cfg_.device = require_param<std::string>(*this, "device");
+    cfg_.publish_rate = require_param<double>(*this, "publish_rate");
+    cfg_.log_frames = require_param<bool>(*this, "log_serial_frames");
+    cfg_.feedback_framed = require_param<bool>(*this, "feedback_framed");
+    cfg_.feedback_motor_scale = require_param<double>(*this, "feedback_motor_scale_to_rad_s");
+
+    // 机械参数
+    const auto ratios = require_param<std::vector<double>>(*this, "motor_reduction_ratio");
+    if (ratios.size() != 3)
+      throw std::invalid_argument("motor_reduction_ratio must have 3 values");
+    std::copy(ratios.begin(), ratios.end(), cfg_.motor_ratio.begin());
+
+    cfg_.wheel_radius = require_param<double>(*this, "wheel_radius_m");
+    cfg_.wheel_distance = require_param<double>(*this, "wheel_center_distance_m");
+
+    // 速度限幅
+    cfg_.max_vx = require_param<double>(*this, "max_linear_speed_m_s");
+    cfg_.max_vy = require_param<double>(*this, "max_lateral_speed_m_s");
+    cfg_.max_wz = require_param<double>(*this, "max_angular_speed_rad_s");
+
+    // 死区
+    cfg_.motor_deadband = require_vector3(*this, "motor_feedback_deadband_rad_s");
+    cfg_.wheel_twist_deadband = require_vector3(*this, "wheel_twist_deadband");
+    cfg_.imu_gyro_deadband = require_vector3(*this, "imu_angular_velocity_deadband_rad_s");
+
+    // IMU 预处理
+    cfg_.imu_gyro_sign = require_vector3(*this, "imu_angular_velocity_sign");
+    cfg_.imu_gyro_scale = require_vector3(*this, "imu_angular_velocity_scale");
+    cfg_.imu_stationary_hold = require_param<double>(*this, "imu_stationary_hold_s");
+    cfg_.imu_publish_orientation = require_param<bool>(*this, "imu_publish_orientation");
+
+    // 陀螺零漂滤波
+    const auto calib_samples = require_param<int64_t>(*this, "imu_gyro_calibration_samples");
+    cfg_.gyro_calib_samples = static_cast<size_t>(std::max<int64_t>(0, calib_samples));
+    cfg_.gyro_bias_tau = require_param<double>(*this, "imu_gyro_bias_time_constant_s");
+    cfg_.gyro_max_bias = require_param<double>(*this, "imu_gyro_max_bias_rad_s");
+    cfg_.gyro_lowpass_cutoff = require_param<double>(*this, "imu_gyro_lowpass_cutoff_hz");
+
+    // 方差
+    cfg_.wheel_pose_var = require_variance(*this, "wheel_pose_variance");
+    cfg_.wheel_twist_var = require_variance(*this, "wheel_twist_variance");
+    cfg_.imu_orient_var = require_variance(*this, "imu_orientation_variance");
+    cfg_.imu_gyro_var = require_variance(*this, "imu_angular_velocity_variance");
+    cfg_.imu_accel_var = require_variance(*this, "imu_linear_acceleration_variance");
+
+    // 话题和坐标系
+    cfg_.topic_cmd_vel = require_param<std::string>(*this, "cmd_vel_topic");
+    cfg_.topic_odom = require_param<std::string>(*this, "wheel_odom_topic");
+    cfg_.topic_imu = require_param<std::string>(*this, "imu_topic");
+    cfg_.topic_joints = require_param<std::string>(*this, "joint_states_topic");
+    cfg_.topic_debug = require_param<std::string>(*this, "feedback_debug_topic");
+    cfg_.frame_odom = require_param<std::string>(*this, "odom_frame_id");
+    cfg_.frame_base = require_param<std::string>(*this, "base_frame_id");
+    cfg_.frame_imu = require_param<std::string>(*this, "imu_frame_id");
+    cfg_.wheel_names = require_param<std::vector<std::string>>(*this, "wheel_names");
+
+    if (cfg_.wheel_names.size() != 3)
+      throw std::invalid_argument("wheel_names must have 3 entries");
+
+    // 初始化运动学
+    kinematics_.emplace(cfg_.wheel_radius, cfg_.wheel_distance);
+
+    // 初始化陀螺滤波器
+    GyroFilterConfig gyro_cfg{};
+    gyro_cfg.calibration_samples = cfg_.gyro_calib_samples;
+    gyro_cfg.bias_time_constant_s = cfg_.gyro_bias_tau;
+    gyro_cfg.max_bias_rad_s = cfg_.gyro_max_bias;
+    gyro_cfg.lowpass_cutoff_hz = cfg_.gyro_lowpass_cutoff;
+    gyro_filter_.emplace(gyro_cfg);
+  }
+
+  /** 创建发布者 */
+  void create_publishers()
+  {
+    pub_odom_ = create_publisher<nav_msgs::msg::Odometry>(cfg_.topic_odom, 10);
+    pub_imu_ = create_publisher<sensor_msgs::msg::Imu>(cfg_.topic_imu, 10);
+    pub_joints_ = create_publisher<sensor_msgs::msg::JointState>(cfg_.topic_joints, 10);
+    pub_debug_ = create_publisher<kiwi_base::msg::FeedbackDebug>(cfg_.topic_debug, 10);
+  }
+
+  /** 创建订阅者 */
+  void create_subscribers()
+  {
+    sub_cmd_ = create_subscription<geometry_msgs::msg::Twist>(
+      cfg_.topic_cmd_vel, 10,
+      [this](const geometry_msgs::msg::Twist::SharedPtr msg) {
+        on_cmd_vel(msg);
+      });
+  }
+
+  //============================================================================
+  // 串口操作
+  //============================================================================
+
+  /** 打开串口，失败时保持 fd=-1 */
   void open_serial()
   {
-    if (fd_ >= 0)
-      return;
-    fd_ = open(device_.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
-    if (fd_ < 0)
-      return;
+    if (state_.fd >= 0) return;
 
-    termios attributes{};
-    if (tcgetattr(fd_, &attributes) != 0)
+    state_.fd = open(cfg_.device.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
+    if (state_.fd < 0)
+    {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+        "Failed to open %s: %s", cfg_.device.c_str(), std::strerror(errno));
+      return;
+    }
+
+    termios attr{};
+    if (tcgetattr(state_.fd, &attr) != 0 ||
+        (cfmakeraw(&attr), attr.c_cflag |= CLOCAL | CREAD,
+         tcsetattr(state_.fd, TCSANOW, &attr) != 0))
     {
       close_serial();
       return;
     }
-    cfmakeraw(&attributes);
-    attributes.c_cflag |= CLOCAL | CREAD;
-    if (tcsetattr(fd_, TCSANOW, &attributes) != 0)
-    {
-      close_serial();
-      return;
-    }
-    RCLCPP_INFO(get_logger(), "USB CDC opened: %s", device_.c_str());
+
+    RCLCPP_INFO(get_logger(), "Serial opened: %s", cfg_.device.c_str());
   }
 
-  /** 关闭 USB 并清空协议半帧缓存。 */
+  /** 关闭串口并清空缓冲 */
   void close_serial()
   {
-    if (fd_ >= 0)
-      close(fd_);
-    fd_ = -1;
+    if (state_.fd >= 0)
+    {
+      close(state_.fd);
+      state_.fd = -1;
+    }
     parser_.reset();
-    raw_feedback_buffer_.clear();
+    state_.raw_buffer.clear();
   }
 
-  /** 读取当前可用的 USB 字节，按配置选择严格帧或无帧 payload 解码。 */
+  /** 读取串口数据 */
   void read_serial()
   {
-    if (fd_ < 0)
+    if (state_.fd < 0)
     {
       open_serial();
       return;
@@ -293,399 +406,416 @@ private:
     uint8_t buffer[512];
     for (;;)
     {
-      const ssize_t count = read(fd_, buffer, sizeof(buffer));
-      if (count > 0)
+      const ssize_t n = read(state_.fd, buffer, sizeof(buffer));
+
+      if (n > 0)
       {
-        if (feedback_framed_)
-          parser_.feed(buffer, static_cast<size_t>(count));
+        // 根据配置选择帧解析或裸数据模式
+        if (cfg_.feedback_framed)
+          parser_.feed(buffer, static_cast<size_t>(n));
         else
-          queue_raw_feedback(buffer, static_cast<size_t>(count));
+          on_raw_data(buffer, static_cast<size_t>(n));
         continue;
       }
-      if (count == 0 || (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)))
+
+      if (n == 0 || (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)))
         return;
-      if (count < 0 && errno == EINTR)
+
+      if (n < 0 && errno == EINTR)
         continue;
+
+      // 读取错误，关闭串口
       close_serial();
       return;
     }
   }
 
-  /** 发送主循环：直接公式 -> 减速比 -> 0x3A -> USB。 */
+  /** 发送指令到串口 */
+  void send_command(const CommandFrame &cmd)
+  {
+    if (state_.fd < 0) return;
+
+    const auto frame = encode_command(cmd);
+    const ssize_t written = write(state_.fd, frame.data(), frame.size());
+
+    if (written != static_cast<ssize_t>(frame.size()))
+      close_serial();
+  }
+
+  //============================================================================
+  // 回调函数
+  //============================================================================
+
+  /** 速度指令回调 - 限幅后保存 */
+  void on_cmd_vel(const geometry_msgs::msg::Twist::SharedPtr msg)
+  {
+    const Twist2D raw{msg->linear.x, msg->linear.y, msg->angular.z};
+    const Twist2D limits{cfg_.max_vx, cfg_.max_vy, cfg_.max_wz};
+    state_.cmd = limit_twist(raw, limits);
+  }
+
+  /** 帧解析回调 - 缓存最新反馈 */
+  void on_feedback_frame(uint8_t version, const std::vector<uint8_t> &payload)
+  {
+    if (version != kProtocolVersion) return;
+
+    FeedbackFrame frame{};
+    if (decode_feedback(payload, frame))
+      state_.pending_feedback = frame;
+  }
+
+  /** 裸数据回调 - 按 48 字节拼接 */
+  void on_raw_data(const uint8_t *data, size_t size)
+  {
+    state_.raw_buffer.insert(state_.raw_buffer.end(), data, data + size);
+
+    while (state_.raw_buffer.size() >= kFeedbackPayloadLength)
+    {
+      const std::vector<uint8_t> payload(
+        state_.raw_buffer.begin(),
+        state_.raw_buffer.begin() + kFeedbackPayloadLength);
+
+      FeedbackFrame frame{};
+      if (decode_feedback(payload, frame))
+        state_.pending_feedback = frame;
+      else
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+          "Invalid raw feedback (not 12 finite floats), discarding 48 bytes");
+
+      state_.raw_buffer.erase(
+        state_.raw_buffer.begin(),
+        state_.raw_buffer.begin() + kFeedbackPayloadLength);
+    }
+  }
+
+  //============================================================================
+  // 主循环
+  //============================================================================
+
+  /** 定时器回调 - 读取串口、处理反馈、发送指令 */
   void update()
   {
     read_serial();
-    // 串口可能一次读出多个反馈帧；只处理最新一帧，按定时器频率稳定发布。
-    if (pending_feedback_)
-    {
-      const auto state = *pending_feedback_;
-      pending_feedback_.reset();
-      process_feedback(state);
-    }
-    // Twist -> 三轮轮输出轴速度。
-    const auto wheel_speed = kinematics_->inverse(command_);
 
-    CommandFrame frame{};
-    // 线上没有 enable 字段；这里保持接口语义清楚，编码器只发送三个 float。
-    frame.enable = true;
-    for (size_t i = 0; i < 3; ++i)
-      frame.motor_rad_s[i] = static_cast<float>(wheel_speed[i] * motor_ratio_[i]);
-    if (log_serial_frames_)
+    // 处理最新反馈帧
+    if (state_.pending_feedback)
     {
-      RCLCPP_INFO(
-        get_logger(),
-        "\nTX 目标==[%6.4f %6.4f %6.4f]\n 轮子=[%6.4f %6.4f %6.4f]\n 电机=[%6.4f %6.4f %6.4f]",
-        command_.vx, command_.vy, command_.wz,
+      process_feedback(*state_.pending_feedback);
+      state_.pending_feedback.reset();
+    }
+
+    // 发送电机指令
+    const auto wheel_speed = kinematics_->inverse(state_.cmd);
+
+    CommandFrame cmd{};
+    cmd.enable = true;
+    for (size_t i = 0; i < 3; ++i)
+      cmd.motor_rad_s[i] = static_cast<float>(wheel_speed[i] * cfg_.motor_ratio[i]);
+
+    send_command(cmd);
+
+    // 调试日志
+    if (cfg_.log_frames)
+    {
+      RCLCPP_INFO(get_logger(),
+        "CMD: vx=%.3f vy=%.3f wz=%.3f | WHEEL: %.2f %.2f %.2f | MOTOR: %.2f %.2f %.2f",
+        state_.cmd.vx, state_.cmd.vy, state_.cmd.wz,
         wheel_speed[0], wheel_speed[1], wheel_speed[2],
-        frame.motor_rad_s[0], frame.motor_rad_s[1], frame.motor_rad_s[2]);
+        cmd.motor_rad_s[0], cmd.motor_rad_s[1], cmd.motor_rad_s[2]);
     }
-    send_command(frame);
   }
 
-  /** 将三个电机转子轴速度组装为 18 字节 0x3A 帧并写入 USB。 */
-  void send_command(const CommandFrame &command)
+  //============================================================================
+  // 反馈处理
+  //============================================================================
+
+  /** 处理一帧反馈 - 预处理 + 发布四个话题 */
+  void process_feedback(const FeedbackFrame &feedback)
   {
-    if (fd_ < 0)
-      return;
-    const auto frame = encode_command(command);
-    const ssize_t written = write(fd_, frame.data(), frame.size());
-    if (written == static_cast<ssize_t>(frame.size()))
+    // 计算时间间隔
+    const auto now = Clock::now();
+    const double dt = state_.have_prev_time ?
+      std::chrono::duration<double>(now - state_.prev_time).count() : 0.0;
+    state_.prev_time = now;
+    state_.have_prev_time = true;
+
+    // 【预处理 1】电机反馈 → 轮速
+    process_motor_feedback(feedback, dt);
+
+    // 【预处理 2】IMU 陀螺 → 角速度
+    const Vector3 gyro_processed = process_imu_gyro(feedback, dt);
+
+    // 【预处理 3】IMU 姿态 → yaw 展开
+    const double yaw_unwrapped = unwrap_yaw(feedback.euler[2]);
+
+    // 发布话题
+    const auto stamp = this->now();
+    publish_odometry(stamp, dt);
+    publish_joint_states(stamp);
+    publish_imu(feedback, gyro_processed, yaw_unwrapped, stamp);
+    publish_debug(feedback, stamp);
+
+    // 调试日志
+    if (cfg_.log_frames)
     {
-      // 暂停原因：常态只打印结构化目标速度，避免 50 Hz 十六进制日志淹没终端。
-      // log_frame("TX", frame);
-      return;
-    }
-    close_serial();
-  }
-
-  /** 根据 log_serial_frames 参数打印完整 TX 帧。 */
-  void log_frame(const char *direction, const std::vector<uint8_t> &frame)
-  {
-    if (log_serial_frames_)
-      RCLCPP_INFO(get_logger(), "%s[%zu] %s", direction, frame.size(), to_hex(frame).c_str());
-  }
-
-  /** 只缓存最新的合法反馈，避免粘包时在一个 ROS 周期内连续发布多条测量。 */
-  void queue_feedback(uint8_t version, const std::vector<uint8_t> &payload)
-  {
-    if (version != kProtocolVersion)
-      return;
-
-    FeedbackFrame state{};
-    if (!decode_feedback(payload, state))
-      return;
-    pending_feedback_ = state;
-  }
-
-  /**
-   * 现场协议没有头尾帧，按固定 48 字节（12 个 float32）拼接反馈。
-   * read() 可能返回半包或多个包，因此不能直接把一次 read 当成一帧。
-   */
-  void queue_raw_feedback(const uint8_t *data, size_t size)
-  {
-    raw_feedback_buffer_.insert(raw_feedback_buffer_.end(), data, data + size);
-    while (raw_feedback_buffer_.size() >= kFeedbackPayloadLength)
-    {
-      const auto payload = std::vector<uint8_t>(
-        raw_feedback_buffer_.begin(),
-        raw_feedback_buffer_.begin() + kFeedbackPayloadLength);
-      FeedbackFrame state{};
-      if (decode_feedback(payload, state))
-        pending_feedback_ = state;
-      else
-        RCLCPP_WARN_THROTTLE(
-          get_logger(), *get_clock(), 5000,
-          "raw feedback payload is not 12 finite float32 values; drop 48 bytes");
-      raw_feedback_buffer_.erase(
-        raw_feedback_buffer_.begin(),
-        raw_feedback_buffer_.begin() + kFeedbackPayloadLength);
+      RCLCPP_INFO(get_logger(),
+        "FB: motor=[%.2f %.2f %.2f] euler=[%.3f %.3f %.3f] "
+        "gyro_raw=[%.3f %.3f %.3f] gyro_ros=[%.3f %.3f %.3f]",
+        feedback.motor_actual[0], feedback.motor_actual[1], feedback.motor_actual[2],
+        feedback.euler[0], feedback.euler[1], feedback.euler[2],
+        feedback.gyro[0], feedback.gyro[1], feedback.gyro[2],
+        gyro_processed[0], gyro_processed[1], gyro_processed[2]);
     }
   }
 
-  /** 在固定 ROS 周期处理一帧反馈并发布轮速、IMU 和调试消息。 */
-  void process_feedback(const FeedbackFrame &state)
+  /** 【预处理 1】电机反馈 → 轮速 → 正运动学 → 里程计积分 */
+  void process_motor_feedback(const FeedbackFrame &feedback, double dt)
   {
-    const auto steady_now = Clock::now();
-    const double dt = have_feedback_time_ ?
-      std::chrono::duration<double>(steady_now - last_feedback_time_).count() : 0.0;
-    const Vector3 scaled_motor_velocity{
-      state.motor_actual[0] * feedback_scale_,
-      state.motor_actual[1] * feedback_scale_,
-      state.motor_actual[2] * feedback_scale_};
-    const auto motor_velocity = correct_vector(
-      scaled_motor_velocity,
-      {1.0, 1.0, 1.0}, motor_feedback_deadband_rad_s_);
-    // 除减速比得到真实的轮子转速
+    // 倍率换算
+    const Vector3 motor_scaled{
+      feedback.motor_actual[0] * cfg_.feedback_motor_scale,
+      feedback.motor_actual[1] * cfg_.feedback_motor_scale,
+      feedback.motor_actual[2] * cfg_.feedback_motor_scale
+    };
+
+    // 死区过滤（电机轴）
+    const auto motor_filtered = correct_vector(
+      motor_scaled, {1.0, 1.0, 1.0}, cfg_.motor_deadband);
+
+    // 除减速比得到轮速
     for (size_t i = 0; i < 3; ++i)
     {
-      // 先在电机轴 rad/s 上清零静止抖动，再除减速比；这样三轮噪声
-      // 不会经过正运动学重新组合成假的 vx、vy 或 wz。
-      wheel_velocity_[i] = motor_velocity[i] / motor_ratio_[i];
+      state_.wheel_vel[i] = motor_filtered[i] / cfg_.motor_ratio[i];
       if (dt > 0.0 && dt < 1.0)
-        wheel_position_[i] += wheel_velocity_[i] * dt;
+        state_.wheel_pos[i] += state_.wheel_vel[i] * dt;
     }
-    last_feedback_time_ = steady_now;
-    have_feedback_time_ = true;
+  }
 
-    // 陀螺零漂只能用真静止样本估计：要求目标速度为零且电机反馈过死区后
-    // 也为零，并持续 imu_stationary_hold_s 以让停车后的机械振动衰减。
-    const bool at_rest =
-      command_.vx == 0.0 && command_.vy == 0.0 && command_.wz == 0.0 &&
-      motor_velocity[0] == 0.0 && motor_velocity[1] == 0.0 && motor_velocity[2] == 0.0;
-    if (at_rest && !stationary_candidate_)
+  /** 【预处理 2】IMU 陀螺 → 角速度（符号修正 → 零漂扣除 → 低通 → 死区） */
+  Vector3 process_imu_gyro(const FeedbackFrame &feedback, double dt)
+  {
+    // 静止检测（用于零漂估计）
+    const bool cmd_zero =
+      state_.cmd.vx == 0.0 && state_.cmd.vy == 0.0 && state_.cmd.wz == 0.0;
+    const bool wheel_zero =
+      state_.wheel_vel[0] == 0.0 && state_.wheel_vel[1] == 0.0 && state_.wheel_vel[2] == 0.0;
+
+    if (cmd_zero && wheel_zero && !state_.stationary_candidate)
     {
-      stationary_candidate_ = true;
-      stationary_since_ = steady_now;
+      state_.stationary_candidate = true;
+      state_.stationary_since = Clock::now();
     }
-    else if (!at_rest)
-      stationary_candidate_ = false;
-    const bool stationary = stationary_candidate_ &&
-      std::chrono::duration<double>(steady_now - stationary_since_).count() >=
-      imu_stationary_hold_s_;
+    else if (!cmd_zero || !wheel_zero)
+    {
+      state_.stationary_candidate = false;
+    }
 
-    // 陀螺管线：符号/比例修正 -> 零漂扣除 + 低通 -> 静止死区。
-    // 死区放在最后，阈值作用于去零漂后的残余噪声，不再兼职吸收零偏。
+    const bool stationary = state_.stationary_candidate &&
+      std::chrono::duration<double>(Clock::now() - state_.stationary_since).count() >=
+      cfg_.imu_stationary_hold;
+
+    // 符号修正 + 标定缩放
+    const Vector3 gyro_raw{feedback.gyro[0], feedback.gyro[1], feedback.gyro[2]};
     const auto gyro_corrected = correct_vector(
-      {state.gyro[0], state.gyro[1], state.gyro[2]},
-      imu_angular_velocity_sign_, Vector3{0.0, 0.0, 0.0}, imu_angular_velocity_scale_);
+      gyro_raw, cfg_.imu_gyro_sign, {0.0, 0.0, 0.0}, cfg_.imu_gyro_scale);
+
+    // 零漂扣除 + 低通滤波
     const auto gyro_filtered = gyro_filter_->process(gyro_corrected, stationary, dt);
-    const auto angular_velocity = correct_vector(
-      gyro_filtered, {1.0, 1.0, 1.0}, imu_angular_velocity_deadband_);
-    if (!gyro_bias_logged_ && gyro_filter_->calibrated())
+
+    // 日志零漂（仅首次）
+    if (!state_.gyro_bias_logged && gyro_filter_->calibrated())
     {
       const auto &bias = gyro_filter_->bias();
-      RCLCPP_INFO(
-        get_logger(), "陀螺零漂标定完成: [%.5f %.5f %.5f] rad/s",
+      RCLCPP_INFO(get_logger(), "Gyro bias calibrated: [%.5f %.5f %.5f] rad/s",
         bias[0], bias[1], bias[2]);
-      gyro_bias_logged_ = true;
+      state_.gyro_bias_logged = true;
     }
 
-    // 数据已通过布局和有限值检查；这里打印解码后的 12 个字段，
-    // 便于直接观察电机反馈和 IMU 原始角速度/加速度，避免手工拆 float32。
-    if (log_serial_frames_)
-    {
-      RCLCPP_INFO(
-        get_logger(),
-        "\nRT 电机=[%6.4f %6.4f %6.4f]\n"
-        "欧拉角=[%6.4f %6.4f %6.4f]\n"
-        "角速度原始=[%6.4f %6.4f %6.4f]\n"
-        "角速度ROS=[%6.4f %6.4f %6.4f]\n"
-        "加速度=[%6.4f %6.4f %6.4f]",
-        state.motor_actual[0], state.motor_actual[1], state.motor_actual[2],
-        state.euler[0], state.euler[1], state.euler[2],
-        state.gyro[0], state.gyro[1], state.gyro[2],
-        angular_velocity[0], angular_velocity[1], angular_velocity[2],
-        state.accel[0], state.accel[1], state.accel[2]);
-    }
-    // 同一 0x3B 包中的轮速和 IMU 使用同一 ROS 时间戳，便于 EKF 对齐测量。
-    const auto stamp = this->now();
-    publish_odom(stamp, dt);
-    publish_joints(stamp);
-    publish_feedback_debug(state, stamp);
-    // 底盘 IMU 与 Mid-360S IMU 始终分别发布；由 EKF YAML 选择输入源，节点间不互相依赖。
-    publish_imu(state, angular_velocity, stamp);
+    // 死区过滤
+    return correct_vector(gyro_filtered, {1.0, 1.0, 1.0}, cfg_.imu_gyro_deadband);
   }
 
-  /** 用反馈轮速积分并发布 /chassis/odom/raw；原始里程计不发布 TF。 */
-  void publish_odom(const rclcpp::Time &stamp, double dt)
+  /** 【预处理 3】yaw 角度展开 - 处理 -π 到 π 的跳变 */
+  double unwrap_yaw(double yaw_raw)
   {
-    const Twist2D raw_twist = kinematics_->forward(wheel_velocity_);
-    const auto filtered_twist = correct_vector(
+    if (state_.have_prev_yaw)
+    {
+      const double delta = yaw_raw - state_.prev_yaw_raw;
+
+      // 检测跳变
+      if (delta > M_PI)
+        state_.yaw_offset -= 2.0 * M_PI;
+      else if (delta < -M_PI)
+        state_.yaw_offset += 2.0 * M_PI;
+    }
+
+    state_.prev_yaw_raw = yaw_raw;
+    state_.have_prev_yaw = true;
+
+    return yaw_raw + state_.yaw_offset;
+  }
+
+  //============================================================================
+  // 话题发布
+  //============================================================================
+
+  /** 发布轮式里程计（/chassis/odom/raw） */
+  void publish_odometry(const rclcpp::Time &stamp, double dt)
+  {
+    // 正运动学
+    const Twist2D raw_twist = kinematics_->forward(state_.wheel_vel);
+
+    // 死区过滤
+    const auto filtered = correct_vector(
       {raw_twist.vx, raw_twist.vy, raw_twist.wz},
-      {1.0, 1.0, 1.0}, wheel_twist_deadband_);
-    const Twist2D twist{filtered_twist[0], filtered_twist[1], filtered_twist[2]};
+      {1.0, 1.0, 1.0}, cfg_.wheel_twist_deadband);
+    const Twist2D twist{filtered[0], filtered[1], filtered[2]};
+
+    // 位姿积分（仅供调试，EKF 不融合位姿）
     if (dt > 0.0 && dt < 1.0)
     {
-      const double c = std::cos(odom_yaw_);
-      const double s = std::sin(odom_yaw_);
-      odom_x_ += (twist.vx * c - twist.vy * s) * dt;
-      odom_y_ += (twist.vx * s + twist.vy * c) * dt;
-      odom_yaw_ += twist.wz * dt;
+      const double c = std::cos(state_.odom_yaw);
+      const double s = std::sin(state_.odom_yaw);
+      state_.odom_x += (twist.vx * c - twist.vy * s) * dt;
+      state_.odom_y += (twist.vx * s + twist.vy * c) * dt;
+      state_.odom_yaw += twist.wz * dt;
     }
 
-    nav_msgs::msg::Odometry message;
-    // Header 指明该位姿属于 odom 坐标系，被描述对象是 base_footprint。
-    message.header.stamp = stamp;
-    message.header.frame_id = odom_frame_;
-    message.child_frame_id = base_frame_;
-    // Pose 是轮速积分的原始平面位姿，仅供调试；EKF 配置不重复融合该位姿。
-    message.pose.pose.position.x = odom_x_;
-    message.pose.pose.position.y = odom_y_;
-    message.pose.pose.orientation.z = std::sin(odom_yaw_ * 0.5);
-    message.pose.pose.orientation.w = std::cos(odom_yaw_ * 0.5);
-    // 6x6 协方差只填写 x、y、yaw 对角项，其余维度不参与二维链路。
-    message.pose.covariance[0] = wheel_pose_variance_[0];
-    message.pose.covariance[7] = wheel_pose_variance_[1];
-    message.pose.covariance[35] = wheel_pose_variance_[2];
-    // Twist 是 EKF 实际使用的当前 ROS/雷达统一机体系 vx、vy、wz；
-    // 180° 方向变换已在 KiwiKinematics::forward() 完成，此处不能再次取反。
-    message.twist.twist.linear.x = twist.vx;
-    message.twist.twist.linear.y = twist.vy;
-    message.twist.twist.angular.z = twist.wz;
-    message.twist.covariance[0] = wheel_twist_variance_[0];
-    message.twist.covariance[7] = wheel_twist_variance_[1];
-    message.twist.covariance[35] = wheel_twist_variance_[2];
-    wheel_odom_pub_->publish(message);
+    // 构建消息
+    nav_msgs::msg::Odometry msg;
+    msg.header.stamp = stamp;
+    msg.header.frame_id = cfg_.frame_odom;
+    msg.child_frame_id = cfg_.frame_base;
+
+    // 位姿（积分结果，仅供调试）
+    msg.pose.pose.position.x = state_.odom_x;
+    msg.pose.pose.position.y = state_.odom_y;
+    msg.pose.pose.orientation.z = std::sin(state_.odom_yaw * 0.5);
+    msg.pose.pose.orientation.w = std::cos(state_.odom_yaw * 0.5);
+    msg.pose.covariance[0] = cfg_.wheel_pose_var[0];
+    msg.pose.covariance[7] = cfg_.wheel_pose_var[1];
+    msg.pose.covariance[35] = cfg_.wheel_pose_var[2];
+
+    // 速度（EKF 融合此项）
+    msg.twist.twist.linear.x = twist.vx;
+    msg.twist.twist.linear.y = twist.vy;
+    msg.twist.twist.angular.z = twist.wz;
+    msg.twist.covariance[0] = cfg_.wheel_twist_var[0];
+    msg.twist.covariance[7] = cfg_.wheel_twist_var[1];
+    msg.twist.covariance[35] = cfg_.wheel_twist_var[2];
+
+    pub_odom_->publish(msg);
   }
 
-  /** 发布三个轮子的累计角度和角速度。 */
-  void publish_joints(const rclcpp::Time &stamp)
+  /** 发布关节状态（/joint_states） */
+  void publish_joint_states(const rclcpp::Time &stamp)
   {
-    sensor_msgs::msg::JointState message;
-    message.header.stamp = stamp;
-    message.name = wheel_names_;
-    message.position.assign(wheel_position_.begin(), wheel_position_.end());
-    message.velocity.assign(wheel_velocity_.begin(), wheel_velocity_.end());
-    joint_pub_->publish(message);
+    sensor_msgs::msg::JointState msg;
+    msg.header.stamp = stamp;
+    msg.name = cfg_.wheel_names;
+    msg.position.assign(state_.wheel_pos.begin(), state_.wheel_pos.end());
+    msg.velocity.assign(state_.wheel_vel.begin(), state_.wheel_vel.end());
+    pub_joints_->publish(msg);
   }
 
-  /** 把反馈 payload 的姿态、符号修正角速度和原始加速度发布到独立底盘 IMU 话题。 */
+  /** 发布底盘 IMU（/chassis/imu/data_raw） */
   void publish_imu(
-    const FeedbackFrame &state, const Vector3 &angular_velocity, const rclcpp::Time &stamp)
+    const FeedbackFrame &feedback,
+    const Vector3 &gyro_ros,
+    double yaw_unwrapped,
+    const rclcpp::Time &stamp)
   {
-    sensor_msgs::msg::Imu message;
-    // Header 使用整帧统一接收时间；frame_id 对应 URDF 中的 chassis_imu_link。
-    message.header.stamp = stamp;
-    message.header.frame_id = imu_frame_;
-    if (imu_publish_orientation_)
+    sensor_msgs::msg::Imu msg;
+    msg.header.stamp = stamp;
+    msg.header.frame_id = cfg_.frame_imu;
+
+    // 姿态（可选，取决于配置）
+    if (cfg_.imu_publish_orientation)
     {
-      // 只有完成安装轴和航向标定后才发布 C 板欧拉角转换的四元数。
-      // 展开 yaw 角度以处理 -π 到 π 的跳变
-      double yaw = state.euler[2];
-      if (have_previous_yaw_)
-      {
-        // 计算与上一次的角度差
-        double delta = yaw - previous_yaw_raw_;
-        // 检测跳变并展开
-        if (delta > M_PI)
-        {
-          yaw_unwrap_offset_ -= 2.0 * M_PI;
-        }
-        else if (delta < -M_PI)
-        {
-          yaw_unwrap_offset_ += 2.0 * M_PI;
-        }
-      }
-      previous_yaw_raw_ = yaw;
-      have_previous_yaw_ = true;
-
-      // 应用展开偏移得到连续的 yaw
-      const double yaw_unwrapped = yaw + yaw_unwrap_offset_;
-
-      const auto quaternion = rpy_to_quaternion(state.euler[0], state.euler[1], yaw_unwrapped);
-      message.orientation.x = quaternion[0];
-      message.orientation.y = quaternion[1];
-      message.orientation.z = quaternion[2];
-      message.orientation.w = quaternion[3];
-      // orientation_covariance：roll、pitch、yaw 的方差，单位 rad^2。
-      message.orientation_covariance[0] = imu_orientation_variance_[0];
-      message.orientation_covariance[4] = imu_orientation_variance_[1];
-      message.orientation_covariance[8] = imu_orientation_variance_[2];
+      const auto quat = euler_to_quat(feedback.euler[0], feedback.euler[1], yaw_unwrapped);
+      msg.orientation.x = quat[0];
+      msg.orientation.y = quat[1];
+      msg.orientation.z = quat[2];
+      msg.orientation.w = quat[3];
+      msg.orientation_covariance[0] = cfg_.imu_orient_var[0];
+      msg.orientation_covariance[4] = cfg_.imu_orient_var[1];
+      msg.orientation_covariance[8] = cfg_.imu_orient_var[2];
     }
     else
     {
-      // ROS 约定 covariance[0] = -1 表示姿态不可用，防止下游误融合漂移 yaw。
-      message.orientation_covariance[0] = -1.0;
+      msg.orientation_covariance[0] = -1.0;  // 标记为不可用
     }
-    // angular_velocity：已按 ROS 右手系修正符号并应用静止死区，单位 rad/s。
-    message.angular_velocity.x = angular_velocity[0];
-    message.angular_velocity.y = angular_velocity[1];
-    message.angular_velocity.z = angular_velocity[2];
-    // angular_velocity_covariance：三轴角速度方差，单位 (rad/s)^2。
-    message.angular_velocity_covariance[0] = imu_angular_velocity_variance_[0];
-    message.angular_velocity_covariance[4] = imu_angular_velocity_variance_[1];
-    message.angular_velocity_covariance[8] = imu_angular_velocity_variance_[2];
-    // linear_acceleration：下位机六轴原始加速度，单位 m/s^2，未用于当前二维 EKF。
-    message.linear_acceleration.x = state.accel[0];
-    message.linear_acceleration.y = state.accel[1];
-    message.linear_acceleration.z = state.accel[2];
-    // linear_acceleration_covariance：三轴加速度方差，单位 (m/s^2)^2。
-    message.linear_acceleration_covariance[0] = imu_linear_acceleration_variance_[0];
-    message.linear_acceleration_covariance[4] = imu_linear_acceleration_variance_[1];
-    message.linear_acceleration_covariance[8] = imu_linear_acceleration_variance_[2];
-    imu_pub_->publish(message);
+
+    // 角速度
+    msg.angular_velocity.x = gyro_ros[0];
+    msg.angular_velocity.y = gyro_ros[1];
+    msg.angular_velocity.z = gyro_ros[2];
+    msg.angular_velocity_covariance[0] = cfg_.imu_gyro_var[0];
+    msg.angular_velocity_covariance[4] = cfg_.imu_gyro_var[1];
+    msg.angular_velocity_covariance[8] = cfg_.imu_gyro_var[2];
+
+    // 加速度（原始值，未用于当前 EKF）
+    msg.linear_acceleration.x = feedback.accel[0];
+    msg.linear_acceleration.y = feedback.accel[1];
+    msg.linear_acceleration.z = feedback.accel[2];
+    msg.linear_acceleration_covariance[0] = cfg_.imu_accel_var[0];
+    msg.linear_acceleration_covariance[4] = cfg_.imu_accel_var[1];
+    msg.linear_acceleration_covariance[8] = cfg_.imu_accel_var[2];
+
+    pub_imu_->publish(msg);
   }
 
-  /** 独立发布 C 板反馈 payload 的 12 个原始标量，便于 Foxglove 直接选字段绘图。 */
-  void publish_feedback_debug(const FeedbackFrame &state, const rclcpp::Time &stamp)
+  /** 发布调试数据（/chassis/feedback/raw） */
+  void publish_debug(const FeedbackFrame &feedback, const rclcpp::Time &stamp)
   {
-    kiwi_base::msg::FeedbackDebug debug;
-    debug.header.stamp = stamp;
-    debug.header.frame_id = imu_frame_;
-    debug.motor_1_actual_rad_s = state.motor_actual[0];
-    debug.motor_2_actual_rad_s = state.motor_actual[1];
-    debug.motor_3_actual_rad_s = state.motor_actual[2];
-    debug.roll_rad = state.euler[0];
-    debug.pitch_rad = state.euler[1];
-    debug.yaw_rad = state.euler[2];
-    debug.gyro_x_raw_rad_s = state.gyro[0];
-    debug.gyro_y_raw_rad_s = state.gyro[1];
-    debug.gyro_z_raw_rad_s = state.gyro[2];
-    debug.accel_x_m_s2 = state.accel[0];
-    debug.accel_y_m_s2 = state.accel[1];
-    debug.accel_z_m_s2 = state.accel[2];
-    feedback_debug_pub_->publish(debug);
+    kiwi_base::msg::FeedbackDebug msg;
+    msg.header.stamp = stamp;
+    msg.header.frame_id = cfg_.frame_imu;
+
+    msg.motor_1_actual_rad_s = feedback.motor_actual[0];
+    msg.motor_2_actual_rad_s = feedback.motor_actual[1];
+    msg.motor_3_actual_rad_s = feedback.motor_actual[2];
+
+    msg.roll_rad = feedback.euler[0];
+    msg.pitch_rad = feedback.euler[1];
+    msg.yaw_rad = feedback.euler[2];
+
+    msg.gyro_x_raw_rad_s = feedback.gyro[0];
+    msg.gyro_y_raw_rad_s = feedback.gyro[1];
+    msg.gyro_z_raw_rad_s = feedback.gyro[2];
+
+    msg.accel_x_m_s2 = feedback.accel[0];
+    msg.accel_y_m_s2 = feedback.accel[1];
+    msg.accel_z_m_s2 = feedback.accel[2];
+
+    pub_debug_->publish(msg);
   }
 
-  std::string device_;
-  std::string cmd_topic_;
-  std::string wheel_odom_topic_;
-  std::string imu_topic_;
-  std::string feedback_debug_topic_;
-  std::string joint_topic_;
-  std::string odom_frame_;
-  std::string base_frame_;
-  std::string imu_frame_;
-  int fd_{-1};
-  double publish_rate_{};
-  double feedback_scale_{};
-  bool log_serial_frames_{};
-  bool feedback_framed_{};
-  bool imu_publish_orientation_{};
-  std::array<double, 3> motor_ratio_{};
-  Vector3 motor_feedback_deadband_rad_s_{};
-  std::array<double, 3> wheel_pose_variance_{};
-  std::array<double, 3> wheel_twist_variance_{};
-  std::array<double, 3> imu_orientation_variance_{};
-  std::array<double, 3> imu_angular_velocity_variance_{};
-  std::array<double, 3> imu_linear_acceleration_variance_{};
-  Vector3 imu_angular_velocity_sign_{};
-  Vector3 imu_angular_velocity_scale_{};
-  Vector3 imu_angular_velocity_deadband_{};
-  Vector3 wheel_twist_deadband_{};
-  double imu_stationary_hold_s_{};
-  std::optional<GyroBiasFilter> gyro_filter_;
-  bool stationary_candidate_{false};
-  Clock::time_point stationary_since_{};
-  bool gyro_bias_logged_{false};
-  std::vector<std::string> wheel_names_;
+  //============================================================================
+  // 成员变量
+  //============================================================================
+
+  Config cfg_;
+  State state_;
+
   std::optional<KiwiKinematics> kinematics_;
-  Twist2D command_limits_{};
-  Twist2D command_{};
-  std::array<double, 3> wheel_position_{};
-  std::array<double, 3> wheel_velocity_{};
-  double odom_x_{0.0};
-  double odom_y_{0.0};
-  double odom_yaw_{0.0};
-  bool have_feedback_time_{false};
-  Clock::time_point last_feedback_time_{};
-  // yaw 角度展开状态
-  bool have_previous_yaw_{false};
-  double previous_yaw_raw_{0.0};
-  double yaw_unwrap_offset_{0.0};
-  std::optional<FeedbackFrame> pending_feedback_;
-  std::vector<uint8_t> raw_feedback_buffer_;
+  std::optional<GyroBiasFilter> gyro_filter_;
   FrameParser parser_;
+
   rclcpp::TimerBase::SharedPtr timer_;
-  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_sub_;
-  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr wheel_odom_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;
-  rclcpp::Publisher<kiwi_base::msg::FeedbackDebug>::SharedPtr feedback_debug_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_pub_;
+  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr sub_cmd_;
+  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_odom_;
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr pub_imu_;
+  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr pub_joints_;
+  rclcpp::Publisher<kiwi_base::msg::FeedbackDebug>::SharedPtr pub_debug_;
 };
+
 }  // namespace kiwi_base
 
-/** ROS 2 进程入口。 */
+//==============================================================================
+// main 函数
+//==============================================================================
+
 int main(int argc, char **argv)
 {
   rclcpp::init(argc, argv);
