@@ -33,6 +33,8 @@ def test_controller_rotates_first_and_reverse_is_disabled():
     follow = config["controller_server"]["ros__parameters"]["FollowPath"]
     assert follow["plugin"] == "nav2_rotation_shim_controller::RotationShimController"
     assert follow["primary_controller"] == "dwb_core::DWBLocalPlanner"
+    # 约 20°以内交给 DWB 连续跟踪，避免定位和路径切线小抖动反复触发原地校向。
+    assert follow["angular_dist_threshold"] == 0.35
     assert follow["min_vel_x"] == 0.0
     behaviors = config["behavior_server"]["ros__parameters"]["behavior_plugins"]
     assert "backup" not in behaviors
@@ -89,6 +91,8 @@ def test_controller_rotates_first_and_reverse_is_disabled():
 def test_velocity_smoother_is_the_direct_cmd_vel_output():
     config = load_yaml("nav2.yaml")
     smoother = config["velocity_smoother"]["ros__parameters"]
+    # 平滑频率与底盘 50 Hz 控制循环一致，在两次 DWB 输出之间生成更细速度台阶。
+    assert smoother["smoothing_frequency"] == 50.0
     # y 分量置零禁止横移、x 下限置零禁止后退，与 DWB 限速一致。
     assert smoother["max_velocity"] == [0.30, 0.0, 0.80]
     assert smoother["min_velocity"] == [0.0, 0.0, -0.80]

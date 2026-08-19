@@ -43,6 +43,8 @@ def test_nav2_velocity_and_acceleration_limits_fit_base_hardware():
 
     # 0x3A 命令没有 ACK；速度平滑器保持开环，不得把异步 0x3B 遥测当作应答门控。
     assert smoother["feedback"] == "OPEN_LOOP"
+    # 平滑输出与底盘控制循环同频，避免 20 Hz DWB 指令直接形成 50 ms 速度台阶。
+    assert smoother["smoothing_frequency"] == base["publish_rate"]
 
     speed_limits = (
         base["max_linear_speed_m_s"],
