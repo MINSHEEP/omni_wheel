@@ -165,13 +165,15 @@ controller_server:
       plugin: nav2_controller::SimpleGoalChecker
       stateful: true                       # 是否有状态（首次到达后保持）
       xy_goal_tolerance: 0.15              # 位置容差 (m)
-      yaw_goal_tolerance: 0.45             # 航向角容差 (rad)
+      yaw_goal_tolerance: 0.35             # 航向角容差 (rad)
 
     # --- 旋转填隙控制器 + DWB：朝向偏差大时先原地转向，再交给 DWB 平移 ---
     FollowPath:
       plugin: nav2_rotation_shim_controller::RotationShimController
       primary_controller: dwb_core::DWBLocalPlanner
-      angular_dist_threshold: 0.17         # 朝向偏差超过此值先原地转向 (rad)
+      # 约 20°：过滤路径切线与定位的小幅抖动，避免频繁停下校向；明显朝向错误时
+      # 仍保持先原地转向再平移，兼顾无后向传感器条件下的运动安全。
+      angular_dist_threshold: 0.35         # 朝向偏差超过此值先原地转向 (rad)
       forward_sampling_distance: 0.50      # 取路径前方此距离的点计算目标朝向 (m)
       rotate_to_heading_angular_vel: 0.60  # 原地转向角速度 (rad/s)
       max_angular_accel: 0.60              # 原地转向角加速度 (rad/s²)
@@ -398,7 +400,9 @@ waypoint_follower:
 velocity_smoother:
   ros__parameters:
     use_sim_time: false
-    smoothing_frequency: 20.0            # 平滑处理频率 (Hz)
+    # 高于 DWB 的 20 Hz 输出并与底盘 50 Hz 控制循环对齐，把速度阶梯周期从
+    # 50 ms 细化到 20 ms；只提高插值粒度，不改变下方加减速度安全上限。
+    smoothing_frequency: 50.0            # 平滑处理频率 (Hz)
     scale_velocities: false              # 是否按比例缩放速度
     feedback: OPEN_LOOP                  # 反馈模式：开环（不依赖实际速度反馈）
     # y 分量置零禁止横移、x 下限置零禁止后退，与 DWB 限速保持一致；
