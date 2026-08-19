@@ -102,14 +102,10 @@ def test_local_and_global_costmap_parameters_are_synchronized():
 
     for key in ("plugin", "enabled", "observation_sources"):
         assert local["obstacle_layer"][key] == global_["obstacle_layer"][key]
-    # 比较 scan 映射，同时覆盖 Inf、marking 与 clearing。obstacle_max_range
-    # 是唯一允许的差异：局部 6 m 滚动窗中心到角落仅 4.24 m，超窗标记全部
-    # 丢弃，因此局部量程可以更小，但不得超过全局量程（全局提供规划前瞻）。
-    local_scan = dict(local["obstacle_layer"]["scan"])
-    global_scan = dict(global_["obstacle_layer"]["scan"])
-    assert local_scan.pop("obstacle_max_range") <= global_scan.pop("obstacle_max_range")
-    assert local_scan == global_scan
-    assert local["obstacle_layer"]["scan"]["inf_is_valid"] is False
+    # 同一束 M10P 扫描必须在两张图中采用完全相同的 marking/clearing、
+    # 有效量程和 Inf 语义，避免全局路径与局部控制看到不同障碍状态。
+    assert local["obstacle_layer"]["scan"] == global_["obstacle_layer"]["scan"]
+    assert local["obstacle_layer"]["scan"]["inf_is_valid"] is True
 
 
 def test_robot_radius_covers_physical_wheel_outer_edge():

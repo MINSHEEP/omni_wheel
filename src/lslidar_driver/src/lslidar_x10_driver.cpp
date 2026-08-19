@@ -18,6 +18,7 @@
 
 #include "lslidar_driver/lslidar_x10_driver.hpp"
 #include "lslidar_driver/m10_packet_decoder.hpp"
+#include "lslidar_driver/scan_angle_mask.hpp"
 
 namespace lslidar_driver {
     LslidarX10Driver::LslidarX10Driver(rclcpp::Node::SharedPtr node) : LslidarDriver(node),
@@ -95,6 +96,12 @@ namespace lslidar_driver {
 
         node_->get_parameter("angle_disable_min", angle_disable_min);
         node_->get_parameter("angle_disable_max", angle_disable_max);
+        // 每个起始角必须有对应的结束角；否则后续区间计算会越界读取。
+        if (angle_disable_min.size() != angle_disable_max.size()) {
+            RCLCPP_ERROR(node_->get_logger(),
+                         "angle_disable_min and angle_disable_max must have the same length");
+            return false;
+        }
         node_->get_parameter("N10Plus_hz", N10Plus_hz);
         node_->get_parameter("publish_scan", publish_scan);
         node_->get_parameter("use_high_precision", use_high_precision);
@@ -397,6 +404,18 @@ namespace lslidar_driver {
         uint16_t ranges_size = std::ceil((output_scan.angle_max - output_scan.angle_min) / std::abs(output_scan.angle_increment));
         output_scan.ranges.assign(ranges_size, INITIAL_RANGE); 
         output_scan.intensities.assign(ranges_size, INITIAL_INTENSITIE);
+
+        // 有效视场内没有回波的槽位继续保持 +Inf，供 Nav2 射线层清除已经
+        // 离开的动态障碍物；后方屏蔽扇区改为 NaN，明确表示该方向没有观测，
+        // 防止 inf_is_valid=true 时把机器人后方盲区错误清成自由空间。
+        const float disabled_range = std::numeric_limits<float>::quiet_NaN();
+        for (uint16_t index = 0; index < ranges_size; ++index) {
+            const double scan_angle =
+                output_scan.angle_min + static_cast<double>(index) * output_scan.angle_increment;
+            if (isScanAngleDisabled(scan_angle, angle_disable_min, angle_disable_max)) {
+                output_scan.ranges[index] = disabled_range;
+            }
+        }
 
         for (sensor_msgs::PointCloud2ConstIterator<float> iter_x(cloud_msg, "x"), iter_y(cloud_msg, "y"),
                 iter_z(cloud_msg, "z"), iter_intensity(cloud_msg, "intensity");

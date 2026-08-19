@@ -1,9 +1,12 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cmath>
 #include <cstdint>
+#include <vector>
 
 #include "lslidar_driver/m10_packet_decoder.hpp"
+#include "lslidar_driver/scan_angle_mask.hpp"
 
 namespace lslidar_driver {
 namespace {
@@ -94,6 +97,39 @@ TEST(M10pDecodeTest, RealSlotCountKeepsCentidegreePrecisionAcrossWrap) {
   ASSERT_EQ(points.size(), kRealSlotCount);
   EXPECT_EQ(points[1].azimuth, 10);
   EXPECT_EQ(points.back().azimuth, 1470);
+}
+
+TEST(M10pScanMaskTest, RearBlindSectorIsDisabledWithoutMaskingFront) {
+  const std::vector<long int> disable_min{13500};
+  const std::vector<long int> disable_max{22500};
+
+  constexpr double kPi = 3.14159265358979323846;
+  EXPECT_FALSE(isScanAngleDisabled(0.0, disable_min, disable_max));
+  EXPECT_TRUE(isScanAngleDisabled(-kPi, disable_min, disable_max));
+  EXPECT_TRUE(isScanAngleDisabled(kPi - 0.01, disable_min, disable_max));
+}
+
+TEST(M10pScanMaskTest, DisabledRangeUsesHalfOpenBoundaries) {
+  const std::vector<long int> disable_min{13500};
+  const std::vector<long int> disable_max{22500};
+  constexpr double kPi = 3.14159265358979323846;
+
+  // LaserScan 角度方向与雷达方位角相反：-135° 对应方位角 135°（包含），
+  // +135° 对应方位角 225°（结束边界，不包含）。
+  EXPECT_TRUE(isScanAngleDisabled(-3.0 * kPi / 4.0, disable_min, disable_max));
+  EXPECT_FALSE(isScanAngleDisabled(3.0 * kPi / 4.0, disable_min, disable_max));
+}
+
+TEST(M10pScanMaskTest, WrappedRangeAndDisabledSentinelAreHandled) {
+  constexpr double kPi = 3.14159265358979323846;
+  EXPECT_TRUE(isScanAngleDisabled(0.0, {35000}, {1000}));
+  EXPECT_FALSE(isScanAngleDisabled(kPi / 2.0, {35000}, {1000}));
+  EXPECT_FALSE(isScanAngleDisabled(0.0, {0}, {0}));
+}
+
+TEST(M10pScanMaskTest, MismatchedRangeVectorsDoNotReadPastTheEnd) {
+  EXPECT_FALSE(isScanAngleDisabled(0.0, {35000}, {}));
+  EXPECT_EQ(scanAngleToLidarCentidegrees(std::nan("")), -1);
 }
 
 }  // namespace

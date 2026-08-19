@@ -90,7 +90,7 @@ Visualization Manager:
       Value: true
     - Class: rviz_default_plugins/Path
       Enabled: true
-      Name: Global Plan
+      Name: Smoothed Global Plan
       Color: 0; 255; 0
       Line Style: Lines
       Line Width: 0.03
@@ -99,8 +99,21 @@ Visualization Manager:
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /plan
+        Value: /plan_smoothed
       Value: true
+    - Class: rviz_default_plugins/Path
+      Enabled: false
+      Name: Raw Global Plan
+      Color: 0; 170; 255
+      Line Style: Lines
+      Line Width: 0.02
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /plan
+      Value: false
     - Class: rviz_default_plugins/Path
       Enabled: true
       Name: Local Plan

@@ -249,13 +249,14 @@ local_costmap:
           data_type: LaserScan             # 数据类型
           clearing: true                   # 是否清除障碍物（射线清屏）
           marking: true                    # 是否标记障碍物
-          # M10P 将无回波与后方屏蔽扇区都编码为 inf；不允许其参与射线
-          # 清除，避免把未观测的后方区域误标为自由空间。
-          inf_is_valid: false
+          # M10P 驱动将有效视场内的真实无回波保留为 inf，并把后方屏蔽扇区
+          # 单独编码为 NaN。因此允许 inf 参与射线清除，动态障碍离开后不会残留；
+          # NaN 仍会被 obstacle_layer 忽略，不会把未观测的后方盲区误清为空闲。
+          inf_is_valid: true
           obstacle_min_range: 0.05         # 障碍物最小有效距离 (m)
-          # 6 m 滚动窗中心到角落仅 4.24 m，8 m 处的标记全部落在窗外白做；
-          # 局部图缩到 5.0，全局图保持 8.0 提供规划前瞻。
-          obstacle_max_range: 5.0          # 障碍物最大有效距离 (m)
+          # 与全局图使用同一观测上限，保证同一束扫描不会在两张代价地图中
+          # 得到不同解释；滚动窗之外的栅格由 costmap 自身安全裁剪。
+          obstacle_max_range: 8.0          # 障碍物最大有效距离 (m)
           raytrace_min_range: 0.05         # 射线追踪最小距离 (m)
           raytrace_max_range: 10.0         # 射线追踪最大距离 (m)
           max_obstacle_height: 1.0         # 最大障碍物高度 (m)
@@ -280,9 +281,8 @@ global_costmap:
       robot_base_frame: base_footprint     # 机器人基座坐标系
       resolution: 0.05                     # 地图分辨率 (m/cell)
       robot_radius: 0.37                   # 覆盖轮组外缘并保留碰撞安全余量 (m)
-      # 必须保持 false：M10P 无回波编码为 inf 且不参与清除（inf_is_valid: false），
-      # 大空地上只有打到障碍物的射线走廊会变成已知自由区。若追踪未知区域，
-      # SmacPlanner 会把未知格当高代价格，路径被吸进障碍物周围的已知走廊贴边走。
+      # 定位导航使用已加载的静态地图，不允许未知栅格影响通行代价；动态障碍
+      # 的标记与清除由 obstacle_layer 独立完成。
       track_unknown_space: false
       plugins: [static_layer, obstacle_layer, inflation_layer]   # 加载的图层
       # --- 静态层: 从 PGM/YAML 地图文件加载 ---
@@ -299,7 +299,8 @@ global_costmap:
           data_type: LaserScan
           clearing: true
           marking: true
-          inf_is_valid: false              # 同局部图：禁止 inf 清除未观测区域
+          # 同局部图：前向 inf 用于清除，后方盲区已由驱动编码为 NaN。
+          inf_is_valid: true
           obstacle_min_range: 0.05
           obstacle_max_range: 8.0
           raytrace_min_range: 0.05
@@ -321,36 +322,38 @@ planner_server:
     use_sim_time: false
     expected_planner_frequency: 5.0        # 期望规划频率 (Hz)
     planner_plugins: [GridBased]           # 规划器插件列表
-    # --- SmacPlanner2D: 基于 A* 的网格路径规划 ---
+    # --- Theta*: 任意角近似最短路径规划 ---
     GridBased:
-      plugin: nav2_smac_planner/SmacPlanner2D
-      # 必须 ≤ goal checker 的 xy_goal_tolerance 0.15：否则目标不可达时规划器
-      # 返回的近似路径终点落在到点容差之外，机器人走完路径也判不到达，
-      # 只能靠 progress checker 超时反复触发恢复行为。
-      tolerance: 0.15                      # 目标容差 (m)
-      downsample_costmap: false            # 是否降采样代价地图
-      allow_unknown: true                  # 是否允许穿越未知区域
-      max_iterations: 100000               # 最大迭代次数
-      max_on_approach_iterations: 1000     # 接近目标时的最大迭代次数
-      terminal_checking_interval: 5000     # 终止条件检查间隔
-      max_planning_time: 2.0               # 单次规划最大耗时 (s)
-      cost_travel_multiplier: 3.0          # 代价地图通行乘数（调大让路径更居中、少贴膨胀边缘）
-      use_final_approach_orientation: false # 是否使用最终接近方向
-      smooth_path: true                    # 是否对规划路径进行平滑
+      plugin: nav2_theta_star_planner/ThetaStarPlanner
+      how_many_corners: 8                  # 使用八邻域扩展，并通过视线检测跨栅格连线
+      w_euc_cost: 1.0                      # 保持欧氏距离为主目标，逼近最短可行路径
+      w_traversal_cost: 3.0                # 同时惩罚高代价区，避免最短路径贴近障碍物
+      allow_unknown: true                  # 与既有规划契约一致，允许规划到未知目标区域
+      use_final_approach_orientation: false # 目标朝向由 RotationShim/DWB 最终处理
 
 # --- Smoother Server: 路径平滑器 ---
-# 注意：当前两棵无 BackUp 行为树都没有 SmoothPath 节点，路径平滑实际由
-# SmacPlanner2D 的 smooth_path: true 完成；本节仅为 nav2_bringup 无条件启动的
-# smoother_server 提供 lifecycle 配置占位，调整这里的参数不影响现有路径。
+# 两棵行为树会在 Theta* 规划完成后调用本服务器。每次动作最多运行 0.20 s；
+# 超时或碰撞检查失败时，行为树保留 Theta* 原始路径并立即交给控制器，避免
+# RViz 已显示路径但底盘仍长时间静止。
 smoother_server:
   ros__parameters:
     use_sim_time: false
-    smoother_plugins: [simple_smoother]    # 平滑器插件列表
-    simple_smoother:
-      plugin: nav2_smoother::SimpleSmoother
-      tolerance: 1.0e-10                   # 收敛容差
-      max_its: 1000                        # 最大迭代次数
-      do_refinement: true                  # 是否进行路径细化
+    smoother_plugins: [constrained_smoother]
+    constrained_smoother:
+      plugin: nav2_constrained_smoother/ConstrainedSmoother
+      reversing_enabled: false             # 后方无传感器，不生成倒车段
+      minimum_turning_radius: 0.40          # 约束曲率，减少折线转角处的急转与抖动
+      path_downsampling_factor: 2           # 优化点减半，限制大地图长路径的计算耗时
+      path_upsampling_factor: 1             # 恢复一次采样，保证 DWB 跟踪点密度
+      keep_start_orientation: false         # 起点朝向由 RotationShim 根据路径切线处理
+      keep_goal_orientation: false          # 终点朝向由目标检查器和 DWB 处理
+      w_curve: 30.0                         # 曲率约束权重
+      w_dist: 0.0                           # 不把栅格折线当作必须贴合的参考轨迹
+      w_smooth: 2000000.0                   # 抑制离散曲率突变，生成连续平滑曲线
+      w_cost: 0.02                          # 结合膨胀代价主动远离障碍物
+      optimizer:
+        max_iterations: 50                 # 双重限时：迭代上限与 BT 的 0.20 s 上限
+        debug_optimizer: false
 
 # --- Behavior Server: 恢复行为服务器 ---
 behavior_server:
