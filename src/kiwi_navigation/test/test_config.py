@@ -68,6 +68,18 @@ def test_controller_rotates_first_and_reverse_is_disabled():
         # 大地图只发增量，避免 DDS/RViz 每周期重传并重绘整张 costmap。
         assert costmap["always_send_full_costmap"] is False
 
+    # inf_is_valid: false 下无回波不清除自由区，大空地上只有打到障碍物的射线
+    # 走廊是已知自由；若追踪未知区域，SmacPlanner 会把路径吸向障碍物周围的
+    # 已知走廊贴边走。该开关是「路径贴障碍物边缘」问题的根因修复，禁止回退。
+    global_costmap = config["global_costmap"]["global_costmap"]["ros__parameters"]
+    assert global_costmap["track_unknown_space"] is False
+
+    # 规划容差必须 ≤ 到点容差，否则目标不可达时近似路径终点判不到达，
+    # 机器人会在路径尽头反复触发恢复行为。
+    planner = config["planner_server"]["ros__parameters"]["GridBased"]
+    goal_checker = config["controller_server"]["ros__parameters"]["general_goal_checker"]
+    assert planner["tolerance"] <= goal_checker["xy_goal_tolerance"]
+
     progress = config["controller_server"]["ros__parameters"]["progress_checker"]
     behavior = config["behavior_server"]["ros__parameters"]
     assert progress["movement_time_allowance"] == 15.0

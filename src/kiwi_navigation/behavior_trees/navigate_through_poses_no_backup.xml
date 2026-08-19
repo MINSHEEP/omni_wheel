@@ -6,6 +6,9 @@
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="6" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
+        <!-- 0.333 Hz 沿用 Nav2 默认多航点树：全程重规划比单点树（1 Hz）开销
+             大，刻意放慢节省 CPU。多航点任务若需应对动态障碍物，可提高到
+             1.0 与单点树一致。 -->
         <RateController hz="0.333">
           <RecoveryNode number_of_retries="1" name="ComputePathThroughPoses">
             <ReactiveSequence>

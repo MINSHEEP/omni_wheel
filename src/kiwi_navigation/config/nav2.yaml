@@ -23,7 +23,7 @@ amcl:
 
     # 激光模型配置
     laser_model_type: likelihood_field     # 激光模型类型：似然场模型
-    laser_min_range: 0.05                  # 激光最小有效距离 (m)
+    laser_min_range: 0.15                  # 与 ls_m10p_uart.yaml min_range 对齐（M10P 近距盲区）
     laser_max_range: 12.0                  # 与 ls_m10p_uart.yaml max_range 对齐（M10P 实际量程）
     laser_likelihood_max_dist: 1.0         # 降低到 1.0m，提高匹配精度要求
     max_beams: 120                         # 增加到 120，提升扫描匹配质量
@@ -251,7 +251,9 @@ local_costmap:
           # 清除，避免把未观测的后方区域误标为自由空间。
           inf_is_valid: false
           obstacle_min_range: 0.05         # 障碍物最小有效距离 (m)
-          obstacle_max_range: 8.0          # 障碍物最大有效距离 (m)
+          # 6 m 滚动窗中心到角落仅 4.24 m，8 m 处的标记全部落在窗外白做；
+          # 局部图缩到 5.0，全局图保持 8.0 提供规划前瞻。
+          obstacle_max_range: 5.0          # 障碍物最大有效距离 (m)
           raytrace_min_range: 0.05         # 射线追踪最小距离 (m)
           raytrace_max_range: 10.0         # 射线追踪最大距离 (m)
           max_obstacle_height: 1.0         # 最大障碍物高度 (m)
@@ -276,7 +278,10 @@ global_costmap:
       robot_base_frame: base_footprint     # 机器人基座坐标系
       resolution: 0.05                     # 地图分辨率 (m/cell)
       robot_radius: 0.37                   # 覆盖轮组外缘并保留碰撞安全余量 (m)
-      track_unknown_space: false            # 是否追踪未知区域
+      # 必须保持 false：M10P 无回波编码为 inf 且不参与清除（inf_is_valid: false），
+      # 大空地上只有打到障碍物的射线走廊会变成已知自由区。若追踪未知区域，
+      # SmacPlanner 会把未知格当高代价格，路径被吸进障碍物周围的已知走廊贴边走。
+      track_unknown_space: false
       plugins: [static_layer, obstacle_layer, inflation_layer]   # 加载的图层
       # --- 静态层: 从 PGM/YAML 地图文件加载 ---
       static_layer:
@@ -317,7 +322,10 @@ planner_server:
     # --- SmacPlanner2D: 基于 A* 的网格路径规划 ---
     GridBased:
       plugin: nav2_smac_planner/SmacPlanner2D
-      tolerance: 0.20                      # 目标容差 (m)
+      # 必须 ≤ goal checker 的 xy_goal_tolerance 0.15：否则目标不可达时规划器
+      # 返回的近似路径终点落在到点容差之外，机器人走完路径也判不到达，
+      # 只能靠 progress checker 超时反复触发恢复行为。
+      tolerance: 0.15                      # 目标容差 (m)
       downsample_costmap: false            # 是否降采样代价地图
       allow_unknown: true                  # 是否允许穿越未知区域
       max_iterations: 100000               # 最大迭代次数
@@ -329,6 +337,9 @@ planner_server:
       smooth_path: true                    # 是否对规划路径进行平滑
 
 # --- Smoother Server: 路径平滑器 ---
+# 注意：当前两棵无 BackUp 行为树都没有 SmoothPath 节点，路径平滑实际由
+# SmacPlanner2D 的 smooth_path: true 完成；本节仅为 nav2_bringup 无条件启动的
+# smoother_server 提供 lifecycle 配置占位，调整这里的参数不影响现有路径。
 smoother_server:
   ros__parameters:
     use_sim_time: false
