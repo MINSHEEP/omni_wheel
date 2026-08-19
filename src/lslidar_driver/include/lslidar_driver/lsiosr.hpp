@@ -20,6 +20,7 @@
 #define LSIOSR_HPP
 
 #include <fcntl.h>
+#include <sys/ioctl.h>
 #include <termios.h>
 #include <errno.h>
 #include <unistd.h>
@@ -92,7 +93,7 @@ private:
     DataBits data_bits_;    // 数据位
     Parity parity_;         // 奇偶校验
     StopBits stop_bits_;    // 停止位
-    int fd_;                // 文件描述符
+    int fd_;                // 文件描述符；打开后使用 TIOCEXCL 防止多个驱动分流字节流
 };
 
 } // namespace lslidar_driver

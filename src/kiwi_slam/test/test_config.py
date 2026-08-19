@@ -27,7 +27,7 @@ def test_m10p_driver_parameters_match_slam_contract():
     assert params["min_range"] == 0.15
     assert params["max_range"] == 12.0
     # 裁剪扇区单位 0.01 度；当前值基于「0° 朝前」安装假设屏蔽后方 135°~225°，
-    # 与 E110 时代 ±135° 前向视场一致，实机校准后允许修改此断言。
+    # 实机校准后允许修改此断言。
     assert params["angle_disable_min"] == [13500]
     assert params["angle_disable_max"] == [22500]
 
@@ -56,6 +56,9 @@ def test_slam_frames_ranges_and_mode_match_base_and_lidar():
     assert params["max_laser_range"] == 12.0
     assert params["transform_publish_period"] > 0.0
     assert params["do_loop_closing"] is True
+    # 限制关键帧密度，避免短基线节点持续占用 CPU。
+    assert params["minimum_travel_distance"] == 0.20
+    assert params["minimum_travel_heading"] == 0.20
 
 
 def test_urdf_has_required_tf_links_and_joint_names():
@@ -75,7 +78,7 @@ def test_urdf_has_required_tf_links_and_joint_names():
     assert set(arguments) == {"hardware_config"}
     text = (PACKAGE / "urdf" / "kiwi.urdf.xacro").read_text(encoding="utf-8")
     assert 'name="chassis_imu_xyz" value="0.0115 -0.149 0.0"' in text
-    # 与 kiwi.urdf.xacro 当前标定值保持一致；换雷达不改外参，待实机复测。
+    # 锁定 M10P 当前安装值；实机复测后需同步修改 URDF 与本断言。
     assert 'name="lidar_xyz" value="0.32 0.0 0.20"' in text
     assert "wheel_radius_m" in text
     assert "wheel_center_distance_m" in text
@@ -85,14 +88,11 @@ def test_launch_uses_one_base_yaml_for_base_and_ekf():
     launch = (PACKAGE / "launch" / "kiwi_slam.launch.py").read_text(encoding="utf-8")
     for name in ("start_base", "start_ekf", "start_lidar", "start_slam", "start_monitor"):
         assert f'"{name}"' in launch
-    # 雷达只允许经 kiwi_slam 的 M10P 封装启动；bluesea2 仅留在源码树供回退，
-    # 断言针对 FindPackageShare 调用而非注释文字。
+    # 雷达只允许经 kiwi_slam 的 M10P 封装启动。
     assert '"m10p_uart_lidar.launch.py"' in launch
-    assert 'FindPackageShare("bluesea2")' not in launch
     assert 'executable="sync_slam_toolbox_node"' in launch
     assert '"kiwi_robot.launch.py"' in launch
     assert "ekf_params_file" not in launch
-    assert "kiwi_lio.launch.py" not in launch
 
     lidar_launch = (PACKAGE / "launch" / "m10p_uart_lidar.launch.py").read_text(
         encoding="utf-8"
@@ -113,6 +113,12 @@ def test_launch_uses_one_base_yaml_for_base_and_ekf():
     assert 'executable="ekf_node"' in robot_launch
     assert 'parameters=[base_params, {"robot_description": robot_description}]' in robot_launch
     assert robot_launch.count("parameters=[base_params]") == 2
+    # 硬件节点启动前必须检查同名包来源与统一 YAML，防止旧 overlay 让 EKF
+    # 静默回退到无 odom0/imu0 的默认参数。
+    assert "OpaqueFunction(function=_validate_runtime_contract)" in robot_launch
+    assert "validate_workspace_overlay" in robot_launch
+    assert "validate_base_parameters" in robot_launch
+
 
 def test_rviz_and_monitor_expose_map_robot_and_debug_contracts():
     rviz = yaml.safe_load((PACKAGE / "config" / "kiwi_slam.rviz").read_text(encoding="utf-8"))
@@ -122,6 +128,15 @@ def test_rviz_and_monitor_expose_map_robot_and_debug_contracts():
     assert "rviz_default_plugins/RobotModel" in classes
     assert "rviz_default_plugins/LaserScan" in classes
     assert rviz["Visualization Manager"]["Global Options"]["Fixed Frame"] == "odom"
+
+    robot_model = next(
+        display
+        for display in displays
+        if display["Class"] == "rviz_default_plugins/RobotModel"
+    )
+    # robot_description 为 Transient Local 发布，RViz 需匹配耐久性
+    # 才能在后启动时收到。
+    assert robot_model["Description Topic"]["Durability Policy"] == "Transient Local"
 
     monitor = load_parameters("monitor.yaml", "kiwi_slam_monitor")
     assert monitor["map_topic"] == "/map"

@@ -1,7 +1,7 @@
 # kiwi_base
 
-`kiwi_base` 是 Kiwi 三轮全向底盘的 ROS 2 Humble 驱动包。它负责 C 板 USB CDC 通信、
-Kiwi 正逆运动学、轮式原始里程计、C 板 IMU、轮关节状态和前台键盘遥操作。
+`kiwi_base` 是 Kiwi 三轮全向底盘的 ROS 2 Humble 驱动包。C 板通过 USB CDC 接收
+速度命令并异步上报电机/IMU 遥测；本包负责正逆运动学、反馈轮式里程计、轮关节状态和键盘遥操作。
 
 ## 节点和接口
 
@@ -9,8 +9,8 @@ Kiwi 正逆运动学、轮式原始里程计、C 板 IMU、轮关节状态和前
 kiwi_base_node
   输入：/cmd_vel
   输出：/chassis/odom/raw
-        /chassis/imu/data_raw
-        /chassis/feedback/raw
+        /chassis/imu/data_raw      （异步 IMU 遥测）
+        /chassis/feedback/raw      （异步原始字段调试）
         /joint_states
 
 ekf_filter_node
@@ -25,7 +25,8 @@ kiwi_odom_test
 ```
 
 `/cmd_vel` 是唯一底盘速度入口。底盘节点对 `linear.x`、`linear.y` 和 `angular.z` 做最终
-限幅。键盘的 `speed_m_s`、`yaw_rad_s` 是手动命令速度，不能代替底盘安全上限。
+限幅，并在 0.5 秒未收到新指令时主动归零。键盘的 `speed_m_s`、`yaw_rad_s` 是手动命令
+速度，不能代替底盘安全上限。
 
 坐标约定为 `+X` 前进、`+Y` 左移、`+Z` 向上、`+wz` 逆时针。键盘 `W/S/A/D/Q/E` 分别对应
 前后、左右横移和逆/顺时针旋转，空格或 `X` 停止。
@@ -44,11 +45,17 @@ config/kiwi_base.yaml
 
 ```text
 device                         C 板设备，默认 /dev/robomaster_c
+feedback_framed                按 0x3B CRC 帧解析异步遥测
+motor_feedback_lowpass_cutoff_hz
+                               电机实测速度一阶低通截止频率
 wheel_radius_m                 轮半径
 wheel_center_distance_m        中心到轮心距离
+max_wheel_speed_rad_s          轮输出轴物理上限，合成超限时等比例缩放
 max_linear_speed_m_s           vx 安全上限
 max_lateral_speed_m_s          vy 安全上限
 max_angular_speed_rad_s        wz 安全上限
+max_*_acceleration_*           Nav2 与底盘共用的三轴物理加速度上限
+cmd_vel_timeout_s              速度指令看门狗超时
 speed_m_s / yaw_rad_s          键盘手动速度
 deadman_timeout_ms             无新按键后的自动停车时间
 ```
@@ -56,10 +63,10 @@ deadman_timeout_ms             无新按键后的自动停车时间
 ## 构建和启动
 
 ```bash
-cd /home/a/ros2_ws
+cd /home/ym/ros2_ws
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install --packages-select kiwi_base
-source install/setup.bash
+source tools/activate_workspace.sh
 ```
 
 仅启动底盘：
@@ -86,18 +93,25 @@ ros2 run kiwi_base kiwi_teleop_keyboard
 
 ```bash
 ros2 topic info /cmd_vel --verbose
-ros2 topic echo /chassis/feedback/raw
 ros2 topic echo /chassis/odom/raw
-ros2 topic echo /chassis/imu/data_raw
+ros2 topic echo /joint_states --once
 ros2 topic hz /odometry/filtered
 ros2 run tf2_ros tf2_echo odom base_footprint
 ```
 
-现场 C 板的反馈默认按无帧 48 字节 payload 读取；标准 `0x33/0x3B/CRC` 设备需把
-`config/kiwi_base.yaml` 的 `feedback_framed` 改为 `true`。
+0x3A 命令没有 ACK，节点每周期发送最新目标且不等待回包；同一非阻塞串口上的异步 0x3B
+是独立测量流。电机实测值依次经过倍率换算、一阶低通、静止死区和减速比换算，再用于
+`/chassis/odom/raw` 与 `/joint_states`；IMU 字段发布到 `/chassis/imu/data_raw`。
+没有有效 0x3B 时不会用 `/cmd_vel` 伪造里程计。
 
 静止时原始和滤波速度应接近零；运动时应验证前进使 `x` 增加、左移使 `y` 增加、逆时针使
-yaw 增加。方向错误应检查电机编号和反馈符号，不要在 TF 中额外旋转 180 度。
+yaw 增加。该里程计无法观测打滑或堵转，只可作为导航预测；方向错误应检查电机编号和
+机械安装，不要在 TF 中额外旋转 180 度。
+
+EKF 使用电机反馈正解的 `vx/vy/wz` 与底盘绝对 `yaw/gyro_z`：yaw 负责压住航向漂移，静止时以
+去线性趋势的非重叠窗口自动更新 yaw/gyro_z 方差。加速度安装轴尚未标定，因此只发布原始值、
+不参与 EKF。该组合不能观测轮胎打滑造成的 x/y 位移误差；室外点云特征不足时仍需
+RTK/GNSS、视觉惯导或其他绝对平移观测。
 
 ## 测试
 
@@ -107,5 +121,4 @@ colcon test --packages-select kiwi_base --event-handlers console_cohesion+ \
   --ctest-args --output-on-failure
 colcon test-result --all --verbose
 python3 src/kiwi_base/tools/kiwi_serial_test.py --self-test
-python3 src/kiwi_base/tools/kiwi_feedback_receiver.py --self-test
 ```

@@ -1,0 +1,18 @@
+---
+# 项目自有 C/C++ 代码统一采用 ROS 2 常见的 Google 基础风格。
+BasedOnStyle: Google
+Language: Cpp
+Standard: Auto
+IndentWidth: 2
+ContinuationIndentWidth: 4
+ColumnLimit: 100
+AccessModifierOffset: -2
+AlignAfterOpenBracket: Align
+AllowShortFunctionsOnASingleLine: Empty
+BreakBeforeBraces: Attach
+DerivePointerAlignment: false
+PointerAlignment: Left
+SortIncludes: true
+IncludeBlocks: Preserve
+NamespaceIndentation: None
+...

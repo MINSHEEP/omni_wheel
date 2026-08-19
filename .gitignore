@@ -11,14 +11,17 @@ __pycache__/
 coverage.xml
 
 # rosbag 与运行时输出
+/bags/
+/maps/
 *.bag
 *.db3
 *.mcap
+/*.zip
+
+# Codex 本机工作状态
+/.codex/
 
 # 编辑器和系统文件
 .vscode/
 .idea/
 .DS_Store
-
-# 本机下载的第三方源码；版本记录在 third_party/README.md 中。
-/third_party/Livox-SDK2/

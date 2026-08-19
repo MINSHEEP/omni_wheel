@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""启动 E110、SLAM Toolbox、Kiwi 底盘和 Nav2 全向导航。"""
+"""启动 M10P、SLAM Toolbox、Kiwi 底盘和 Nav2 导航。"""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
@@ -12,7 +12,7 @@ from nav2_common.launch import RewrittenYaml
 
 
 def generate_launch_description():
-    """使用 E110 的标准 /scan 和底盘统一参数文件启动二维建图导航。"""
+    """使用 M10P 的标准 /scan 和底盘统一参数文件启动二维建图导航。"""
     navigation_share = FindPackageShare("kiwi_navigation")
     slam_share = FindPackageShare("kiwi_slam")
     nav2_params = LaunchConfiguration("nav2_params_file")
@@ -87,8 +87,7 @@ def generate_launch_description():
         }.items(),
     )
 
-    # 复用 kiwi_slam 的 M10P 封装，避免三个入口各自复制节点定义；
-    # 旧 bluesea2 只保留在源码树供回退，任何入口不再启动它。
+    # 复用 kiwi_slam 的 M10P 封装，避免三个入口各自复制节点定义。
     lidar = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([slam_share, "launch", "m10p_uart_lidar.launch.py"])

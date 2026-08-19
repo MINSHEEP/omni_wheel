@@ -2,7 +2,7 @@
 """Kiwi 三轮底盘 USB 串口测试工具。
 
 当前联调命令协议为 0x33/len/0x3A/CRC8 + 三个电机轴 rad/s float32 + CRC16。
-也支持 ``--raw-hex`` 原始字节模式，便于联调反馈帧时不猜测未知字段。
+也支持 ``--raw-hex`` 原始字节模式，便于发送明确给定的兼容测试帧。
 默认不使能电机；未传 ``--enable`` 时线上发送三个零速值。
 """
 
@@ -29,7 +29,13 @@ def default_params_path() -> Path:
     source_path = Path(__file__).resolve().parents[1] / "config" / "kiwi_base.yaml"
     if source_path.exists():
         return source_path
-    return Path(__file__).resolve().parents[2] / "share" / "kiwi_base" / "config" / "kiwi_base.yaml"
+    return (
+        Path(__file__).resolve().parents[2]
+        / "share"
+        / "kiwi_base"
+        / "config"
+        / "kiwi_base.yaml"
+    )
 
 
 def load_base_parameters(path: Path) -> dict[str, object]:
@@ -155,7 +161,9 @@ def parse_hex_bytes(text: str) -> bytes:
         raise ValueError(f"无法解析原始十六进制: {exc}") from exc
 
 
-def run_self_test(wheel_radius_m: float, center_distance_m: float, ratios: Sequence[float]) -> None:
+def run_self_test(
+    wheel_radius_m: float, center_distance_m: float, ratios: Sequence[float]
+) -> None:
     """运行无硬件自检：CRC、18 字节命令向量和运动学公式。"""
     golden = bytes.fromhex(
         "33 0c 3a 65 00 00 00 00 00 00 00 00 00 00 00 00 02 fd"
@@ -219,7 +227,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """执行 0x3A 电机速度发送循环；反馈帧由 kiwi_feedback_receiver.py 接收。"""
+    """执行 0x3A 发送循环；命令无 ACK，本工具不消费异步 0x3B。"""
     args = build_argument_parser().parse_args(argv)
     params = load_base_parameters(args.params_file)
     wheel_radius_m = float(params["wheel_radius_m"])
@@ -255,7 +263,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if motor_targets is not None:
         print("目标电机轴速度 rad/s: " + ", ".join(f"{value:.6f}" for value in motor_targets))
     if args.raw_hex:
-        print("原始模式：不猜测反馈字段")
+        print("原始模式：按给定字节发送，不把异步 0x3B 当作 ACK 等待")
     if args.dry_run:
         if frame is None:
             frame = encode_motor_command(0, motor_targets or (0.0, 0.0, 0.0), args.enable, 0)

@@ -21,6 +21,8 @@ END_SNAPSHOT_PID=""
 STOP_REQUESTED=0
 CLEANUP_STARTED=0
 RECORDER_PID=$$
+MIN_FREE_GIB=10
+MIN_FREE_KB=$((MIN_FREE_GIB * 1024 * 1024))
 
 usage() {
   cat <<'EOF'
@@ -86,9 +88,21 @@ fi
 set -u
 command -v ros2 >/dev/null 2>&1 || die "找不到 ros2，请先安装或 source ROS 2 Humble"
 command -v tar >/dev/null 2>&1 || die "找不到 tar"
+command -v df >/dev/null 2>&1 || die "找不到 df（coreutils）"
+command -v realpath >/dev/null 2>&1 || die "找不到 realpath（coreutils）"
 command -v setsid >/dev/null 2>&1 || die "找不到 setsid"
 command -v timeout >/dev/null 2>&1 || die "找不到 timeout（coreutils）"
 command -v ps >/dev/null 2>&1 || die "找不到 ps（procps）"
+
+# 先规范化输出根目录并检查容量，避免录制开始后才发现磁盘空间不足。
+mkdir -p "$OUTPUT_ROOT"
+OUTPUT_ROOT="$(realpath -e -- "$OUTPUT_ROOT")"
+AVAILABLE_KB="$(df -Pk -- "$OUTPUT_ROOT" | awk 'NR == 2 {print $4}')"
+[[ "$AVAILABLE_KB" =~ ^[0-9]+$ ]] || die "无法读取输出目录的磁盘可用容量：$OUTPUT_ROOT"
+if ((AVAILABLE_KB < MIN_FREE_KB)); then
+  AVAILABLE_GIB=$((AVAILABLE_KB / 1024 / 1024))
+  die "磁盘可用空间仅 ${AVAILABLE_GIB} GiB，至少需要 ${MIN_FREE_GIB} GiB：$OUTPUT_ROOT"
+fi
 
 STAMP="$(date +%Y%m%d_%H%M%S)_$$"
 RUN_DIR="$OUTPUT_ROOT/incident_$STAMP"
@@ -307,7 +321,28 @@ finish() {
   printf '正在打包：%s\n' "$ARCHIVE"
   mkdir -p "$OUTPUT_ROOT"
   tar -czf "$ARCHIVE" -C "$OUTPUT_ROOT" "$(basename "$RUN_DIR")"
+
+  # 只有完整归档校验成功后才清理本次源目录；失败时保留现场供人工恢复。
+  if [[ ! -s "$ARCHIVE" ]] || ! tar -tzf "$ARCHIVE" >/dev/null; then
+    printf '错误：归档完整性校验失败，保留源目录：%s\n' "$RUN_DIR" >&2
+    return 1
+  fi
+
+  local output_root_real run_dir_real expected_run_dir
+  output_root_real="$(realpath -e -- "$OUTPUT_ROOT")"
+  run_dir_real="$(realpath -e -- "$RUN_DIR")"
+  expected_run_dir="$output_root_real/incident_$STAMP"
+  if [[ -L "$RUN_DIR" || "$run_dir_real" != "$expected_run_dir" ]]; then
+    printf '错误：源目录安全校验失败，拒绝清理：%s\n' "$RUN_DIR" >&2
+    return 1
+  fi
+
+  if ! find "$run_dir_real" -xdev -depth -delete; then
+    printf '错误：归档已生成，但源目录未能完整清理：%s\n' "$run_dir_real" >&2
+    return 1
+  fi
   printf '故障现场包已生成：%s\n' "$ARCHIVE"
+  printf '已清理本次采集源目录：%s\n' "$run_dir_real"
 }
 
 on_exit() {

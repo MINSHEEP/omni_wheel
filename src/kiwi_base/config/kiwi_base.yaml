@@ -6,40 +6,61 @@ kiwi_base_node:
     # USB CDC 设备。没有硬件时节点仍可启动，但不会产生 TX 日志。
     device: /dev/robomaster_c
     publish_rate: 50.0
-    # 结构化反馈话题已包含调试字段；关闭逐帧终端日志，避免 I/O 造成运行卡顿。
+    # 关闭逐帧终端日志，避免 I/O 造成运行卡顿。
     log_serial_frames: false
-    # 2026-08-14 C 板固件更新后输出 0x33/0x3B/CRC 封装帧（54 字节/帧）：
-    # 串口采样 178/178 帧 CRC 全部通过。裸 48 字节模式仅适用于旧固件；
-    # 配错模式的症状是节点报 "not 12 finite float32" 且 EKF 输出 NaN。
+    # 硬件契约：0x3A 命令没有 ACK，控制循环不得等待应答；C 板会异步上报
+    # 0x3B 电机/IMU 遥测，节点只做非阻塞读取，遥测中断不阻断命令发送。
     feedback_framed: true
-
-    # 反馈电机数值 -> 轮输出轴 rad/s 的倍率。
-    # 若 C 板回传的是电机轴 rad/s，保持 1.0；主机随后除以 19。
+    # /cmd_vel 发布中断后最多保持该时长，超时由 50 Hz 控制循环主动归零。
+    cmd_vel_timeout_s: 0.5
+    # 遥测电机数值 -> 电机转子 rad/s 的倍率；反馈里程计与静止判定共用。
+    # 该遥测是异步状态流，不是 0x3A 命令 ACK。
     feedback_motor_scale_to_rad_s: 1.0
+    # 电机转子速度一阶低通截止频率；在死区和正运动学之前抑制地面振动噪声。
+    # 50 Hz 遥测下 8 Hz 兼顾约 20 ms 量级响应与里程计速度稳定性。
+    motor_feedback_lowpass_cutoff_hz: 8.0
     motor_reduction_ratio: [19.0, 19.0, 19.0]
-    # C 板回传的电机转子 rad/s 静止死区；先过滤电机反馈，再做减速比换算和正解。
+    # 遥测电机转子 rad/s 静止死区。
     # 0.20 rad/s 对应轮输出约 0.0105 rad/s，仅抑制零速附近的微小编码器抖动。
     motor_feedback_deadband_rad_s: [0.20, 0.20, 0.20]
 
     # 实车几何：203 mm 轮径；中心到轮心距离 322.56 mm。
     wheel_radius_m: 0.1015
     wheel_center_distance_m: 0.32256
+    # 轮输出轴物理上限；多轴合成超限时保持 Twist 方向等比例缩放。
+    max_wheel_speed_rad_s: 8.0
 
     # /cmd_vel 入口限幅：分别对应前后、左右和旋转速度的绝对值上限。
     max_linear_speed_m_s: 0.8
     max_lateral_speed_m_s: 0.8
     max_angular_speed_rad_s: 1.5
+    # 底盘三轴物理加速度上限，供 Nav2 限速链路契约检查。
+    max_linear_acceleration_m_s2: 0.40
+    max_lateral_acceleration_m_s2: 0.40
+    max_angular_acceleration_rad_s2: 1.00
 
     # 测量协方差对角线（方差，不是标准差），顺序均为 x、y、z。
-    # 当前是保守初值；完成静止和匀速采样后再用实测方差替换。
+    # Z 轴启动时使用以下保守值，连续静止样本达到门槛后再切换为在线估计。
     wheel_pose_variance: [0.10, 0.10, 0.20]
     wheel_twist_variance: [0.02, 0.02, 0.04]
-    # 2026-08-18 实测：C 板 yaw 零漂已明显控制，可信度较高，启用融合。
-    # yaw 方差基于角速度积分估算（wz方差 0.046448 在 50Hz下累积）。
+    # incident_20260818_150324 的 yaw 相邻差分 var/2≈1.1e-9 rad²，但长静止段
+    # lag-1≈0.99，差分法会低估绝对航向不确定度约 100~400 倍，因此启动值保持保守。
     imu_orientation_variance: [0.05, 0.05, 0.001]
-    # C 板现在发布连续 yaw（已在 kiwi_base_node 中添加角度展开处理 -π/π 跳变）。
+    # 发布连续 yaw（节点包含 -π/π 展开与线性漂移估计）。
     imu_publish_orientation: true
-    imu_angular_velocity_variance: [0.01, 0.01, 0.046]
+    # Z 轴实测原始方差乘 1.69² 后约 5e-5~6e-5；取 1e-4 覆盖量程与动态误差。
+    imu_angular_velocity_variance: [0.01, 0.01, 1.0e-4]
+    # 在线估计仅使用完整连续静止区间：yaw 跨 ±pi 展开后，用线性回归残差估计
+    # 去除线性漂移后的绝对角度方差；gyro_z 使用 Welford 样本方差。每满 500 个
+    # 样本提交一次非重叠窗口，禁止同一批数据在后续每帧被重复加权。
+    imu_covariance_calibration_samples: 500
+    # 单次静止窗口不能证明绝对偏置和长期漂移；yaw 下限保留约 0.57° 标准差。
+    imu_yaw_variance_floor: 1.0e-4
+    imu_gyro_z_variance_floor: 1.0e-4
+    # 静止窗口完成后以 EMA 更新已提交值；运动只清窗口，不丢弃上次可信方差。
+    imu_covariance_update_alpha: 0.02
+    # C 板加速度静止均值约 [-7.87, 0.05, -5.86]、模长 9.81，安装轴尚未
+    # 标定到 ROS 机体系；本轮只发布原始值，EKF 不融合 ax/ay/az。
     imu_linear_acceleration_variance: [0.10, 0.10, 0.10]
 
     # yaw 零漂补偿：静止时自动标定并持续跟踪漂移率，实时补偿累积误差
@@ -68,8 +89,15 @@ kiwi_base_node:
     imu_gyro_max_bias_rad_s: 0.05
     # 一阶低通截止频率；50 Hz 反馈下 10 Hz 保留机动响应并抑制高频抖动。
     imu_gyro_lowpass_cutoff_hz: 10.0
-    # 判定静止需目标速度与电机反馈同时为零并保持该时长，避开停车瞬间的振动。
+    # 连续满足命令、电机、yaw 变化率和加速度模长静止后，才允许更新 IMU
+    # 漂移/方差。实测遥测间隔 20~24 ms，超过 0.10 s 视为断流并清空当前窗口；
+    # 已提交协方差不清零，避免 EKF 权重在断流恢复后跳变。
     imu_stationary_hold_s: 0.5
+    imu_max_sample_gap_s: 0.10
+    # 底盘 yaw 静止漂移远小于 0.02 rad/s；该门限用于拒绝人工推动/抬车旋转。
+    imu_stationary_yaw_rate_threshold_rad_s: 0.02
+    # 安装倾角不改变加速度模长；偏离标准重力超过 0.50 m/s² 的振动样本不参与标定。
+    imu_stationary_acceleration_tolerance_m_s2: 0.50
     # 顺序为 vx(m/s)、vy(m/s)、wz(rad/s)，过滤静止编码器抖动后再积分和发布。
     wheel_twist_deadband: [0.015, 0.015, 0.022]
 
@@ -90,9 +118,9 @@ kiwi_base_node:
     imu_frame_id: chassis_imu_link
     wheel_names: [wheel_joint_1, wheel_joint_2, wheel_joint_3]
 
-# 暂不启用：加速度斜坡、命令超时、反馈联锁和软件急停。
+# 命令链无 ACK；电机/IMU 遥测独立非阻塞接收，里程计只使用滤波后的电机实测速度。
 
-# 平面 EKF：融合轮式 vx/vy/wz 与 C 板 IMU 的 gyro_z；绝对 yaw 暂不可信。
+# 平面 EKF：融合电机反馈速度与 C 板绝对 yaw/gyro_z，发布 odom -> base_footprint TF。
 ekf_filter_node:
   ros__parameters:
     use_sim_time: false
@@ -122,21 +150,22 @@ ekf_filter_node:
     odom0_differential: false
     odom0_relative: false
 
-    # C 板绝对 yaw 在 2026-08-18 实测零漂已控制，可信度较高，启用融合。
+    # C 板 yaw 已在事故包中验证为低漂、近似线性，直接作为绝对航向约束；gyro_z
+    # 保留机动响应。阈值放宽到 5.0，避免打滑时把真正的绝对 yaw 纠偏误拒绝。
     imu0: /chassis/imu/data_raw
     imu0_config: [
       false, false, false,  # x, y, z：IMU 不提供位置
-      false, false, true,   # roll, pitch, yaw：融合 yaw（已添加角度展开处理）
+      false, false, true,   # roll, pitch, yaw：直接融合底盘绝对 yaw
       false, false, false,  # vx, vy, vz：IMU 不提供线速度
-      false, false, true,   # vroll, vpitch, vyaw：继续融合 z 轴角速度
+      false, false, true,   # vroll, vpitch, vyaw：融合 z 轴角速度
       false, false, false   # ax, ay, az：当前平面 EKF 不融合加速度
     ]
     imu0_queue_size: 20
     imu0_differential: false
     imu0_relative: false
     imu0_remove_gravitational_acceleration: false
-    imu0_pose_rejection_threshold: 1.0
-    imu0_twist_rejection_threshold: 1.0
+    imu0_pose_rejection_threshold: 5.0
+    imu0_twist_rejection_threshold: 5.0
 
 # 键盘节点不再在 C++ 中保存速度默认值，修改手动控制速度只改这里。
 kiwi_teleop_keyboard:

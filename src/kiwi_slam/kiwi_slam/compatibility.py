@@ -123,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     base_device = str(load_parameter(args.base_params_file, "kiwi_base_node", "device"))
-    # M10P 驱动的串口参数是 lslidar_driver_node.serial_port（非 bluesea 的 port）。
+    # M10P 串口统一读取 lslidar_driver_node.serial_port，避免检查错配置层级。
     lidar_port = str(
         load_parameter(args.lidar_params_file, "lslidar_driver_node", "serial_port")
     )

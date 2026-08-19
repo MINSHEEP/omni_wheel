@@ -25,7 +25,8 @@ find_package(ament_index_cpp REQUIRED)
 find_package(lslidar_msgs REQUIRED)
 find_package(Boost REQUIRED COMPONENTS thread)
 find_package(yaml-cpp REQUIRED)
-find_package(PCL REQUIRED)
+# 驱动只使用点类型、PointCloud 和坐标变换；限制组件可避免无关 IO/pcap 探测。
+find_package(PCL REQUIRED COMPONENTS common)
 find_package(pcl_conversions REQUIRED)
 find_package(Eigen3 REQUIRED)
 
@@ -123,6 +124,14 @@ install(DIRECTORY rviz/
 install(DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch
 )
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+
+  # 验证 M10P 缺失槽位不会压缩角度，并覆盖全无效空包。
+  ament_add_gtest(test_m10p_decode test/test_m10p_decode.cpp)
+  target_include_directories(test_m10p_decode PRIVATE include)
+endif()
 
 ament_export_include_directories(include)
 ament_export_libraries(lslidar_driver)

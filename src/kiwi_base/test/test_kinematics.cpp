@@ -4,6 +4,9 @@
  */
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
 #include <limits>
 #include <stdexcept>
 
@@ -76,6 +79,69 @@ TEST(KiwiKinematics, RejectsInvalidGeometry)
 {
   EXPECT_THROW(KiwiKinematics(0.0, kCenterDistance), std::invalid_argument);
   EXPECT_THROW(KiwiKinematics(kWheelRadius, -1.0), std::invalid_argument);
+  EXPECT_THROW(KiwiKinematics(kWheelRadius, kCenterDistance, 0.0), std::invalid_argument);
+  EXPECT_THROW(
+    KiwiKinematics(
+      kWheelRadius, kCenterDistance, std::numeric_limits<double>::infinity()),
+    std::invalid_argument);
+}
+
+TEST(KiwiKinematics, ForwardRejectsNonFiniteWheelSpeed)
+{
+  KiwiKinematics kinematics(kWheelRadius, kCenterDistance, 8.0);
+  const auto twist = kinematics.forward(
+    {0.0, std::numeric_limits<double>::quiet_NaN(), 0.0});
+
+  EXPECT_DOUBLE_EQ(twist.vx, 0.0);
+  EXPECT_DOUBLE_EQ(twist.vy, 0.0);
+  EXPECT_DOUBLE_EQ(twist.wz, 0.0);
+}
+
+TEST(KiwiKinematics, ScalesWheelSpeedsAndTwistByTheSameFactor)
+{
+  constexpr double kWheelSpeedLimit = 8.0;
+  KiwiKinematics unlimited(kWheelRadius, kCenterDistance);
+  KiwiKinematics limited(kWheelRadius, kCenterDistance, kWheelSpeedLimit);
+  const Twist2D input{0.8, 0.8, -1.5};
+  const auto raw_wheels = unlimited.inverse(input);
+  const double raw_peak = std::max({
+    std::abs(raw_wheels[0]), std::abs(raw_wheels[1]), std::abs(raw_wheels[2])});
+  const double expected_scale = kWheelSpeedLimit / raw_peak;
+
+  const auto result = limited.inverse_with_twist(input);
+  EXPECT_NEAR(
+    std::max({std::abs(result.wheel_rad_s[0]), std::abs(result.wheel_rad_s[1]),
+      std::abs(result.wheel_rad_s[2])}),
+    kWheelSpeedLimit, 1e-12);
+  for (std::size_t i = 0; i < raw_wheels.size(); ++i)
+    EXPECT_NEAR(result.wheel_rad_s[i], raw_wheels[i] * expected_scale, 1e-12);
+  EXPECT_NEAR(result.achievable_twist.vx, input.vx * expected_scale, 1e-12);
+  EXPECT_NEAR(result.achievable_twist.vy, input.vy * expected_scale, 1e-12);
+  EXPECT_NEAR(result.achievable_twist.wz, input.wz * expected_scale, 1e-12);
+
+  // 兼容接口与带 Twist 的接口必须走同一条饱和路径。
+  EXPECT_EQ(limited.inverse(input), result.wheel_rad_s);
+  const auto restored = limited.forward(result.wheel_rad_s);
+  EXPECT_NEAR(restored.vx, result.achievable_twist.vx, 1e-10);
+  EXPECT_NEAR(restored.vy, result.achievable_twist.vy, 1e-10);
+  EXPECT_NEAR(restored.wz, result.achievable_twist.wz, 1e-10);
+}
+
+TEST(KiwiKinematics, ExtremeFiniteTwistCannotProduceNonFiniteOutput)
+{
+  constexpr double kWheelSpeedLimit = 8.0;
+  KiwiKinematics kinematics(kWheelRadius, kCenterDistance, kWheelSpeedLimit);
+  const Twist2D input{std::numeric_limits<double>::max(), 0.0, 0.0};
+
+  const auto result = kinematics.inverse_with_twist(input);
+  for (double wheel_speed : result.wheel_rad_s)
+    EXPECT_TRUE(std::isfinite(wheel_speed));
+  EXPECT_NEAR(result.wheel_rad_s[0], kWheelSpeedLimit, 1e-12);
+  EXPECT_NEAR(result.wheel_rad_s[1], 0.0, 1e-12);
+  EXPECT_NEAR(result.wheel_rad_s[2], -kWheelSpeedLimit, 1e-12);
+  EXPECT_TRUE(std::isfinite(result.achievable_twist.vx));
+  EXPECT_TRUE(std::isfinite(result.achievable_twist.vy));
+  EXPECT_TRUE(std::isfinite(result.achievable_twist.wz));
 }
 
 TEST(VelocityLimit, LimitsEachAxisAndKeepsValuesInsideRange)

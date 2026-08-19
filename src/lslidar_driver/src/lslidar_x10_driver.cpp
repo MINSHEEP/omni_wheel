@@ -17,6 +17,7 @@
  *****************************************************************************/
 
 #include "lslidar_driver/lslidar_x10_driver.hpp"
+#include "lslidar_driver/m10_packet_decoder.hpp"
 
 namespace lslidar_driver {
     LslidarX10Driver::LslidarX10Driver(rclcpp::Node::SharedPtr node) : LslidarDriver(node),
@@ -448,20 +449,24 @@ namespace lslidar_driver {
         if (lidar_model == "M10P") {
             if (serial_port_.empty()) {
                 packet_size = (packet->data[2] << 8) + packet->data[3];
-                packet_points_max = static_cast<int>(packet_size - 20) * 0.5;
-                
-                if (packet_size > 180) {
-                    // normal packet size: 158-168     normal motor speed: 3460-3490
-                    motor_speed = (packet->data[6] << 8) + packet->data[7];
-                    LS_WARN << "Abnormal lidar data!  packet_size: " << packet_size << "  motor_speed: " << motor_speed << LS_END;
-                    return false;
-                }
-            } else {
-                packet_points_max = static_cast<int>(packet_size - 20) * 0.5;
             }
+
+            // 拒绝短包、奇数点载荷和越界声明，防止点数下溢及授时字段负索引。
+            if (!isValidM10PPacketSize(static_cast<size_t>(packet_size), packet->data.size())) {
+                LS_WARN << "Invalid M10P packet size: " << packet_size << LS_END;
+                return false;
+            }
+            packet_points_max = static_cast<uint16_t>((packet_size - 20) / 2);
         }
 
         decodePacket(packet);
+
+        // M10P 可能整包均为 0xFFFF；空包不得进入扫圈判断和末点访问。
+        if (actual_points == 0) {
+            RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 5000,
+                                 "Decoded an empty lidar packet; skip it safely");
+            return true;
+        }
 
         size_t new_sweep_start = 0;
         do {
@@ -758,33 +763,20 @@ namespace lslidar_driver {
     }
 
     void LslidarX10Driver::decodePacketM10(lslidar_msgs::msg::LslidarPacket::UniquePtr &packet) {
-        std::vector<FiringX10> raw_points;
-        raw_points.reserve(packet_points_max);
-
-        for (size_t point_idx = 0; point_idx < POINT_LEN_M10 * packet_points_max; point_idx += POINT_LEN_M10) {
-            uint16_t raw_distance = (packet->data[point_idx + data_bits_start] << 8) +
-                                     packet->data[point_idx + data_bits_start + 1];
-            if (raw_distance == 0xFFFF) continue;
-        
-            FiringX10 point;
-            point.distance = static_cast<float>(raw_distance) * DISTANCE_RESOLUTION_X10;
-            point.intensity = 0;
-            
-            raw_points.push_back(point);
-        }
-
-        actual_points = raw_points.size();
+        const auto decoded_points = decodeM10PacketSlots(
+            packet->data.data(), packet->data.size(), packet_points_max, angle_bits_start,
+            data_bits_start, ANGLE_INTERVAL_M10, DISTANCE_RESOLUTION_X10);
 
         points.clear();
-        points.reserve(actual_points);
-
-        int angle_CodedDisc = ((packet->data[angle_bits_start] << 8) + packet->data[angle_bits_start + 1]) % 36000; // 误差: 0.01°以内
-        for (size_t valid_idx = 0; valid_idx < raw_points.size(); valid_idx++) {
-            FiringX10 valid_point = raw_points[valid_idx];
-            valid_point.azimuth = angle_CodedDisc + (ANGLE_INTERVAL_M10 / actual_points * valid_idx) * 100;
-            valid_point.azimuth = valid_point.azimuth % 36000;
-            points.push_back(valid_point);
+        points.reserve(decoded_points.size());
+        for (const auto &decoded_point : decoded_points) {
+            FiringX10 point;
+            point.azimuth = decoded_point.azimuth;
+            point.distance = decoded_point.distance;
+            point.intensity = 0;
+            points.push_back(point);
         }
+        actual_points = points.size();
     }
 
     void LslidarX10Driver::decodePacketN10(lslidar_msgs::msg::LslidarPacket::UniquePtr &packet) {

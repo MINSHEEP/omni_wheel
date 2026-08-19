@@ -1,5 +1,7 @@
 """检查底盘、EKF 和键盘共享同一 YAML 的接口契约。"""
 
+import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -13,7 +15,7 @@ def load_config():
     return yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
 
 
-def test_chassis_ekf_uses_wheel_twist_and_chassis_imu_from_one_yaml():
+def test_chassis_ekf_uses_motor_feedback_twist_and_asynchronous_imu():
     config = load_config()
     base = config["kiwi_base_node"]["ros__parameters"]
     ekf = config["ekf_filter_node"]["ros__parameters"]
@@ -21,8 +23,10 @@ def test_chassis_ekf_uses_wheel_twist_and_chassis_imu_from_one_yaml():
     assert base["wheel_odom_topic"] == ekf["odom0"] == "/chassis/odom/raw"
     assert base["imu_topic"] == ekf["imu0"] == "/chassis/imu/data_raw"
     assert base["feedback_debug_topic"] == "/chassis/feedback/raw"
-    # 新 C 板固件（2026-08-14 起）发送 54 字节 CRC 封装帧。
+    # 0x3A 没有 ACK；0x3B 始终作为异步遥测非阻塞读取，不保留启停门控。
+    assert "feedback_enabled" not in base
     assert base["feedback_framed"] is True
+    assert 0.0 < base["motor_feedback_lowpass_cutoff_hz"] < base["publish_rate"] / 2.0
     assert ekf["two_d_mode"] is True
     assert ekf["publish_tf"] is True
     assert ekf["world_frame"] == ekf["odom_frame"] == "odom"
@@ -30,9 +34,9 @@ def test_chassis_ekf_uses_wheel_twist_and_chassis_imu_from_one_yaml():
     assert base["base_frame_id"] == ekf["base_link_frame"] == "base_footprint"
     assert base["imu_frame_id"] == "chassis_imu_link"
     assert [i for i, enabled in enumerate(ekf["odom0_config"]) if enabled] == [6, 7, 11]
-    # 2026-08-18: C 板 yaw 零漂已控制，启用 yaw(索引5) 和 vyaw(索引11) 融合
     assert [i for i, enabled in enumerate(ekf["imu0_config"]) if enabled] == [5, 11]
-    assert base["imu_publish_orientation"] is True
+    assert ekf["imu0_pose_rejection_threshold"] == 5.0
+    assert ekf["imu0_twist_rejection_threshold"] == 5.0
 
 
 def test_keyboard_and_base_use_direct_cmd_vel_interface():
@@ -54,18 +58,103 @@ def test_keyboard_speeds_do_not_exceed_base_limits():
     assert 0.0 < keyboard["yaw_rad_s"] <= base["max_angular_speed_rad_s"]
 
 
-def test_chassis_imu_and_feedback_debug_are_always_published():
+def test_base_exposes_valid_watchdog_and_physical_motion_limits():
+    base = load_config()["kiwi_base_node"]["ros__parameters"]
+
+    assert base["cmd_vel_timeout_s"] == 0.5
+    assert base["max_wheel_speed_rad_s"] == 8.0
+    assert base["max_linear_acceleration_m_s2"] == 0.40
+    assert base["max_lateral_acceleration_m_s2"] == 0.40
+    assert base["max_angular_acceleration_rad_s2"] == 1.00
+    assert all(
+        base[name] > 0.0
+        for name in (
+            "max_linear_speed_m_s",
+            "max_lateral_speed_m_s",
+            "max_angular_speed_rad_s",
+            "max_linear_acceleration_m_s2",
+            "max_lateral_acceleration_m_s2",
+            "max_angular_acceleration_rad_s2",
+        )
+    )
+
+
+def test_runtime_source_keeps_watchdog_and_parameter_guards_active():
     source = (PACKAGE / "src" / "kiwi_base_node.cpp").read_text(encoding="utf-8")
-    active_lines = [
-        line for line in source.splitlines() if not line.lstrip().startswith("//")
-    ]
-    active_source = "\n".join(active_lines)
-    # 重构后的函数名和调用方式
-    assert "publish_imu(" in active_source
-    assert "publish_debug(" in active_source
-    assert "void publish_imu(" in source or "publish_imu(" in source
-    assert "pending_feedback" in source
-    assert "on_raw_data" in source or "queue_raw_feedback" in source
+
+    assert "require_sign_vector3" in source
+    assert "require_positive_vector3" in source
+    assert "require_non_negative_vector3" in source
+    assert "state_.last_cmd_time = this->now();" in source
+    assert "state_.have_cmd = true;" in source
+    assert "now - state_.last_cmd_time" in source
+    assert "errno == EAGAIN || errno == EWOULDBLOCK" in source
+    assert "std::chrono::milliseconds(1)" in source
+    assert "kStationaryVelocityEpsilon" in source
+    assert "imu_max_sample_gap_s" in source
+    assert "imu_stationary_yaw_rate_threshold_rad_s" in source
+    assert "imu_stationary_acceleration_tolerance_m_s2" in source
+    assert "begin_next_window" in source
+
+
+def test_ekf_fuses_only_absolute_yaw_and_gyro_z_from_asynchronous_imu():
+    ekf = load_config()["ekf_filter_node"]["ros__parameters"]
+
+    assert ekf["imu0"] == "/chassis/imu/data_raw"
+    assert [index for index, enabled in enumerate(ekf["imu0_config"]) if enabled] == [5, 11]
+    # 安装轴/重力尚未标定，不能把原始加速度送入平面 EKF。
+    assert not any(ekf["imu0_config"][12:15])
+
+
+def test_odom_uses_only_filtered_asynchronous_motor_feedback():
+    source = (PACKAGE / "src" / "kiwi_base_node.cpp").read_text(encoding="utf-8")
+
+    assert "feedback_enabled" not in source
+    assert "odom_use_cmd_vel" not in source
+    assert "update_open_loop_state" not in source
+    assert "have_open_loop_time" not in source
+    assert "read_serial();" in source
+    assert "(void)send_command(cmd);" in source
+    assert "filter_motor_feedback(" in source
+    assert "motor_filtered[i] / cfg_.motor_ratio[i]" in source
+    assert "publish_odometry(stamp, feedback_odom_dt)" in source
+    assert "publish_joint_states(stamp)" in source
+    feedback_body = source.split("void process_feedback", 1)[1].split(
+        "Vector3 process_imu_gyro", 1
+    )[0]
+    assert "update_feedback_wheel_state(" in feedback_body
+    assert "publish_odometry(" in feedback_body
+    assert "publish_joint_states(" in feedback_body
+    assert "publish_imu(" in feedback_body
+    assert "publish_debug(" in feedback_body
+
+
+def test_feedback_receiver_is_offline_only_and_never_waits_for_hardware():
+    receiver = PACKAGE / "tools" / "kiwi_feedback_receiver.py"
+    source = receiver.read_text(encoding="utf-8")
+
+    # 离线解析器可以自检，但不得与现场节点争用串口或把 0x3B 当作命令 ACK。
+    assert "receive_feedback" not in source
+    assert "serial.Serial" not in source
+    assert "os.open" not in source
+    self_test = subprocess.run(
+        [sys.executable, str(receiver), "--self-test"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=2.0,
+    )
+    assert self_test.returncode == 0
+    assert "self-test: PASS" in self_test.stdout
+    blocked = subprocess.run(
+        [sys.executable, str(receiver)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=2.0,
+    )
+    assert blocked.returncode == 2
+    assert "不会打开串口等待回包" in blocked.stderr
 
 
 def test_static_measurement_filters_match_observed_noise_and_ros_yaw_sign():
@@ -80,12 +169,17 @@ def test_static_measurement_filters_match_observed_noise_and_ros_yaw_sign():
 
 
 def test_gyro_bias_filter_parameters_are_consistent():
-    base = load_config()["kiwi_base_node"]["ros__parameters"]
+    config = load_config()
+    base = config["kiwi_base_node"]["ros__parameters"]
+    ekf = config["ekf_filter_node"]["ros__parameters"]
 
     # 上电静止标定至少要有一个样本；EMA 与静止确认时间必须为正。
     assert base["imu_gyro_calibration_samples"] >= 1
     assert base["imu_gyro_bias_time_constant_s"] > 0.0
     assert base["imu_stationary_hold_s"] > 0.0
+    assert 0.0 < base["imu_max_sample_gap_s"] < ekf["sensor_timeout"]
+    assert base["imu_stationary_yaw_rate_threshold_rad_s"] > 0.0
+    assert base["imu_stationary_acceleration_tolerance_m_s2"] > 0.0
     # 零漂上限须能覆盖死区级别的零偏，否则钳制会低估真实零漂。
     assert base["imu_gyro_max_bias_rad_s"] >= max(
         base["imu_angular_velocity_deadband_rad_s"]
@@ -106,6 +200,14 @@ def test_filter_inputs_have_positive_covariances():
     for name in names:
         assert len(base[name]) == 3
         assert all(value > 0.0 for value in base[name])
+    assert base["imu_covariance_calibration_samples"] >= 3
+    assert 0.0 < base["imu_yaw_variance_floor"] <= base["imu_orientation_variance"][2]
+    assert (
+        0.0
+        < base["imu_gyro_z_variance_floor"]
+        <= base["imu_angular_velocity_variance"][2]
+    )
+    assert 0.0 < base["imu_covariance_update_alpha"] <= 1.0
 
 
 def test_yaml_is_the_single_source_for_runtime_and_robot_structure():

@@ -1,5 +1,0 @@
-# 仅给官方 Livox ROS2 驱动传入发行版参数，避免污染其他 CMake 包。
-names:
-  livox_ros_driver2:
-    cmake-args:
-      - -DDISTRO_ROS=humble

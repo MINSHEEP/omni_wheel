@@ -15,7 +15,7 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    """复用无雷达依赖的公共底盘层，构成可回退的二维建图路线。"""
+    """复用公共底盘层，构成可按模块启停的 M10P 二维建图链路。"""
     package_share = FindPackageShare("kiwi_slam")
     lidar_params = LaunchConfiguration("lidar_params_file")
     slam_params = LaunchConfiguration("slam_params_file")
@@ -62,13 +62,13 @@ def generate_launch_description():
             default_value=PathJoinSubstitution(
                 [package_share, "config", "kiwi_slam.rviz"]
             ),
-            description="Pace 二维建图 RViz 配置",
+            description="Kiwi M10P 二维建图 RViz 配置",
         ),
         DeclareLaunchArgument(
             "start_base", default_value="true", description="是否启动 USB 底盘节点"
         ),
         DeclareLaunchArgument(
-            "start_ekf", default_value="true", description="是否启动 C 板 IMU 平面 EKF"
+            "start_ekf", default_value="true", description="是否启动反馈里程计平面 EKF"
         ),
         DeclareLaunchArgument(
             "start_lidar", default_value="true", description="是否启动镭神 M10P 驱动"
@@ -93,8 +93,7 @@ def generate_launch_description():
         ),
     ]
 
-    # 雷达统一走 kiwi_slam 内的 M10P 封装；旧 bluesea2 仅保留在源码树供回退，
-    # 任何入口不再启动它，保证 /scan 只有一个发布者。
+    # 雷达统一走 kiwi_slam 内的 M10P 封装，保证 /scan 只有一个发布者。
     lidar = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([package_share, "launch", "m10p_uart_lidar.launch.py"])

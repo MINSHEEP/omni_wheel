@@ -8,7 +8,8 @@ Nav2 DWB Omni -> velocity_smoother -> /cmd_vel -> kiwi_base_node
 ```
 
 底盘节点会对所有速度源做最后限幅。导航使用 `base_footprint`、`odom` 和 `/odometry/filtered`。
-AMCL 使用 `nav2_amcl::OmniMotionModel`，DWB 支持 `vy` 横向速度。
+AMCL 使用 `nav2_amcl::OmniMotionModel`；底盘仍具备全向能力，但当前因后方感知盲区将
+DWB 的 `vy` 设为零，导航采用“先转向、后直行”。恢复横移时必须同步 DWB 与速度平滑器。
 
 ## 配置
 
@@ -27,10 +28,10 @@ src/kiwi_base/config/kiwi_base.yaml
 ## 构建
 
 ```bash
-cd /home/a/ros2_ws
+cd /home/ym/ros2_ws
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install --packages-up-to kiwi_navigation
-source install/setup.bash
+source tools/activate_workspace.sh
 ```
 
 ## 在线建图
@@ -50,16 +51,16 @@ ros2 run kiwi_base kiwi_teleop_keyboard
 建图完成后停止机器人，在第三个终端保存地图：
 
 ```bash
-mkdir -p /home/a/ros2_ws/maps
+mkdir -p /home/ym/ros2_ws/maps
 ros2 run nav2_map_server map_saver_cli \
-  -f /home/a/ros2_ws/maps/warehouse
+  -f /home/ym/ros2_ws/maps/warehouse
 ```
 
 保存结果：
 
 ```text
-/home/a/ros2_ws/maps/warehouse.yaml
-/home/a/ros2_ws/maps/warehouse.pgm
+/home/ym/ros2_ws/maps/warehouse.yaml
+/home/ym/ros2_ws/maps/warehouse.pgm
 ```
 
 地图目录是工作区根目录的 `maps/`，不会自动提交到任何源码功能包。每次保存一张新地图时
@@ -71,7 +72,7 @@ ros2 run nav2_map_server map_saver_cli \
 
 ```bash
 ros2 launch kiwi_navigation localization_navigation.launch.py \
-  map:=/home/a/ros2_ws/maps/warehouse.yaml \
+  map:=/home/ym/ros2_ws/maps/warehouse.yaml \
   use_rviz:=true
 ```
 
@@ -79,7 +80,7 @@ ros2 launch kiwi_navigation localization_navigation.launch.py \
 
 ```bash
 ros2 launch kiwi_navigation localization_navigation.launch.py \
-  map:=/home/a/ros2_ws/maps/lab.yaml
+  map:=/home/ym/ros2_ws/maps/lab.yaml
 ```
 
 不要传 `.pgm`，也不要省略 `map`。该 launch 启动 AMCL、map_server 和 Nav2，但不会启动
@@ -105,4 +106,3 @@ ros2 run tf2_ros tf2_echo odom base_footprint
 
 如果没有地图，检查 `map:=` 是否指向存在的 YAML；如果 AMCL 不收敛，重新设置初始位姿并
 确认 `/scan` 的 `frame_id` 为 `lidar_link`。
-

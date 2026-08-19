@@ -29,6 +29,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_monitor test/test_monitor.py)
   ament_add_pytest_test(test_config test/test_config.py)
   ament_add_pytest_test(test_compatibility test/test_compatibility.py)
+  ament_add_pytest_test(test_runtime_contract test/test_runtime_contract.py)
 endif()
 
 ament_package()

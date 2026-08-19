@@ -25,11 +25,22 @@ namespace lslidar_driver {
         : port_(port), baud_rate_(baud_rate), data_bits_(data_bits),
         parity_(parity), stop_bits_(stop_bits), fd_(-1) {
         // fd_ = ::open(port_.c_str(), O_RDWR | O_NOCTTY);
-        fd_ = ::open(port_.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
+        fd_ = ::open(port_.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
         
         if (fd_ < 0) {
             throw std::system_error(errno, std::system_category(),
                                     "Unable to open serial port: " + port);
+        }
+
+        // UART 是单消费者字节流。若两个导航栈跨 ROS_DOMAIN_ID 同时打开设备，
+        // read() 会各自取走一部分数据，造成 scan 降频、AMCL TF 变旧并触发 Spin
+        // 恢复。内核独占模式让第二个驱动直接以 EBUSY 失败，避免隐蔽的数据损坏。
+        if (::ioctl(fd_, TIOCEXCL) != 0) {
+            const int error = errno;
+            ::close(fd_);
+            fd_ = -1;
+            throw std::system_error(error, std::system_category(),
+                                    "Unable to claim serial port exclusively: " + port);
         }
 
         flushIO();

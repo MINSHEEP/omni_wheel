@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""启动 Kiwi 底盘和使用 C 板 IMU 的平面 EKF。"""
+"""启动 Kiwi 底盘，以及融合电机反馈速度与异步 IMU yaw/gyro_z 的平面 EKF。"""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument

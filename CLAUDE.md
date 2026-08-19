@@ -13,11 +13,9 @@ base (遗留接口) → lslidar_msgs / lslidar_driver (镭神 M10P 雷达驱动)
                 → kiwi_navigation (导航)
 ```
 
-`bluesea-ros2`（旧 E110 驱动）暂时保留在源码树仅供回退，任何启动入口都不再使用它。
-
 `base` 包仅提供 `base/srv/Control.srv`，不参与当前运行链路。
 
-更细的参考资料：各包自带 README、`src/kiwi_base/USB_CDC_PROTOCOL.md`（通信协议）、`documents/`（实施方案与硬件手册 PDF）。注意根目录 README.md 中的 `/home/a/ros2_ws` 路径有误，以本文件的 `/home/ym/ros2_ws` 为准。
+更细的参考资料：各包自带 README、`src/kiwi_base/USB_CDC_PROTOCOL.md`（通信协议）、`documents/`（实施方案与硬件手册 PDF）。工作区文档路径统一使用 `/home/ym/ros2_ws`。
 
 ## 构建命令
 
@@ -48,7 +46,6 @@ colcon test-result --all --verbose
 
 # 不启动 ROS 节点的串口硬件联调
 python3 src/kiwi_base/tools/kiwi_serial_test.py --self-test
-python3 src/kiwi_base/tools/kiwi_feedback_receiver.py --self-test
 ```
 
 运行单个测试：
@@ -104,11 +101,10 @@ ros2 run nav2_map_server map_saver_cli -f /home/ym/ros2_ws/maps/warehouse
 ### 数据链路
 
 ```
-C 板 (USB CDC)
-  → kiwi_base_node → /chassis/odom/raw
-                   → /chassis/imu/data_raw
-                   → /chassis/feedback/raw   (自定义消息 kiwi_base/msg/FeedbackDebug)
-                   → /joint_states
+C 板 (USB CDC：0x3A 命令无 ACK；0x3B 电机/IMU 异步遥测)
+  ← kiwi_base_node ← /cmd_vel
+  → kiwi_base_node → /chassis/odom/raw + /joint_states（按成功写入的命令开环推算）
+  → kiwi_base_node → /chassis/imu/data_raw + /chassis/feedback/raw
   → ekf_filter_node → /odometry/filtered + TF: odom → base_footprint
 
 M10P (UART /dev/wheeltec_lidar，500000 波特率由驱动按型号硬编码)
@@ -122,11 +118,13 @@ robot_state_publisher → TF: base_footprint → base_link → lidar_link / chas
 
 ### kiwi_base 包内部结构
 
-`kiwi_base_core` 静态库包含三个模块，其余可执行文件链接它：
+`kiwi_base_core` 静态库包含以下独立模块，其余可执行文件链接它：
 
-- `robomaster_protocol`：USB 帧打包/解析（0x3A 控制帧 12B、0x3B 反馈帧 48B），CRC8 头 + CRC16 帧。注意当前现场配置 `feedback_framed: false`——C 板连续输出 48 字节裸 payload，不带 0x3B 帧头和 CRC 封装；封装模式是协议能力而非现状。
-- `kiwi_kinematics`：三轮全向正逆运动学（`/cmd_vel` → 三轮角速度，三轮角速度 → 里程计）
-- `measurement_processing`：原始 IMU 和里程计数据滤波
+- `robomaster_protocol`：0x3A 命令组帧和异步 0x3B 遥测解析；0x3B 不是命令 ACK。
+- `kiwi_kinematics`：三轮全向正逆运动学及合成轮速等比例饱和。
+- `measurement_processing`：IMU 符号/比例修正、陀螺零偏和低通滤波。
+- `yaw_drift_estimator`：yaw 展开及只基于连续静止区间的线性漂移估计。
+- `stationary_covariance_estimator`：自动标定 EKF 实际融合的 yaw/`gyro_z` 方差。
 
 可执行文件：`kiwi_base_node`（主驱动）、`kiwi_teleop_keyboard`（前台键盘）、`kiwi_odom_test`（里程计调试打印）
 
@@ -136,7 +134,7 @@ robot_state_publisher → TF: base_footprint → base_link → lidar_link / chas
 
 `src/kiwi_base/config/kiwi_base.yaml` 是底盘相关的**唯一配置入口**，`kiwi_base_node`、`ekf_filter_node`、`kiwi_teleop_keyboard`、`kiwi_odom_test` 全部从这一个文件读取参数。`kiwi_slam/urdf/kiwi.urdf.xacro` 也从该文件读取机器人结构尺寸。修改底盘参数只改这一个文件。
 
-`src/kiwi_slam/config/ls_m10p_uart.yaml` 是 M10P 雷达的**唯一配置入口**，`lslidar_driver_node` 从中读取串口、帧 ID 和 `/scan` 参数。当前用 `angle_disable_min/max`（单位 0.01 度）屏蔽后方 135°~225° 扇区，雷达**不是 360° 全向可用**——评估建图与 costmap 覆盖时需考虑；该扇区基于「0° 朝前安装」假设，待实机校准。旧 `lds_e110.yaml` 仅供 bluesea2 回退。
+`src/kiwi_slam/config/ls_m10p_uart.yaml` 是 M10P 雷达的**唯一配置入口**，`lslidar_driver_node` 从中读取串口、帧 ID 和 `/scan` 参数。当前用 `angle_disable_min/max`（单位 0.01 度）屏蔽后方 135°~225° 扇区，雷达**不是 360° 全向可用**——评估建图与 costmap 覆盖时需考虑；该扇区基于「0° 朝前安装」假设，待实机校准。
 
 ### 坐标约定
 
@@ -145,6 +143,7 @@ robot_state_publisher → TF: base_footprint → base_link → lidar_link / chas
 ### 重要约束
 
 - **键盘与自主导航互斥**：`kiwi_teleop_keyboard` 必须在前台有 TTY 的终端运行，且不能与 Nav2 同时发布 `/cmd_vel`。
+- **控制命令无 ACK，遥测异步**：0x3A 发送不等待应答；0x3B 只提供 IMU/调试数据，断流不得阻断控制。`/chassis/odom/raw` 和 `/joint_states` 仍按成功写入的命令推算，不能检测打滑、堵转或实际 x/y 位移误差。EKF 用绝对 yaw 与 `gyro_z` 修正航向，但没有绝对平移观测时不能消除线性里程计累计漂移。
 - **速度限幅是三层链路**：`DWB (nav2.yaml) → velocity_smoother (nav2.yaml) → /cmd_vel → kiwi_base_node 最终限幅（kiwi_base.yaml 的 max_*）`。超出底盘上限的指令会被 `kiwi_base_node` **静默截断**，因此修改任何一层限速时必须同步核对另一层：改 `kiwi_base.yaml` 的 `max_*` 要检查 `src/kiwi_navigation/config/nav2.yaml` 的 DWB `max_vel_*` 与 `velocity_smoother.max_velocity` 不超过它。pytest `test_ekf_config.py::test_keyboard_speeds_do_not_exceed_base_limits` 强制键盘速度 ≤ 底盘上限（不覆盖 nav2.yaml）。
 - **硬件设备**：C 板默认 `/dev/robomaster_c`（udev 符号链接），M10P 默认 `/dev/wheeltec_lidar`（udev 符号链接，规则内容见 `src/kiwi_slam/README.md` 的「雷达串口 udev 映射」），修改设备名分别改对应 YAML。注意 M10P 的 WCH 串口芯片枚举为 `ttyACM*` 而非 `ttyUSB*`。
 
@@ -152,7 +151,7 @@ robot_state_publisher → TF: base_footprint → base_link → lidar_link / chas
 
 ```bash
 ros2 topic hz /scan /odometry/filtered /map
-ros2 topic echo /chassis/feedback/raw
+ros2 topic echo /chassis/odom/raw
 ros2 run tf2_ros tf2_echo map odom
 ros2 run tf2_ros tf2_echo odom base_footprint
 

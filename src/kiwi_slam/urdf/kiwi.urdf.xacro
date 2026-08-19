@@ -14,7 +14,7 @@
   <!-- C 板 IMU：实测位于 base_link 前方 11.5 mm、右侧 149 mm。 -->
   <xacro:property name="chassis_imu_xyz" value="0.0115 -0.149 0.0"/>
   <xacro:property name="chassis_imu_rpy" value="0.0 0.0 0.0"/>
-  <!-- Pace E110 安装位姿：高度 0.20 m，x/y/角度待实测后只修改这里。 -->
+  <!-- 镭神 M10P 安装位姿：高度 0.20 m，x/y/角度待实测后只修改这里。 -->
   <xacro:property name="lidar_xyz" value="0.32 0.0 0.20"/>
   <xacro:property name="lidar_rpy" value="0.0 0.0 0.0"/>
 

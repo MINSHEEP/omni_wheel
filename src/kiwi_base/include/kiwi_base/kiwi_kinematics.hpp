@@ -5,6 +5,7 @@
 #pragma once
 
 #include <array>
+#include <limits>
 
 namespace kiwi_base
 {
@@ -15,6 +16,13 @@ struct Twist2D
   double vx{0.0};
   double vy{0.0};
   double wz{0.0};
+};
+
+/** 逆运动学结果：轮速与硬件实际可实现的等比例 Twist。 */
+struct InverseResult
+{
+  std::array<double, 3> wheel_rad_s{};
+  Twist2D achievable_twist{};
 };
 
 /** 按 vx、vy、wz 各自的绝对值上限限制速度；非有限输入直接清零。 */
@@ -44,11 +52,16 @@ Twist2D limit_twist(const Twist2D &input, const Twist2D &limits);
 class KiwiKinematics
 {
 public:
-  /** 使用实车轮半径和中心到轮心距离创建运动学对象。 */
-  explicit KiwiKinematics(double wheel_radius_m, double wheel_center_distance_m);
+  /** 使用实车几何和轮输出轴速度上限创建运动学对象。 */
+  explicit KiwiKinematics(
+    double wheel_radius_m, double wheel_center_distance_m,
+    double max_wheel_speed_rad_s = std::numeric_limits<double>::max());
 
-  /** 将机体 Twist 逆解为轮 1/2/3 的输出轴角速度，单位为 rad/s。 */
+  /** 将机体 Twist 逆解为轮速；超限时三个轮速保持比例一起缩放。 */
   std::array<double, 3> inverse(const Twist2D &twist) const;
+
+  /** 同时返回饱和轮速与对应的可实现 Twist，供控制节点记录真实指令。 */
+  InverseResult inverse_with_twist(const Twist2D &twist) const;
 
   /** 将三个轮子的实测速度按同一矩阵正解为机体 Twist。 */
   Twist2D forward(const std::array<double, 3> &wheel_rad_s) const;
@@ -56,11 +69,6 @@ public:
 private:
   double wheel_radius_m_;
   double wheel_center_distance_m_;
-
-  // 停用原因：限幅已经集中在 Twist 入口，运行路径使用三行解析公式而不是 Jacobian。
-  // double max_wheel_speed(const Twist2D &twist) const;
-  // std::array<WheelGeometry, 3> wheels_{};
-  // double j_[3][3]{};
-  // double pinv_[3][3]{};
+  double max_wheel_speed_rad_s_;
 };
 }  // namespace kiwi_base

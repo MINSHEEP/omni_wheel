@@ -2,11 +2,23 @@
 """启动 Kiwi 底盘、平面 EKF 和由 Xacro 生成的 RobotModel。"""
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+
+from kiwi_slam.runtime_contract import (
+    validate_base_parameters,
+    validate_workspace_overlay,
+)
+
+
+def _validate_runtime_contract(context):
+    """在启动任何硬件节点前阻断旧工作区覆盖和不完整 EKF 参数。"""
+    validate_workspace_overlay(required_packages=("kiwi_base",))
+    validate_base_parameters(LaunchConfiguration("base_params_file").perform(context))
+    return []
 
 
 def generate_launch_description():
@@ -67,4 +79,8 @@ def generate_launch_description():
             parameters=[base_params],
         ),
     ]
-    return LaunchDescription(arguments + nodes)
+    # OpaqueFunction 必须排在硬件节点之前：配置错误时不能先打开串口或启动一个
+    # 没有 odom0/imu0 的默认 EKF，再由下游以 TF 超时的形式间接报错。
+    return LaunchDescription(
+        arguments + [OpaqueFunction(function=_validate_runtime_contract)] + nodes
+    )

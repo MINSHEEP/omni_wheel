@@ -57,11 +57,21 @@ def test_controller_rotates_first_and_reverse_is_disabled():
         assert "navigate_to_pose_no_backup.xml" in launch
         assert "navigate_through_poses_no_backup.xml" in launch
     # 膨胀半径必须覆盖必撞区（大于 robot_radius），否则规划器会贴墙。
-    # M10P 的 inf 光束必须参与射线清除，否则动态障碍物残留不刷新。
+    # M10P 的 inf 同时表示无回波和屏蔽扇区，不得用来清除未观测空间。
     for scope in ("local_costmap", "global_costmap"):
         costmap = config[scope][scope]["ros__parameters"]
+        assert costmap["robot_radius"] == 0.37
         assert costmap["inflation_layer"]["inflation_radius"] > costmap["robot_radius"]
-        assert costmap["obstacle_layer"]["scan"]["inf_is_valid"] is True
+        assert costmap["inflation_layer"]["inflation_radius"] == 0.85
+        assert costmap["inflation_layer"]["cost_scaling_factor"] == 2.0
+        assert costmap["obstacle_layer"]["scan"]["inf_is_valid"] is False
+        # 大地图只发增量，避免 DDS/RViz 每周期重传并重绘整张 costmap。
+        assert costmap["always_send_full_costmap"] is False
+
+    progress = config["controller_server"]["ros__parameters"]["progress_checker"]
+    behavior = config["behavior_server"]["ros__parameters"]
+    assert progress["movement_time_allowance"] == 15.0
+    assert behavior["rotational_acc_lim"] == 0.60
 
 
 def test_velocity_smoother_is_the_direct_cmd_vel_output():
@@ -85,12 +95,9 @@ def test_launch_modes_use_m10p_without_adapter_or_relay():
     assert "slam_toolbox" not in localization
     assert "localization_launch.py" in localization
     for launch in (mapping, localization):
-        # 雷达统一复用 kiwi_slam 的 M10P 封装；bluesea2 不再被任何入口启动，
-        # 保证运行时 /scan 只有一个发布者。断言针对 FindPackageShare 调用。
+        # 雷达统一复用 kiwi_slam 的 M10P 封装，保证运行时 /scan 只有一个发布者。
         assert '"m10p_uart_lidar.launch.py"' in launch
         assert '"ls_m10p_uart.yaml"' in launch
-        assert 'FindPackageShare("bluesea2")' not in launch
-        assert "radar_source.launch.py" not in launch
         assert "kiwi_nav_cmd_relay" not in launch
 
 

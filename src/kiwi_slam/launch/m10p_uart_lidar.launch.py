@@ -14,7 +14,7 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    """按 params_file 启动 lslidar_driver_node，接口与旧 uart_lidar.launch 兼容。"""
+    """按 params_file 启动唯一的 M10P lslidar_driver_node 实例。"""
     params_file = LaunchConfiguration("params_file")
     return LaunchDescription(
         [

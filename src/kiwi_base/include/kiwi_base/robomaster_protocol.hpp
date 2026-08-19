@@ -1,6 +1,6 @@
 /**
  * @file robomaster_protocol.hpp
- * @brief RoboMaster C 板 USB CDC 的 0x3A 命令和反馈 payload 解码。
+ * @brief RoboMaster C 板 USB CDC 的 0x3A 命令及异步 0x3B 遥测解码。
  */
 #pragma once
 
@@ -19,7 +19,7 @@ constexpr uint8_t kCommandPayloadLength = 12;
 /** 0x3B 三电机+欧拉角+六轴 IMU payload 长度。 */
 constexpr uint8_t kFeedbackPayloadLength = 48;
 
-/** 本项目实际使用的两个数据 ID；下位机回传只使用 Feedback。 */
+/** 0x3A 命令与异步 0x3B 遥测类型。 */
 enum class FrameType : uint8_t
 {
   Command = 0x3A,
@@ -34,7 +34,7 @@ struct CommandFrame
 };
 
 /**
- * C 板唯一回传帧 0x3B 的 12 个 float32。
+ * 异步遥测帧 0x3B 的 12 个 float32；它不是 0x3A 的 ACK。
  * 顺序：电机实际速度、roll/pitch/yaw、gyro xyz、accel xyz。
  */
 struct FeedbackFrame
@@ -94,7 +94,7 @@ private:
   size_t dropped_bytes_{0};
 };
 
-/** 按实际 0x3B 字段偏移解码 12 个 float32。 */
+/** 按 0x3B 字段偏移解码 12 个 float32。 */
 bool decode_feedback(const std::vector<uint8_t> &payload, FeedbackFrame &out);
 
 }  // namespace kiwi_base

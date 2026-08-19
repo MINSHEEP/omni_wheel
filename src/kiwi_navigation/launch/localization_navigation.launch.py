@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""启动 E110、已知地图定位和 Nav2 全向导航。"""
+"""启动 M10P、已知地图定位和 Nav2 导航。"""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
@@ -12,7 +12,7 @@ from nav2_common.launch import RewrittenYaml
 
 
 def generate_launch_description():
-    """使用 E110 的标准 /scan 启动 AMCL 与 Nav2。"""
+    """使用 M10P 的标准 /scan 启动 AMCL 与 Nav2。"""
     navigation_share = FindPackageShare("kiwi_navigation")
     slam_share = FindPackageShare("kiwi_slam")
     map_file = LaunchConfiguration("map")

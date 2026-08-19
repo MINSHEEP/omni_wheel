@@ -1,10 +1,11 @@
 # Kiwi Base USB CDC 通信协议
 
-本文档只描述当前 RoboMaster C 板与 ROS 2 主机已经联调的两类数据帧：
+RoboMaster C 板接收 0x3A 速度命令，并独立异步上报 0x3B 遥测。0x3A 没有 ACK，
+两类帧不能按请求/应答关系处理：
 
 ```text
 主机 -> C 板：0x33 / len=12 / id=0x3A，三个电机目标速度
-C 板 -> 主机：0x33 / len=48 / id=0x3B，三个电机实际速度、欧拉角和六轴 IMU
+C 板 -> 主机：0x33 / len=48 / id=0x3B，电机/欧拉角/IMU 异步遥测
 ```
 
 协议实现位于 `src/kiwi_base/src/robomaster_protocol.cpp`，声明位于
@@ -25,16 +26,16 @@ C 板 -> 主机：0x33 / len=48 / id=0x3B，三个电机实际速度、欧拉角
 4+len 2     crc16     CRC16(偏移 0 到 3+len)，低字节在前
 ```
 
-当前 ID 只有两个：
+代码中保留两个 ID：
 
 ```text
 ID     方向          payload  总长度  含义
 0x3A   主机 -> C 板  12 B     18 B    三电机目标角速度
-0x3B   C 板 -> 主机  48 B     54 B    三电机实际速度 + RPY + 六轴 IMU
+0x3B   C 板 -> 主机  48 B     54 B    异步电机/IMU 遥测（不是命令 ACK）
 ```
 
-兼容模式下主机接收解析器只接受 `sof=0x33`、`id=0x3B`、`len=48` 的帧；现场默认
-使用无帧模式，直接按 48 字节 payload 拼包。运行参数 `feedback_framed` 控制两种模式。
+0x3A 没有 ACK，主机从不等待 0x3B。节点在每个控制周期对同一非阻塞串口做有界读取，
+`feedback_framed` 决定是否校验 0x3B 帧封装；没有遥测或持续遥测都不能饿死命令 TX。
 
 ## 2. CRC
 
@@ -76,12 +77,12 @@ payload 偏移  帧偏移  长度  类型  字段
 代码入口：`kiwi_base::encode_command()`；节点发送入口：
 `KiwiBaseNode::send_command()`。
 
-## 4. C 板发送 0x3B
+## 4. 异步 0x3B 遥测
 
 ### 4.1 Payload 布局
 
-该帧固定 48 字节，由 12 个 little-endian `float32` 组成。下位机只发送这一种反馈包，
-不再拆分轮状态、IMU 或电源包。
+该帧固定 48 字节，由 12 个 little-endian `float32` 组成。它独立于 0x3A 发送周期，
+不能作为命令执行确认。
 
 ```text
 payload 偏移  帧偏移  长度  类型  字段
@@ -100,35 +101,40 @@ payload 偏移  帧偏移  长度  类型  字段
 ```
 
 `motor_*_actual` 的单位必须和双方约定一致；当前 ROS 默认将其视为电机转子轴 `rad/s`，
-再除以 19 得到轮输出轴速度。若实测单位是 rpm，只修改
-`feedback_motor_scale_to_rad_s`，不修改帧布局。
+先乘 `feedback_motor_scale_to_rad_s`，再经过一阶低通、静止死区并除以 19，得到三个
+轮输出轴速度。若实测单位是 rpm，只修改倍率，不修改帧布局或运动学公式。
 
-### 4.2 接收和 ROS 发布
+### 4.2 当前反馈里程计运行方式
 
 ```text
-USB read -> 严格帧解析或 48 字节无帧拼包
-         -> decode_feedback()
-         -> KiwiBaseNode::process_feedback()
-         -> /chassis/odom/raw、/joint_states、/chassis/imu/data_raw、/chassis/feedback/raw
+/cmd_vel -> 限幅与轮速等比例饱和 -> 0x3A USB write
+异步 0x3B -> 非阻塞解析 -> 电机倍率/低通/死区/减速比 -> 正运动学与积分
+                                                        -> /chassis/odom/raw
+                                                        -> /joint_states
+                         -> IMU 处理 -> /chassis/imu/data_raw
+                         -> 原始字段 -> /chassis/feedback/raw
 ```
 
-`/chassis/odom/raw` 使用三个实际轮速按固定公式正解并积分；节点只发布消息，不发布
-`odom -> base_footprint` TF。`/chassis/imu/data_raw` 将 roll/pitch/yaw 转为四元数，同时原样
-发布角速度和加速度。当前反馈帧没有电压、故障位或温度字段，因此节点不发布
-`sensor_msgs/msg/BatteryState` 或旧的独立状态话题。
+`/chassis/odom/raw` 使用三个电机实测速度正解并积分；节点只发布消息，不发布
+`odom -> base_footprint` TF。EKF 融合反馈正解的 `vx/vy/wz`，并发布
+`/odometry/filtered` 和该 TF。反馈断流期间不使用 `/cmd_vel` 补算；恢复首帧重置低通状态
+且积分 `dt=0`，防止把断流前旧速度或未知时间跨度计入位移。
 
-### 4.3 抓包示例
+`/chassis/imu/data_raw` 和 `/chassis/feedback/raw` 保持既有 Topic/Frame/QoS；只有收到并
+通过 CRC/有限值校验的 0x3B 才发布。遥测断流不阻塞 0x3A 命令发送，但 odom/joint_states
+也不会在没有实测速度时伪造更新。
+
+### 4.3 兼容帧示例
 
 ```text
 33 30 3b 5b ... 48 字节 payload ... ec 74
 ```
 
 整帧长度是 54 字节；`0x5b` 是前三个字节 `33 30 3b` 的 CRC8，末尾 `ec 74` 是
-little-endian CRC16。Python 接收工具会同时打印解码值和原始帧：
+little-endian CRC16。离线工具可用于协议自检：
 
 ```bash
-python3 src/kiwi_base/tools/kiwi_feedback_receiver.py \
-  --port /dev/robomaster_c --print-hex
+python3 src/kiwi_base/tools/kiwi_feedback_receiver.py --self-test
 ```
 
 ## 5. 实现文件职责
@@ -136,17 +142,15 @@ python3 src/kiwi_base/tools/kiwi_feedback_receiver.py \
 ```text
 include/kiwi_base/robomaster_protocol.hpp  常量、ID、CommandFrame、FeedbackFrame、解析器接口
 src/robomaster_protocol.cpp                 CRC、0x3A 组帧、0x3B 解析和 12 浮点解码
-src/kiwi_base_node.cpp                       USB 所有权、Twist 逆解、反馈发布
+src/kiwi_base_node.cpp                       USB 所有权、Twist 逆解、反馈里程计、异步遥测
 tools/kiwi_serial_test.py                    只发送/打印 0x3A 命令帧
-tools/kiwi_feedback_receiver.py              只接收/解码/打印 0x3B 反馈帧
+tools/kiwi_feedback_receiver.py              不占用设备的 0x3B 离线解析自检工具
 test/test_protocol.cpp                        命令 golden、反馈字段、分片粘包和 CRC 测试
 ```
 
 ## 6. 联调约束
 
 1. 同一 USB CDC 设备只能由一个进程打开；运行 ROS 节点时不要同时运行两个串口工具。
-2. ROS 节点参数 `log_serial_frames=true` 会输出中文命令映射日志、`TX[18]` 原始帧，
-   以及通过协议校验后的解码电机转速、欧拉角、原始陀螺仪和原始加速度。
-3. 下位机必须保证每个反馈包严格为 `0x33 0x30 0x3B` 开头、48 字节 payload，并按
-   本文档计算 CRC8/CRC16。
-4. 任何单位变更只修改单位换算参数或上层转换，不能改变 12 个字段的顺序和长度。
+2. ROS 节点参数 `log_serial_frames=true` 只用于输出命令映射；不得把缺少反馈记录为 TX 故障。
+3. 里程计唯一使用经过低通和死区处理的遥测电机值；禁止回退为 `/cmd_vel` 开环积分。
+4. 修改 0x3B 格式或单位前必须先冻结两端协议，并同步协议、PTY 与字段顺序测试。

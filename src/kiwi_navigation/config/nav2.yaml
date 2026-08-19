@@ -158,7 +158,7 @@ controller_server:
     progress_checker:
       plugin: nav2_controller::SimpleProgressChecker
       required_movement_radius: 0.20       # 在允许时间内需要移动的最小半径 (m)
-      movement_time_allowance: 10.0        # 允许静止的最大时间 (s)
+      movement_time_allowance: 15.0        # 为 RotationShim 原地转向预留足够时间 (s)
 
     # --- 目标检查器: 判断是否到达目标点 ---
     general_goal_checker:
@@ -235,7 +235,7 @@ local_costmap:
       width: 6                             # 地图宽度 (m)
       height: 6                            # 地图高度 (m)
       resolution: 0.05                     # 地图分辨率 (m/cell)
-      robot_radius: 0.323                  # 机器人半径 (m)，用于碰撞检测
+      robot_radius: 0.37                   # 覆盖轮组外缘并保留碰撞安全余量 (m)
       plugins: [obstacle_layer, inflation_layer]   # 加载的图层插件
       # --- 障碍物层: 从传感器数据更新障碍物 ---
       obstacle_layer:
@@ -247,10 +247,9 @@ local_costmap:
           data_type: LaserScan             # 数据类型
           clearing: true                   # 是否清除障碍物（射线清屏）
           marking: true                    # 是否标记障碍物
-          # M10P 驱动对「无回波」和「屏蔽扇区」都发布 inf；置 true 才会把这些
-          # 光束当作打满量程的自由空间参与射线清除，否则动态障碍物印记永远残留。
-          # 注意：后方屏蔽扇区因此会被「假清除」，已配合禁止后退降低风险。
-          inf_is_valid: true
+          # M10P 将无回波与后方屏蔽扇区都编码为 inf；不允许其参与射线
+          # 清除，避免把未观测的后方区域误标为自由空间。
+          inf_is_valid: false
           obstacle_min_range: 0.05         # 障碍物最小有效距离 (m)
           obstacle_max_range: 8.0          # 障碍物最大有效距离 (m)
           raytrace_min_range: 0.05         # 射线追踪最小距离 (m)
@@ -259,11 +258,12 @@ local_costmap:
       # --- 膨胀层: 障碍物周围添加安全缓冲区 ---
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        # 膨胀半径必须大于 robot_radius 0.323（必撞区覆盖），且要铺得足够宽：
+        # 膨胀半径必须大于 robot_radius 0.37（必撞区覆盖），且要铺得足够宽：
         # 半径外代价立刻归零会让贴边路径与走廊中央代价相同，规划器就会贴边。
-        inflation_radius: 0.80             # 膨胀半径 (m)，铺宽形成推离障碍的代价梯度
+        inflation_radius: 0.85             # 膨胀半径 (m)，与全局代价地图保持一致
         cost_scaling_factor: 2.0           # 代价衰减系数（放缓衰减，梯度铺满膨胀区）
-      always_send_full_costmap: true       # 始终发送完整地图（非增量更新）
+      # 6 m 局部窗也使用增量更新，减少 RViz/远程桌面不必要的序列化和重绘。
+      always_send_full_costmap: false
 
 # --- Global Costmap: 全局代价地图 ---
 global_costmap:
@@ -275,8 +275,8 @@ global_costmap:
       global_frame: map                    # 全局地图参考坐标系
       robot_base_frame: base_footprint     # 机器人基座坐标系
       resolution: 0.05                     # 地图分辨率 (m/cell)
-      robot_radius: 0.323                  # 机器人半径 (m)
-      track_unknown_space: true            # 是否追踪未知区域
+      robot_radius: 0.37                   # 覆盖轮组外缘并保留碰撞安全余量 (m)
+      track_unknown_space: false            # 是否追踪未知区域
       plugins: [static_layer, obstacle_layer, inflation_layer]   # 加载的图层
       # --- 静态层: 从 PGM/YAML 地图文件加载 ---
       static_layer:
@@ -292,7 +292,7 @@ global_costmap:
           data_type: LaserScan
           clearing: true
           marking: true
-          inf_is_valid: true               # 同 local_costmap：inf 光束参与清除
+          inf_is_valid: false              # 同局部图：禁止 inf 清除未观测区域
           obstacle_min_range: 0.05
           obstacle_max_range: 8.0
           raytrace_min_range: 0.05
@@ -301,9 +301,12 @@ global_costmap:
       # --- 膨胀层 ---
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        inflation_radius: 0.50             # 同 local_costmap：铺宽代价梯度
-        cost_scaling_factor: 3.0           # 同 local_costmap
-      always_send_full_costmap: true
+        inflation_radius: 0.85             # 与局部代价地图保持一致
+        cost_scaling_factor: 2.0           # 与局部代价地图保持一致
+      # 当前静态地图约 888x1324（118 万栅格）；每秒发送整图会显著占用 DDS、
+      # RViz 和远程桌面。Nav2/RViz 均支持 costmap_updates，改用增量更新不改变
+      # costmap 话题、frame 或 QoS 契约。
+      always_send_full_costmap: false
 
 # --- Planner Server: 全局路径规划器 ---
 planner_server:
@@ -349,7 +352,7 @@ behavior_server:
     simulate_ahead_time: 2.0             # 行为仿真预测时间 (s)
     max_rotational_vel: 0.80             # 最大旋转速度 (rad/s)
     min_rotational_vel: 0.10             # 最小旋转速度 (rad/s)
-    rotational_acc_lim: 1.00             # 旋转加速度限制 (rad/s²)
+    rotational_acc_lim: 0.60             # 与 velocity_smoother 角加速度上限一致 (rad/s²)
     # 后方无传感器覆盖，暂移除 backup 后退恢复行为；补盲区传感器后再恢复。
     behavior_plugins: [spin, drive_on_heading, assisted_teleop, wait]
     # --- 旋转行为: 原地旋转 ---

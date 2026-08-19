@@ -27,9 +27,12 @@ def test_sample_rate_and_quaternion_norm():
     assert quaternion_norm(0.0, 0.0, 0.0, 1.0) == 1.0
 
 
-def test_monitor_can_change_log_severity_without_crashing():
+def test_monitor_can_change_log_severity_without_crashing(tmp_path, monkeypatch):
     """复现远程日志中的 ERROR→INFO 切换，确保 Humble logger 不再抛 ValueError。"""
     config = Path(__file__).resolve().parents[1] / "config" / "monitor.yaml"
+    # 测试可能运行在主目录只读的 CI/沙箱中，将 ROS 日志显式写入 pytest 临时目录。
+    # 保留日志初始化可以覆盖真实节点的 logger 路径，同时避免依赖开发机的 ~/.ros 权限。
+    monkeypatch.setenv("ROS_LOG_DIR", str(tmp_path / "ros_log"))
     rclpy.init(args=["--ros-args", "--params-file", str(config)])
     node = KiwiSlamMonitor()
     try:

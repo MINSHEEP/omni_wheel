@@ -1,6 +1,6 @@
 /**
  * @file test_protocol.cpp
- * @brief 验证 0x3A 命令帧和唯一 0x3B/48 字节反馈帧。
+ * @brief 验证 0x3A 命令帧和历史兼容 0x3B/48 字节帧。
  */
 #include "kiwi_base/robomaster_protocol.hpp"
 
@@ -19,7 +19,7 @@ void put_f32(std::vector<uint8_t> &payload, size_t offset, float value)
   std::memcpy(payload.data() + offset, &value, sizeof(value));
 }
 
-// 构造带 CRC8/CRC16 的实机反馈帧。
+// 构造带 CRC8/CRC16 的历史兼容帧，只用于离线协议回归。
 std::vector<uint8_t> make_feedback(const std::array<float, 12> &values)
 {
   std::vector<uint8_t> frame{

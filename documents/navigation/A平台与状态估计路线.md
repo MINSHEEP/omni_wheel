@@ -1,5 +1,10 @@
 # A 路线：机器人平台与状态估计
 
+> **历史路线提示（截至 2026-08-06）**：本文保留早期 E110/BlueSea、反馈式里程计、
+> `/cmd_vel_safe` 和软件急停方案用于设计追溯。现行系统使用 M10P/lslidar、直接
+> `/cmd_vel`、电机反馈里程计；0x3A 命令无 ACK，异步 0x3B 提供电机/IMU 测量。
+> 运行入口以仓库根 README 和 `src/kiwi_base/config/kiwi_base.yaml` 为准。
+
 > 责任目标：向 B 稳定交付 `/scan`、`/odometry/filtered`、
 > `odom→base_footprint` 和标准坐标的底盘命令入口。
 > 对接契约：[接口契约.md](接口契约.md)

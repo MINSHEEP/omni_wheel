@@ -1,14 +1,17 @@
 # kiwi_slam
 
 `kiwi_slam` 提供 Kiwi 底盘的公共 RobotModel/TF、镭神 LSLIDAR M10P UART 激光雷达配置、
-SLAM Toolbox 二维建图和链路诊断节点。当前不包含 Livox、Mid360 或 FAST-LIO 适配器。
+SLAM Toolbox 二维建图和链路诊断节点。
 
 ## 数据链路
 
 ```text
-C 板 -> kiwi_base_node -> /chassis/odom/raw + /chassis/imu/data_raw
-                           -> robot_localization
-                           -> /odometry/filtered + odom -> base_footprint
+C 板 <- kiwi_base_node <- /cmd_vel（0x3A 命令无 ACK）
+C 板 -> kiwi_base_node（异步 0x3B，不阻断命令发送）
+         ├─> 电机反馈 /chassis/odom/raw ─┐
+         └─> /chassis/imu/data_raw ──────┴─> robot_localization
+                                             -> /odometry/filtered
+                                             -> odom -> base_footprint
 
 M10P -> lslidar_driver -> /scan -> slam_toolbox -> /map + map -> odom
 
@@ -26,7 +29,6 @@ map -> odom -> base_footprint -> base_link -> lidar_link
 
 ```text
 config/ls_m10p_uart.yaml   M10P 串口、frame_id 和 /scan 参数（当前雷达）
-config/lds_e110.yaml       旧 E110 串口参数，仅供 bluesea2 回退使用
 config/slam_toolbox.yaml   在线同步建图参数
 config/monitor.yaml        /scan、里程计、地图和 TF 诊断参数
 ../kiwi_base/config/kiwi_base.yaml
@@ -61,11 +63,14 @@ ComPort 的序列号匹配到 `/dev/robomaster_c`），两条规则互不冲突�
 ## 构建和启动
 
 ```bash
-cd /home/a/ros2_ws
+cd /home/ym/ros2_ws
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install --packages-up-to kiwi_slam
-source install/setup.bash
+source tools/activate_workspace.sh
 ```
+
+若机器上还有旧工作区，必须使用上述激活脚本；公共机器人 launch 会在打开串口前检查
+`kiwi_base` 是否与 `kiwi_slam` 来自同一工作区，并检查统一 YAML 是否包含完整 EKF 参数。
 
 只启动公共底盘、EKF 和 RobotModel：
 
@@ -101,12 +106,12 @@ ros2 run kiwi_base kiwi_teleop_keyboard
 确认 `/scan`、`/odometry/filtered` 和 `/map` 正常后低速移动。保存地图建议统一放到：
 
 ```bash
-mkdir -p /home/a/ros2_ws/maps
+mkdir -p /home/ym/ros2_ws/maps
 ros2 run nav2_map_server map_saver_cli \
-  -f /home/a/ros2_ws/maps/warehouse
+  -f /home/ym/ros2_ws/maps/warehouse
 ```
 
-最终文件是 `/home/a/ros2_ws/maps/warehouse.yaml` 和 `warehouse.pgm`。启动导航时传入前者。
+最终文件是 `/home/ym/ros2_ws/maps/warehouse.yaml` 和 `warehouse.pgm`。启动导航时传入前者。
 
 ## 诊断
 
@@ -123,4 +128,3 @@ ros2 topic echo /diagnostics
 
 诊断节点默认在 `kiwi_slam.launch.py` 中启动，在组合建图导航 launch 中默认关闭，可通过
 `start_monitor:=true` 开启。
-
