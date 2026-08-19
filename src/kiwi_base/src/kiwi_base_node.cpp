@@ -10,6 +10,7 @@
  *   /chassis/odom/raw      - 电机实测速度推算的原始里程计（位姿 + 速度）
  *   /joint_states          - 三轮关节状态
  *   /chassis/imu/data_raw   - 异步 0x3B IMU 遥测
+ *   /chassis/imu/calibration_ready - IMU 首个完整静止标定窗口完成状态
  *   /chassis/feedback/raw  - 异步 0x3B 原始字段调试消息
  *
  * 0x3A 命令没有 ACK，发送链永不等待 0x3B。异步 0x3B 只作为独立的电机/IMU
@@ -27,6 +28,7 @@
 #include <nav_msgs/msg/odometry.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include <kiwi_base/msg/feedback_debug.hpp>
 
 #include <fcntl.h>
@@ -317,6 +319,7 @@ namespace kiwi_base
       std::string topic_cmd_vel;
       std::string topic_odom;
       std::string topic_imu;
+      std::string topic_imu_ready;
       std::string topic_joints;
       std::string topic_debug;
       std::string frame_odom;
@@ -373,6 +376,7 @@ namespace kiwi_base
 
       // 其他
       bool gyro_bias_logged{false};
+      bool imu_ready{false};
     };
 
     //============================================================================
@@ -463,6 +467,8 @@ namespace kiwi_base
       cfg_.topic_cmd_vel = require_param<std::string>(*this, "cmd_vel_topic");
       cfg_.topic_odom = require_param<std::string>(*this, "wheel_odom_topic");
       cfg_.topic_imu = require_param<std::string>(*this, "imu_topic");
+      cfg_.topic_imu_ready = require_param<std::string>(
+        *this, "imu_calibration_ready_topic");
       cfg_.topic_joints = require_param<std::string>(*this, "joint_states_topic");
       cfg_.topic_debug = require_param<std::string>(*this, "feedback_debug_topic");
       cfg_.frame_odom = require_param<std::string>(*this, "odom_frame_id");
@@ -505,8 +511,16 @@ namespace kiwi_base
     {
       pub_odom_ = create_publisher<nav_msgs::msg::Odometry>(cfg_.topic_odom, 10);
       pub_imu_ = create_publisher<sensor_msgs::msg::Imu>(cfg_.topic_imu, 10);
+      // 标定状态是低频状态量而不是数据流；可靠、瞬态本地 QoS 保证后启动的
+      // 建图门控不会错过 ready=true，也不会把未标定状态误认为已就绪。
+      pub_imu_ready_ = create_publisher<std_msgs::msg::Bool>(
+        cfg_.topic_imu_ready, rclcpp::QoS(1).reliable().transient_local());
       pub_joints_ = create_publisher<sensor_msgs::msg::JointState>(cfg_.topic_joints, 10);
       pub_debug_ = create_publisher<kiwi_base::msg::FeedbackDebug>(cfg_.topic_debug, 10);
+
+      std_msgs::msg::Bool initial_state;
+      initial_state.data = false;
+      pub_imu_ready_->publish(initial_state);
     }
 
     /** 创建订阅者 */
@@ -931,6 +945,25 @@ namespace kiwi_base
         covariance_estimator_->begin_next_window();
       }
 
+      // 三个估计器都完成首个连续静止窗口后才允许 SLAM 接收首帧。状态一旦
+      // 就绪保持为 true；后续运动只暂停在线更新，不会使已经提交的可信标定失效。
+      const bool yaw_ready = !cfg_.enable_yaw_drift_compensation ||
+        yaw_drift_estimator_->calibrated();
+      const bool imu_ready = gyro_filter_->calibrated() && yaw_ready &&
+        state_.covariance_logged;
+      if (imu_ready != state_.imu_ready)
+      {
+        state_.imu_ready = imu_ready;
+        std_msgs::msg::Bool ready_message;
+        ready_message.data = imu_ready;
+        pub_imu_ready_->publish(ready_message);
+        if (imu_ready)
+        {
+          RCLCPP_INFO(
+            get_logger(), "IMU calibration ready; mapping may accept stable scans");
+        }
+      }
+
       const auto stamp = this->now();
       publish_odometry(stamp, feedback_odom_dt);
       publish_joint_states(stamp);
@@ -1126,6 +1159,7 @@ namespace kiwi_base
     rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr sub_cmd_;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_odom_;
     rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr pub_imu_;
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr pub_imu_ready_;
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr pub_joints_;
     rclcpp::Publisher<kiwi_base::msg::FeedbackDebug>::SharedPtr pub_debug_;
   };

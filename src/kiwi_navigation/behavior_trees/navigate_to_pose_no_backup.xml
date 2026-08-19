@@ -7,19 +7,29 @@
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="6" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
-        <RateController hz="1.0">
+        <!-- 每秒检查两次路径有效性，但仅在目标变化或路径失效时重新规划。
+             避免周期性新路径持续抢占 FollowPath 并重置大角度 RotationShim。 -->
+        <RateController hz="2.0">
           <RecoveryNode number_of_retries="1" name="ComputePathToPose">
-            <Sequence name="PlanAndSmoothPath">
-              <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
-              <!-- 平滑最多占用 0.20 s，并执行碰撞复核。平滑失败时 ForceSuccess
-                   保留黑板中的 Theta* 原始路径，使控制器立即启动而不是进入恢复等待。 -->
-              <ForceSuccess>
-                <SmoothPath unsmoothed_path="{path}" smoothed_path="{path}"
-                            smoother_id="constrained_smoother"
-                            max_smoothing_duration="0.20"
-                            check_for_collisions="true"/>
-              </ForceSuccess>
-            </Sequence>
+            <Fallback name="ComputePathIfNeeded">
+              <ReactiveSequence name="ReuseValidPath">
+                <Inverter>
+                  <GlobalUpdatedGoal/>
+                </Inverter>
+                <IsPathValid path="{path}"/>
+              </ReactiveSequence>
+              <Sequence name="PlanAndSmoothPath">
+                <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+                <!-- 平滑最多占用 0.20 s，并执行碰撞复核。平滑失败时 ForceSuccess
+                     保留黑板中的 Theta* 原始路径，使控制器立即启动而不是进入恢复等待。 -->
+                <ForceSuccess>
+                  <SmoothPath unsmoothed_path="{path}" smoothed_path="{path}"
+                              smoother_id="constrained_smoother"
+                              max_smoothing_duration="0.20"
+                              check_for_collisions="true"/>
+                </ForceSuccess>
+              </Sequence>
+            </Fallback>
             <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
           </RecoveryNode>
         </RateController>

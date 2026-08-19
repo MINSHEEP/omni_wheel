@@ -154,11 +154,12 @@ controller_server:
     controller_plugins: [FollowPath]       # 控制器插件列表
     odom_topic: /odometry/filtered         # 里程计话题
 
-    # --- 进度检查器: 判断机器人是否在向目标前进 ---
+    # --- 进度检查器: 同时认可平移与原地转向，避免误判 RotationShim 卡死 ---
     progress_checker:
-      plugin: nav2_controller::SimpleProgressChecker
+      plugin: nav2_controller::PoseProgressChecker
       required_movement_radius: 0.20       # 在允许时间内需要移动的最小半径 (m)
-      movement_time_allowance: 15.0        # 为 RotationShim 原地转向预留足够时间 (s)
+      required_movement_angle: 0.15        # 转过约 8.6° 也视为取得进展 (rad)
+      movement_time_allowance: 10.0        # 无平移且无转角时最多等待 10 s
 
     # --- 目标检查器: 判断是否到达目标点 ---
     general_goal_checker:
@@ -174,10 +175,16 @@ controller_server:
       # 约 20°：过滤路径切线与定位的小幅抖动，避免频繁停下校向；明显朝向错误时
       # 仍保持先原地转向再平移，兼顾无后向传感器条件下的运动安全。
       angular_dist_threshold: 0.35         # 朝向偏差超过此值先原地转向 (rad)
+      angular_disengage_threshold: 0.15    # 校准到约 8.6° 后退出，形成滞回避免反复切换
       forward_sampling_distance: 0.50      # 取路径前方此距离的点计算目标朝向 (m)
       rotate_to_heading_angular_vel: 0.60  # 原地转向角速度 (rad/s)
       max_angular_accel: 0.60              # 原地转向角加速度 (rad/s²)
       simulate_ahead_time: 1.0             # 转向碰撞预检时长 (s)
+      # closed_loop=true 会在底盘尚未克服静摩擦时，每个 20 Hz 周期都从实测零角
+      # 速度重新起步，使输出永久卡在 max_angular_accel/20=0.03 rad/s。改为 false
+      # 后仅由上一条控制命令连续推进加速度斜坡；这不参与 odom 积分，里程计仍只
+      # 使用电机遥测与 IMU 融合结果。
+      closed_loop: false                   # 连续爬升到 0.60 rad/s，避免静摩擦死锁
       debug_trajectory_details: false      # 是否输出调试轨迹信息
       # --- 速度限制 (全向底盘支持 x/y 独立速度) ---
       # 后方无传感器覆盖，暂禁用后退（后续补盲区传感器后再放开）。

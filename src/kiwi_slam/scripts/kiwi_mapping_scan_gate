@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+"""Installed entry point for the Kiwi mapping startup scan gate."""
+
+from kiwi_slam.mapping_gate import main
+
+
+if __name__ == "__main__":
+    main()

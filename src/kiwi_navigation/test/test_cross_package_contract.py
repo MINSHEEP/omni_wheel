@@ -123,7 +123,7 @@ def test_robot_radius_covers_physical_wheel_outer_edge():
 
 
 def test_tf_and_scan_names_match_across_packages():
-    """各包必须共用同一组 Frame 和扫描话题."""
+    """各包必须共用 Frame，并显式连接原始扫描与 SLAM 内部门控话题."""
     base_config = load_yaml(BASE_CONFIG)
     base = node_parameters(base_config, "kiwi_base_node")
     ekf = node_parameters(base_config, "ekf_filter_node")
@@ -136,20 +136,30 @@ def test_tf_and_scan_names_match_across_packages():
     slam = node_parameters(
         load_yaml(SLAM_CONFIG_DIR / "slam_toolbox.yaml"), "slam_toolbox"
     )
+    gate = node_parameters(
+        load_yaml(SLAM_CONFIG_DIR / "mapping_gate.yaml"), "kiwi_mapping_scan_gate"
+    )
 
-    assert {monitor["laser_frame"], lidar["frame_id"]} == {"lidar_link"}
+    assert {monitor["laser_frame"], lidar["frame_id"], gate["laser_frame"]} == {
+        "lidar_link"
+    }
     assert {
         monitor["odom_frame"],
         slam["odom_frame"],
         base["odom_frame_id"],
         ekf["odom_frame"],
+        gate["odom_frame"],
     } == {"odom"}
     assert {
         monitor["base_frame"],
         slam["base_frame"],
         base["base_frame_id"],
         ekf["base_link_frame"],
+        gate["base_frame"],
     } == {"base_footprint"}
-    assert {monitor["scan_topic"], lidar["laserscan_topic"], slam["scan_topic"]} == {
+    # /scan 仍是跨包传感器契约；/scan_slam 只是受控的 SLAM 内部输入。
+    assert {monitor["scan_topic"], lidar["laserscan_topic"], gate["input_scan_topic"]} == {
         "/scan"
     }
+    assert gate["output_scan_topic"] == slam["scan_topic"] == "/scan_slam"
+    assert gate["imu_ready_topic"] == base["imu_calibration_ready_topic"]

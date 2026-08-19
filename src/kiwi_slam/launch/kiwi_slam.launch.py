@@ -21,6 +21,7 @@ def generate_launch_description():
     slam_params = LaunchConfiguration("slam_params_file")
     base_params = LaunchConfiguration("base_params_file")
     monitor_params = LaunchConfiguration("monitor_params_file")
+    mapping_gate_params = LaunchConfiguration("mapping_gate_params_file")
     rviz_config = LaunchConfiguration("rviz_config_file")
 
     start_base = LaunchConfiguration("start_base")
@@ -49,6 +50,13 @@ def generate_launch_description():
             "monitor_params_file",
             default_value=PathJoinSubstitution([package_share, "config", "monitor.yaml"]),
             description="二维链路诊断参数 YAML",
+        ),
+        DeclareLaunchArgument(
+            "mapping_gate_params_file",
+            default_value=PathJoinSubstitution(
+                [package_share, "config", "mapping_gate.yaml"]
+            ),
+            description="SLAM 首帧标定、静止和扫描一致性门控参数",
         ),
         DeclareLaunchArgument(
             "base_params_file",
@@ -116,6 +124,14 @@ def generate_launch_description():
 
     # 二维建图层只保留 M10P、SLAM、诊断和 RViz；底盘层由 kiwi_robot.launch.py 管理。
     nodes = [
+        Node(
+            package="kiwi_slam",
+            executable="kiwi_mapping_scan_gate",
+            name="kiwi_mapping_scan_gate",
+            condition=IfCondition(start_slam),
+            output="screen",
+            parameters=[mapping_gate_params],
+        ),
         Node(
             package="slam_toolbox",
             executable="sync_slam_toolbox_node",

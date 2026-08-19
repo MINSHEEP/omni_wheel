@@ -22,6 +22,7 @@ def test_chassis_ekf_uses_motor_feedback_twist_and_asynchronous_imu():
 
     assert base["wheel_odom_topic"] == ekf["odom0"] == "/chassis/odom/raw"
     assert base["imu_topic"] == ekf["imu0"] == "/chassis/imu/data_raw"
+    assert base["imu_calibration_ready_topic"] == "/chassis/imu/calibration_ready"
     assert base["feedback_debug_topic"] == "/chassis/feedback/raw"
     # 0x3A 没有 ACK；0x3B 始终作为异步遥测非阻塞读取，不保留启停门控。
     assert "feedback_enabled" not in base
@@ -95,6 +96,8 @@ def test_runtime_source_keeps_watchdog_and_parameter_guards_active():
     assert "imu_stationary_yaw_rate_threshold_rad_s" in source
     assert "imu_stationary_acceleration_tolerance_m_s2" in source
     assert "begin_next_window" in source
+    assert "IMU calibration ready; mapping may accept stable scans" in source
+    assert "transient_local()" in source
 
 
 def test_ekf_fuses_only_absolute_yaw_and_gyro_z_from_asynchronous_imu():

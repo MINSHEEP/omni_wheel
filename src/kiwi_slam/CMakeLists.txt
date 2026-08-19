@@ -11,6 +11,7 @@ install(
   PROGRAMS
     scripts/kiwi_slam_monitor
     scripts/kiwi_slam_compatibility
+    scripts/kiwi_mapping_scan_gate
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
@@ -30,6 +31,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_config test/test_config.py)
   ament_add_pytest_test(test_compatibility test/test_compatibility.py)
   ament_add_pytest_test(test_runtime_contract test/test_runtime_contract.py)
+  ament_add_pytest_test(test_mapping_gate test/test_mapping_gate.py)
 endif()
 
 ament_package()

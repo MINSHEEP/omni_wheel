@@ -37,7 +37,7 @@ def test_m10p_range_and_scan_masking_match_consumers():
     driver = load_parameters("ls_m10p_uart.yaml", "lslidar_driver_node")
     slam = load_parameters("slam_toolbox.yaml", "slam_toolbox")
     assert driver["max_range"] == slam["max_laser_range"]
-    assert driver["min_range"] < 1.0
+    assert driver["min_range"] == slam["min_laser_range"]
     # 裁剪扇区必须成对且为 0.01 度整数。
     assert len(driver["angle_disable_min"]) == len(driver["angle_disable_max"])
     for low, high in zip(driver["angle_disable_min"], driver["angle_disable_max"]):
@@ -51,8 +51,8 @@ def test_slam_frames_ranges_and_mode_match_base_and_lidar():
     assert params["map_frame"] == "map"
     assert params["odom_frame"] == "odom"
     assert params["base_frame"] == "base_footprint"
-    assert params["scan_topic"] == "/scan"
-    assert params["min_laser_range"] == 0.05
+    assert params["scan_topic"] == "/scan_slam"
+    assert params["min_laser_range"] == 0.15
     assert params["max_laser_range"] == 12.0
     assert params["transform_publish_period"] > 0.0
     assert params["do_loop_closing"] is True
@@ -91,6 +91,8 @@ def test_launch_uses_one_base_yaml_for_base_and_ekf():
     # 雷达只允许经 kiwi_slam 的 M10P 封装启动。
     assert '"m10p_uart_lidar.launch.py"' in launch
     assert 'executable="sync_slam_toolbox_node"' in launch
+    assert 'executable="kiwi_mapping_scan_gate"' in launch
+    assert '"mapping_gate.yaml"' in launch
     assert '"kiwi_robot.launch.py"' in launch
     assert "ekf_params_file" not in launch
 
@@ -118,6 +120,26 @@ def test_launch_uses_one_base_yaml_for_base_and_ekf():
     assert "OpaqueFunction(function=_validate_runtime_contract)" in robot_launch
     assert "validate_workspace_overlay" in robot_launch
     assert "validate_base_parameters" in robot_launch
+
+
+def test_mapping_gate_preserves_raw_scan_and_requires_real_calibration():
+    """SLAM 使用内部受控扫描，原始 /scan、Frame 与 EKF 话题保持既有契约。"""
+    gate = load_parameters("mapping_gate.yaml", "kiwi_mapping_scan_gate")
+    base = load_parameters(
+        str(PACKAGE.parent / "kiwi_base" / "config" / "kiwi_base.yaml"),
+        "kiwi_base_node",
+    )
+    slam = load_parameters("slam_toolbox.yaml", "slam_toolbox")
+    assert gate["input_scan_topic"] == "/scan"
+    assert gate["output_scan_topic"] == slam["scan_topic"] == "/scan_slam"
+    assert gate["odom_topic"] == "/odometry/filtered"
+    assert gate["imu_ready_topic"] == base["imu_calibration_ready_topic"]
+    assert gate["laser_frame"] == "lidar_link"
+    assert gate["odom_frame"] == "odom"
+    assert gate["base_frame"] == "base_footprint"
+    assert gate["required_stable_scans"] >= 2
+    assert 0.0 < gate["min_valid_scan_ratio"] <= 1.0
+    assert 0.0 < gate["min_scan_overlap_ratio"] <= 1.0
 
 
 def test_rviz_and_monitor_expose_map_robot_and_debug_contracts():

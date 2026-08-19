@@ -29,8 +29,7 @@ namespace lslidar_driver {
                                                                        last_packet_time(0.0),
                                                                        multiecho_scan_(new sensor_msgs::msg::MultiEchoLaserScan()),
                                                                        multiecho_scan_bak_(new sensor_msgs::msg::MultiEchoLaserScan()),
-                                                                       point_cloud_xyzi_(new pcl::PointCloud<pcl::PointXYZI>()),
-                                                                       point_cloud_xyzi_bak_(new pcl::PointCloud<pcl::PointXYZI>()) {
+                                                                       point_cloud_xyzi_(new pcl::PointCloud<pcl::PointXYZI>()) {
     }
 
     bool LslidarX10Driver::loadParameters() {
@@ -332,31 +331,33 @@ namespace lslidar_driver {
     }
 
 
-    void LslidarX10Driver::publishLiadrData() {
-        std::unique_lock<std::mutex> lock(pointcloud_lock);
-
-        if(point_cloud_xyzi_bak_->width < 50) return;
+    void LslidarX10Driver::publishLiadrData(
+            const pcl::PointCloud<pcl::PointXYZI>::Ptr &completed_cloud,
+            double completed_sweep_end_time) {
+        // completed_cloud 与时间戳在扫圈边界按值捕获；即使线程池积压，后续
+        // poll() 也无法覆盖本任务的数据或把下一圈时间戳贴到旧点云上。
+        if (!completed_cloud || completed_cloud->width < 50) return;
         
         if (publish_scan) {
             sensor_msgs::msg::PointCloud2 raw_pc_msg;
             auto scan_msg = std::make_unique<sensor_msgs::msg::LaserScan>();
-            pcl::toROSMsg(*point_cloud_xyzi_bak_, raw_pc_msg);
+            pcl::toROSMsg(*completed_cloud, raw_pc_msg);
             pointcloudToLaserscan(raw_pc_msg, *scan_msg);
-            scan_msg->header.stamp = rclcpp::Time(sweep_end_time * 1000000000LL); 
+            scan_msg->header.stamp = rclcpp::Time(completed_sweep_end_time * 1000000000LL);
             laserscan_pub_->publish(std::move(scan_msg));
         }
 
         auto pc_msg = std::make_shared<sensor_msgs::msg::PointCloud2>();
-        if (is_pretreatment) pointcloud_transform_.applyTransform(*point_cloud_xyzi_bak_);
-		if (is_MatrixTransformation) pointcloud_transform_.applyTransform_2(*point_cloud_xyzi_bak_, MatrixTransform_result);
+        if (is_pretreatment) pointcloud_transform_.applyTransform(*completed_cloud);
+		if (is_MatrixTransformation) pointcloud_transform_.applyTransform_2(*completed_cloud, MatrixTransform_result);
             
-        pcl::toROSMsg(*point_cloud_xyzi_bak_, *pc_msg);
+        pcl::toROSMsg(*completed_cloud, *pc_msg);
 
-        pc_msg->header.stamp = rclcpp::Time(sweep_end_time * 1000000000LL); 
+        pc_msg->header.stamp = rclcpp::Time(completed_sweep_end_time * 1000000000LL);
         pointcloud_pub_->publish(*pc_msg); 
 
         auto time_msg = std::make_shared<std_msgs::msg::Float64>();
-        time_msg->data = sweep_end_time;
+        time_msg->data = completed_sweep_end_time;
         time_pub_->publish(*time_msg);
 
         return;
@@ -622,13 +623,19 @@ namespace lslidar_driver {
             point_cloud_time = use_first_point_time ? last_point_cloud_time : sweep_end_time;
             last_point_cloud_time = sweep_end_time;
 
+            // 点云指针和本圈结束时间作为同一个不可变快照交给后台线程。
+            // multiecho 仍使用原互斥缓存；M10P 不启用该发布路径。
+            const auto completed_cloud = point_cloud_xyzi_;
+            const double completed_sweep_end_time = sweep_end_time;
             {
                 std::unique_lock<std::mutex> lock(pointcloud_lock);
-                point_cloud_xyzi_bak_ = std::move(point_cloud_xyzi_);
                 multiecho_scan_bak_ = std::move(multiecho_scan_);
             }
 
-            thread_pool_->enqueue([this]() { publishLiadrData(); });
+            thread_pool_->enqueue(
+                [this, completed_cloud, completed_sweep_end_time]() {
+                    publishLiadrData(completed_cloud, completed_sweep_end_time);
+                });
             if(publish_multiecholaserscan && lidar_model == "N10Plus") {
                 thread_pool_->enqueue([this]() { publishMultiEchoLaserScan(); });
                 resetMultiEchoLaserScan();

@@ -12,7 +12,9 @@ slam_toolbox:
     odom_frame: odom
     map_frame: map
     base_frame: base_footprint
-    scan_topic: /scan
+    # /scan 保留原始传感器契约；首帧门控只向内部 /scan_slam 放行已经完成
+    # 底盘标定、连续静止且相邻帧一致的扫描，防止坏首帧成为永久图节点。
+    scan_topic: /scan_slam
     mode: mapping
     use_map_saver: true
 
@@ -21,7 +23,8 @@ slam_toolbox:
     transform_publish_period: 0.02
     map_update_interval: 2.0
     resolution: 0.05
-    min_laser_range: 0.05
+    # 与驱动 LaserScan.range_min 完全一致，避免启动阶段把雷达盲区误当有效能力。
+    min_laser_range: 0.15
     max_laser_range: 12.0
     minimum_time_interval: 0.05
     transform_timeout: 0.20

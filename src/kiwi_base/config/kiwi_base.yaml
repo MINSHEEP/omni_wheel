@@ -108,6 +108,9 @@ kiwi_base_node:
     cmd_vel_topic: /cmd_vel
     wheel_odom_topic: /chassis/odom/raw
     imu_topic: /chassis/imu/data_raw
+    # 仅在 gyro bias、yaw 漂移和静止方差均完成首个连续窗口后置 true。
+    # transient-local QoS 允许后启动的建图门控立即取得最近状态。
+    imu_calibration_ready_topic: /chassis/imu/calibration_ready
     # 0x3B 解码调试消息；字段为电机、欧拉角、原始角速度、原始加速度。
     feedback_debug_topic: /chassis/feedback/raw
     joint_states_topic: /joint_states

@@ -6,23 +6,32 @@
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="6" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
-        <!-- 0.333 Hz 沿用 Nav2 默认多航点树：全程重规划比单点树（1 Hz）开销
-             大，刻意放慢节省 CPU。多航点任务若需应对动态障碍物，可提高到
-             1.0 与单点树一致。 -->
-        <RateController hz="0.333">
+        <!-- 每秒检查路径有效性；有效路径直接复用，只有目标变化或路径被障碍物
+             阻断时才重新规划，避免周期性重置大角度 RotationShim。 -->
+        <RateController hz="1.0">
           <RecoveryNode number_of_retries="1" name="ComputePathThroughPoses">
-            <ReactiveSequence>
+            <Sequence name="UpdateGoalsAndPath">
               <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="0.7"/>
-              <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
-              <!-- 与单目标导航共用同一限时平滑契约；失败时继续使用 Theta* 原始
-                   路径，避免多航点任务因单次 Ceres 未收敛而停住或触发恢复。 -->
-              <ForceSuccess>
-                <SmoothPath unsmoothed_path="{path}" smoothed_path="{path}"
-                            smoother_id="constrained_smoother"
-                            max_smoothing_duration="0.20"
-                            check_for_collisions="true"/>
-              </ForceSuccess>
-            </ReactiveSequence>
+              <Fallback name="ComputePathIfNeeded">
+                <ReactiveSequence name="ReuseValidPath">
+                  <Inverter>
+                    <GlobalUpdatedGoal/>
+                  </Inverter>
+                  <IsPathValid path="{path}"/>
+                </ReactiveSequence>
+                <Sequence name="PlanAndSmoothPath">
+                  <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+                  <!-- 与单目标导航共用同一限时平滑契约；失败时继续使用 Theta* 原始
+                       路径，避免多航点任务因单次 Ceres 未收敛而停住或触发恢复。 -->
+                  <ForceSuccess>
+                    <SmoothPath unsmoothed_path="{path}" smoothed_path="{path}"
+                                smoother_id="constrained_smoother"
+                                max_smoothing_duration="0.20"
+                                check_for_collisions="true"/>
+                  </ForceSuccess>
+                </Sequence>
+              </Fallback>
+            </Sequence>
             <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
           </RecoveryNode>
         </RateController>

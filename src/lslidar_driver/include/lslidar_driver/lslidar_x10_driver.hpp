@@ -84,7 +84,10 @@ namespace lslidar_driver {
 
         bool initAngleConfig();
 
-        void publishLiadrData();
+        /** 发布一个不可变的完整扫圈快照，避免后台线程读取下一圈共享状态。 */
+        void publishLiadrData(
+            const pcl::PointCloud<pcl::PointXYZI>::Ptr &completed_cloud,
+            double completed_sweep_end_time);
 
         void publishMultiEchoLaserScan();
 
@@ -193,7 +196,6 @@ namespace lslidar_driver {
         sensor_msgs::msg::MultiEchoLaserScan::UniquePtr multiecho_scan_bak_;
 
         pcl::PointCloud<pcl::PointXYZI>::Ptr point_cloud_xyzi_;
-        pcl::PointCloud<pcl::PointXYZI>::Ptr point_cloud_xyzi_bak_;
     };
 } // namespace lslidar_driver
 

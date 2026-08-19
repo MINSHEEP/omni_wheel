@@ -13,7 +13,9 @@ C 板 -> kiwi_base_node（异步 0x3B，不阻断命令发送）
                                              -> /odometry/filtered
                                              -> odom -> base_footprint
 
-M10P -> lslidar_driver -> /scan -> slam_toolbox -> /map + map -> odom
+M10P -> lslidar_driver -> /scan -> 首帧稳定门控 -> /scan_slam
+                                                    -> slam_toolbox
+                                                    -> /map + map -> odom
 
 robot_state_publisher -> base_footprint -> base_link
                        -> chassis_imu_link / lidar_link / wheel links

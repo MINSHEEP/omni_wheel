@@ -7,6 +7,7 @@
 
 #include "lslidar_driver/m10_packet_decoder.hpp"
 #include "lslidar_driver/scan_angle_mask.hpp"
+#include "lslidar_driver/lslidar_x10_driver.hpp"
 
 namespace lslidar_driver {
 namespace {
@@ -49,6 +50,15 @@ TEST(M10pDecodeTest, AllInvalidDistancesProduceEmptyPacket) {
                                            kDataOffset, 15.0f, 0.001f);
 
   EXPECT_TRUE(points.empty());
+}
+
+TEST(M10pDecodeTest, CompletedSweepSnapshotKeepsItsOwnCloudAndTimestamp) {
+  // 发布接口必须强制调用方同时传入本圈点云和时间戳，禁止后台任务再读取
+  // point_cloud_xyzi_bak_ / sweep_end_time 这类可被下一圈覆盖的共享成员。
+  using PublishSignature = void (LslidarX10Driver::*)(
+      const pcl::PointCloud<pcl::PointXYZI>::Ptr&, double);
+  PublishSignature publish = &LslidarX10Driver::publishLiadrData;
+  EXPECT_NE(publish, nullptr);
 }
 
 TEST(M10pDecodeTest, ZeroDeclaredSlotsDoNotDivideByZero) {

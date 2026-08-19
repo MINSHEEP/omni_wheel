@@ -19,6 +19,7 @@ def generate_launch_description():
     lidar_params = LaunchConfiguration("lidar_params_file")
     slam_params = LaunchConfiguration("slam_params_file")
     monitor_params = LaunchConfiguration("monitor_params_file")
+    mapping_gate_params = LaunchConfiguration("mapping_gate_params_file")
     base_params = LaunchConfiguration("base_params_file")
     rviz_config = LaunchConfiguration("rviz_config_file")
     start_base = LaunchConfiguration("start_base")
@@ -51,6 +52,13 @@ def generate_launch_description():
             "monitor_params_file",
             default_value=PathJoinSubstitution([slam_share, "config", "monitor.yaml"]),
             description="SLAM 链路诊断参数 YAML",
+        ),
+        DeclareLaunchArgument(
+            "mapping_gate_params_file",
+            default_value=PathJoinSubstitution(
+                [slam_share, "config", "mapping_gate.yaml"]
+            ),
+            description="SLAM 首帧标定、静止和扫描一致性门控参数",
         ),
         DeclareLaunchArgument(
             "base_params_file",
@@ -94,6 +102,17 @@ def generate_launch_description():
         ),
         condition=IfCondition(start_lidar),
         launch_arguments={"params_file": lidar_params}.items(),
+    )
+
+    # SLAM 节点可以提前完成初始化，但只订阅门控后的 /scan_slam。门控要求
+    # 底盘实际标定完成、EKF 连续静止且相邻扫描一致，杜绝坏首帧写入永久地图。
+    mapping_gate = Node(
+        package="kiwi_slam",
+        executable="kiwi_mapping_scan_gate",
+        name="kiwi_mapping_scan_gate",
+        condition=IfCondition(start_slam),
+        output="screen",
+        parameters=[mapping_gate_params],
     )
 
     slam = Node(
@@ -166,5 +185,5 @@ def generate_launch_description():
     )
 
     return LaunchDescription(
-        arguments + [robot_stack, lidar, slam, monitor, navigation, rviz]
+        arguments + [robot_stack, lidar, mapping_gate, slam, monitor, navigation, rviz]
     )

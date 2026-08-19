@@ -131,6 +131,7 @@ if(BUILD_TESTING)
   # 验证 M10P 缺失槽位不会压缩角度，并覆盖全无效空包。
   ament_add_gtest(test_m10p_decode test/test_m10p_decode.cpp)
   target_include_directories(test_m10p_decode PRIVATE include)
+  target_link_libraries(test_m10p_decode lslidar_driver)
 endif()
 
 ament_export_include_directories(include)

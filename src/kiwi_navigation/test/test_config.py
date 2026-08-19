@@ -108,9 +108,24 @@ def test_controller_rotates_first_and_reverse_is_disabled():
         assert float(smooth.attrib["max_smoothing_duration"]) <= 0.20
         assert smooth.attrib["check_for_collisions"] == "true"
 
+        # 路径有效时必须复用当前路径，禁止固定频率重复规划打断 RotationShim。
+        compute_if_needed = root.find(".//Fallback[@name='ComputePathIfNeeded']")
+        assert compute_if_needed is not None
+        reuse = compute_if_needed.find("./ReactiveSequence[@name='ReuseValidPath']")
+        assert reuse is not None
+        assert reuse.find("./Inverter/GlobalUpdatedGoal") is not None
+        assert reuse.find("./IsPathValid").attrib["path"] == "{path}"
+
     progress = config["controller_server"]["ros__parameters"]["progress_checker"]
+    rotation_shim = config["controller_server"]["ros__parameters"]["FollowPath"]
     behavior = config["behavior_server"]["ros__parameters"]
-    assert progress["movement_time_allowance"] == 15.0
+    assert progress["plugin"] == "nav2_controller::PoseProgressChecker"
+    assert progress["required_movement_angle"] == 0.15
+    assert progress["movement_time_allowance"] == 10.0
+    assert rotation_shim["angular_disengage_threshold"] < rotation_shim["angular_dist_threshold"]
+    # 实测闭环模式会因静止角速度反馈持续为零，把校向命令锁死在 0.03 rad/s；
+    # 此开环仅用于 RotationShim 加速度斜坡，不改变反馈里程计积分来源。
+    assert rotation_shim["closed_loop"] is False
     assert behavior["rotational_acc_lim"] == 0.60
 
 
@@ -134,6 +149,8 @@ def test_launch_modes_use_m10p_without_adapter_or_relay():
         encoding="utf-8"
     )
     assert "condition=IfCondition(start_slam)" in mapping
+    assert 'executable="kiwi_mapping_scan_gate"' in mapping
+    assert '"mapping_gate.yaml"' in mapping
     assert "slam_toolbox" not in localization
     assert "localization_launch.py" in localization
     for launch in (mapping, localization):
