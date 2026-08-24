@@ -16,7 +16,20 @@ coverage.xml
 *.bag
 *.db3
 *.mcap
-/*.zip
+# 压缩包通常是构建产物或发布附件，不纳入版本库
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tgz
+*.tbz
+*.gz
+*.bz2
+*.xz
+*.iso
 
 # Codex 本机工作状态
 /.codex/
