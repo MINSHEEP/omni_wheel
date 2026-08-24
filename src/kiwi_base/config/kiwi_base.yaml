@@ -24,9 +24,9 @@ kiwi_base_node:
     # 0.20 rad/s 对应轮输出约 0.0105 rad/s，仅抑制零速附近的微小编码器抖动。
     motor_feedback_deadband_rad_s: [0.20, 0.20, 0.20]
 
-    # 实车几何：203 mm 轮径；中心到轮心距离 322.56 mm。
+    # 实车几何：203 mm 轮径；中心到轮心距离 350 mm。
     wheel_radius_m: 0.1015
-    wheel_center_distance_m: 0.32256
+    wheel_center_distance_m: 0.35
     # 轮输出轴物理上限；多轴合成超限时保持 Twist 方向等比例缩放。
     max_wheel_speed_rad_s: 8.0
 
