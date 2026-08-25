@@ -91,7 +91,7 @@ def generate_launch_description():
             "start_description", default_value="true", description="是否发布 URDF 和静态 TF"
         ),
         DeclareLaunchArgument(
-            "use_rviz", default_value="false", description="是否启动二维建图 RViz"
+            "use_rviz", default_value="true", description="是否启动二维建图 RViz"
         ),
         # 工控机显卡驱动会触发 RViz Map 的 GLSL sampler 错误，默认只对 RViz 使用软件渲染。
         DeclareLaunchArgument(
