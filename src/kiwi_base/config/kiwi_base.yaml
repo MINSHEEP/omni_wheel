@@ -19,7 +19,8 @@ kiwi_base_node:
     # 电机转子速度一阶低通截止频率；在死区和正运动学之前抑制地面振动噪声。
     # 50 Hz 遥测下 8 Hz 兼顾约 20 ms 量级响应与里程计速度稳定性。
     motor_feedback_lowpass_cutoff_hz: 8.0
-    motor_reduction_ratio: [19.0, 19.0, 19.0]
+    # motor_reduction_ratio: [19.0, 19.0, 19.0]
+    motor_reduction_ratio: [1.0, 1.0, 1.0]
     # 遥测电机转子 rad/s 静止死区。
     # 0.20 rad/s 对应轮输出约 0.0105 rad/s，仅抑制零速附近的微小编码器抖动。
     motor_feedback_deadband_rad_s: [0.20, 0.20, 0.20]
