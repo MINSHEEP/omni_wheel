@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 import rclpy
 from diagnostic_msgs.msg import DiagnosticStatus
+from nav_msgs.msg import OccupancyGrid
 
 from kiwi_slam.health import quaternion_norm, sample_rate_hz, valid_range_ratio
 from kiwi_slam.monitor import KiwiSlamMonitor
@@ -39,6 +40,15 @@ def test_monitor_can_change_log_severity_without_crashing(tmp_path, monkeypatch)
         node._log_report(DiagnosticStatus.ERROR, "error state")
         node._log_report(DiagnosticStatus.OK, "normal state")
         node._log_report(DiagnosticStatus.WARN, "warning state")
+        grid = OccupancyGrid()
+        grid.header.frame_id = "map"
+        grid.info.width = grid.info.height = 1
+        grid.data = [0]
+        node.last_map = grid
+        node.map_received = 0.0
+        assert node._stream_status()[-1].message == "map update timeout"
+        node.map_is_static = True
+        assert node._stream_status()[-1].level == DiagnosticStatus.OK
     finally:
         node.destroy_node()
         rclpy.shutdown()

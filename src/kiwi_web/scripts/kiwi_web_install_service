@@ -1,0 +1,26 @@
+#!/usr/bin/env python3
+"""Generate an optional user unit for this installation; no config is copied."""
+import argparse
+from pathlib import Path
+from ament_index_python.packages import get_package_share_directory
+from kiwi_web.config import workspace_root
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--workspace", default="")
+parser.add_argument("--output", default="~/.config/systemd/user/kiwi-web.service")
+args = parser.parse_args()
+root = workspace_root(args.workspace)
+if not (root / "install/setup.bash").is_file():
+    parser.error("工作空间尚未构建，缺少 install/setup.bash")
+template = (Path(get_package_share_directory("kiwi_web")) / "systemd/kiwi-web.service").read_text()
+# systemd Environment double-quote escaping and literal percent specifiers.
+value = str(root).replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+if "\n" in value or "\r" in value:
+    parser.error("工作空间路径不能包含换行")
+output = Path(args.output).expanduser()
+output.parent.mkdir(parents=True, exist_ok=True)
+output.write_text(template.replace("@WORKSPACE@", value))
+print(output)
+print("已生成服务文件；配置仍由各功能包提供。启用：")
+print("systemctl --user daemon-reload")
+print("systemctl --user enable --now kiwi-web.service")

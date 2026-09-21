@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>设置 · Kiwi 底盘控制</title>
+    <link rel="stylesheet" href="robot_ui.css" />
+    <link rel="stylesheet" href="kiwi.css" />
+    <script src="map_canvas.js" defer></script>
+    <script src="canvas_extensions.js" defer></script>
+    <script src="app.js" defer></script>
+  </head>
+  <body data-page="settings">
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">Kiwi 底盘控制</div>
+        <nav class="page-nav" aria-label="功能页面">
+          <a href="mapping.html">建图</a><a href="map_editor.html">修图</a
+          ><a href="navigation.html">导航</a
+          ><a href="remote_control.html">遥控</a
+          ><a href="settings.html" class="active" aria-current="page">设置</a>
+        </nav>
+        <div class="topbar-statuses">
+          <div id="connection-status" class="page-status">○ 正在连接…</div>
+          <button id="global-stop" class="danger global-stop" type="button">
+            软件急停
+          </button>
+        </div>
+      </header>
+      <div id="estop-banner" class="estop-banner" hidden>
+        <span>软件急停已锁定，运动指令已停止</span
+        ><button id="banner-reset">解除软件急停</button>
+      </div>
+      <main class="workspace">
+        <section class="settings-stage">
+          <div class="settings-card">
+            <h2>地图管理</h2>
+            <p class="hint">
+              导入已有 PGM / PNG 图像和配套
+              YAML。地图保存在设备本地，浏览器断开不会丢失。
+            </p>
+            <label
+              >地图名称<input
+                id="import-name"
+                type="text"
+                maxlength="64"
+                placeholder="例如 warehouse_01" /></label
+            ><label
+              >地图描述（YAML）<input
+                id="import-yaml"
+                type="file"
+                accept=".yaml,.yml" /></label
+            ><label
+              >地图图像（PGM / PNG）<input
+                id="import-image"
+                type="file"
+                accept=".pgm,.png" /></label
+            ><button id="btn-import-map" class="primary">导入地图</button>
+          </div>
+          <div class="settings-card">
+            <h2>已保存地图</h2>
+            <div class="row">
+              <select id="map-selector" aria-label="已保存地图">
+                <option value="">请选择已保存地图</option>
+              </select>
+            </div>
+            <div class="row">
+              <button id="btn-refresh-maps" class="flex" type="button">
+                刷新列表</button
+              ><button id="btn-export-map" class="flex" type="button">
+                导出地图</button
+              ><button id="btn-delete-map" class="danger flex" type="button">
+                删除地图
+              </button>
+            </div>
+          </div>
+          <div class="settings-card">
+            <h2>运行诊断</h2>
+            <div id="diagnostics" class="hint">等待设备数据</div>
+            <details>
+              <summary>查看运行日志</summary>
+              <pre id="process-logs"></pre>
+            </details>
+          </div>
+        </section>
+        <aside class="panel">
+          <h1>设置与状态</h1>
+          <p class="subtitle">
+            本地服务和资源状态。访问地址跟随设备 IP，无需外网。
+          </p>
+          <section class="section">
+            <div class="section-title">连接</div>
+            <div class="status-grid">
+              <div class="status-card">
+                <span class="label">访问地址</span
+                ><span id="host-display" class="value">等待</span>
+              </div>
+              <div class="status-card">
+                <span class="label">往返延迟</span
+                ><span id="latency-display" class="value">等待</span>
+              </div>
+            </div>
+            <p id="limits-display" class="hint"></p>
+          </section>
+          <section class="section">
+            <div class="section-title">设备资源</div>
+            <div class="status-grid">
+              <div class="status-card">
+                <span class="label">CPU</span
+                ><span id="cpu-display" class="value">等待</span>
+              </div>
+              <div class="status-card">
+                <span class="label">内存</span
+                ><span id="memory-display" class="value">等待</span>
+              </div>
+              <div class="status-card">
+                <span class="label">磁盘</span
+                ><span id="disk-display" class="value">等待</span>
+              </div>
+              <div class="status-card">
+                <span class="label">连接数</span
+                ><span id="clients-display" class="value">等待</span>
+              </div>
+            </div>
+          </section>
+          <section class="section">
+            <div class="section-title">底盘实时状态</div>
+            <div class="status-grid">
+              <div class="status-card">
+                <span class="label">底盘反馈</span
+                ><span id="feedback-display" class="value">等待</span>
+              </div>
+              <div class="status-card">
+                <span class="label">激光雷达</span
+                ><span id="lidar-display" class="value">等待</span>
+              </div>
+              <div class="status-card">
+                <span class="label">IMU 标定</span
+                ><span id="imu-display" class="value">等待</span>
+              </div>
+              <div class="status-card">
+                <span class="label">运行模式</span
+                ><span id="mode-display" class="value">等待</span>
+              </div>
+            </div>
+            <p id="readiness" class="hint">等待设备状态</p>
+          </section>
+          <section class="section">
+            <div class="section-title">运行控制</div>
+            <div class="row">
+              <button id="btn-stop-mode" class="danger flex" type="button">
+                停止运行模式</button
+              ><button id="btn-reset-estop" class="flex" type="button">
+                解除软件急停
+              </button>
+            </div>
+          </section>
+          <section class="section">
+            <div class="section-title">运行日志</div>
+            <div id="log-area" class="log-area" aria-live="polite"></div>
+          </section>
+        </aside>
+      </main>
+    </div>
+    <div id="toast" role="status" hidden></div>
+    <dialog id="confirm-dialog">
+      <h2 id="confirm-title">确认操作</h2>
+      <p id="confirm-message"></p>
+      <div class="dialog-actions">
+        <button id="confirm-no">取消</button
+        ><button id="confirm-yes" class="primary">确认</button>
+      </div>
+    </dialog>
+    <dialog id="login-dialog">
+      <h2>连接底盘</h2>
+      <p>请输入设备访问密码。</p>
+      <form id="login-form">
+        <input
+          id="access-token"
+          aria-label="设备访问密码"
+          type="password"
+          autocomplete="current-password"
+          required
+        />
+        <p id="login-error" class="hint"></p>
+        <button class="primary" type="submit">连接</button>
+      </form>
+    </dialog>
+  </body>
+</html>

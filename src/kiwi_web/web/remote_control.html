@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>遥控 · Kiwi 底盘控制</title>
+    <link rel="stylesheet" href="robot_ui.css" />
+    <link rel="stylesheet" href="kiwi.css" />
+    <script src="map_canvas.js" defer></script>
+    <script src="canvas_extensions.js" defer></script>
+    <script src="app.js" defer></script>
+  </head>
+  <body data-page="remote_control">
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">Kiwi 底盘控制</div>
+        <nav class="page-nav" aria-label="功能页面">
+          <a href="mapping.html">建图</a><a href="map_editor.html">修图</a
+          ><a href="navigation.html">导航</a
+          ><a href="remote_control.html" class="active" aria-current="page"
+            >遥控</a
+          ><a href="settings.html">设置</a>
+        </nav>
+        <div class="topbar-statuses">
+          <div id="connection-status" class="page-status">○ 正在连接…</div>
+          <button id="global-stop" class="danger global-stop" type="button">
+            软件急停
+          </button>
+        </div>
+      </header>
+      <div id="estop-banner" class="estop-banner" hidden>
+        <span>软件急停已锁定，运动指令已停止</span
+        ><button id="banner-reset">解除软件急停</button>
+      </div>
+      <main class="workspace">
+        <section class="remote-stage">
+          <section id="map-wrapper" class="map-wrapper" aria-label="二维地图">
+            <canvas id="map-canvas" aria-label="地图画布"></canvas>
+            <div id="map-overlay" class="map-overlay">
+              等待地图数据。右键拖拽平移，滚轮缩放。
+            </div>
+            <div class="zoom-controls" aria-label="地图缩放">
+              <button id="btn-zoom-in" title="放大">＋</button
+              ><button id="btn-zoom-out" title="缩小">－</button
+              ><button id="btn-reset-view" title="适应全图">⌂</button>
+            </div>
+            <div class="map-footer">
+              <span id="pose-display">位置 --</span
+              ><span id="map-detail">地图 --</span>
+            </div>
+          </section>
+          <section class="drive-panel">
+            <div class="drive-header">
+              <div>
+                <strong>移动控制</strong>
+                <div class="hint">按住按钮或键盘按键移动，松开立即停止。</div>
+              </div>
+            </div>
+            <div class="drive-grid" aria-label="方向控制">
+              <button class="drive-button" data-move="q">
+                <span class="key">Q</span>左转</button
+              ><button class="drive-button" data-move="w">
+                <span class="key">W</span>前进</button
+              ><button class="drive-button" data-move="e">
+                <span class="key">E</span>右转</button
+              ><button class="drive-button" data-move="a">
+                <span class="key">A</span>左移</button
+              ><button id="btn-stop" class="drive-button drive-stop">
+                <span class="key">X</span>停止</button
+              ><button class="drive-button" data-move="d">
+                <span class="key">D</span>右移</button
+              ><span></span
+              ><button class="drive-button" data-move="s">
+                <span class="key">S</span>后退</button
+              ><span></span>
+            </div>
+          </section>
+        </section>
+        <aside class="panel">
+          <h1>独立遥控</h1>
+          <p class="subtitle">
+            启动底盘和激光雷达后开启遥控。左侧显示里程计坐标中的实时激光与底盘位置。
+          </p>
+          <section class="section">
+            <div class="section-title">运行模式</div>
+            <div class="row">
+              <button id="btn-start-remote" class="primary flex" type="button">
+                启动遥控模式</button
+              ><button id="btn-stop-mode" class="danger flex" type="button">
+                停止模式
+              </button>
+            </div>
+          </section>
+          <section class="section">
+            <div class="section-title">底盘实时状态</div>
+            <div class="status-grid">
+              <div class="status-card">
+                <span class="label">底盘反馈</span
+                ><span id="feedback-display" class="value">等待</span>
+              </div>
+              <div class="status-card">
+                <span class="label">激光雷达</span
+                ><span id="lidar-display" class="value">等待</span>
+              </div>
+              <div class="status-card">
+                <span class="label">IMU 标定</span
+                ><span id="imu-display" class="value">等待</span>
+              </div>
+              <div class="status-card">
+                <span class="label">运行模式</span
+                ><span id="mode-display" class="value">等待</span>
+              </div>
+            </div>
+            <p id="readiness" class="hint">等待设备状态</p>
+          </section>
+          <section class="section">
+            <div class="section-title">键盘遥控</div>
+            <div class="row toggle-row">
+              <span>开启遥控模式</span
+              ><button
+                id="remote-toggle"
+                class="toggle"
+                type="button"
+                aria-pressed="false"
+                aria-label="切换遥控模式"
+              ></button>
+            </div>
+            <div class="row">
+              <span>速度</span
+              ><input
+                id="speed-slider"
+                aria-label="遥控速度比例"
+                type="range"
+                min="0.1"
+                max="1"
+                step="0.05"
+                value="0.5"
+              /><strong id="speed-label">50%</strong>
+            </div>
+            <p id="keyboard-hint" class="hint disabled">
+              <kbd>W</kbd>/<kbd>S</kbd> 前后　<kbd>A</kbd>/<kbd>D</kbd>
+              横移<br /><kbd>Q</kbd>/<kbd>E</kbd> 转向　<kbd>X</kbd>
+              停止<br /><kbd>T</kbd>/<kbd>空格</kbd> 软件急停　<kbd>+</kbd>/<kbd
+                >-</kbd
+              >
+              调速
+            </p>
+            <p class="hint">
+              按住移动，松开停止。开启后仅当前页面持有遥控权。后退和横移前请确认周围空间。
+            </p>
+          </section>
+          <section class="section">
+            <div class="section-title">基础命令</div>
+            <div class="row">
+              <button id="btn-emergency" class="danger flex" type="button">
+                软件急停</button
+              ><button id="btn-reset-estop" class="flex" type="button">
+                解除软件急停
+              </button>
+            </div>
+          </section>
+          <section class="section">
+            <div class="section-title">运行日志</div>
+            <div id="log-area" class="log-area" aria-live="polite"></div>
+          </section>
+        </aside>
+      </main>
+    </div>
+    <div id="toast" role="status" hidden></div>
+    <dialog id="confirm-dialog">
+      <h2 id="confirm-title">确认操作</h2>
+      <p id="confirm-message"></p>
+      <div class="dialog-actions">
+        <button id="confirm-no">取消</button
+        ><button id="confirm-yes" class="primary">确认</button>
+      </div>
+    </dialog>
+    <dialog id="login-dialog">
+      <h2>连接底盘</h2>
+      <p>请输入设备访问密码。</p>
+      <form id="login-form">
+        <input
+          id="access-token"
+          aria-label="设备访问密码"
+          type="password"
+          autocomplete="current-password"
+          required
+        />
+        <p id="login-error" class="hint"></p>
+        <button class="primary" type="submit">连接</button>
+      </form>
+    </dialog>
+  </body>
+</html>

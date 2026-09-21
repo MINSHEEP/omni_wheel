@@ -1,0 +1,235 @@
+# Kiwi 本地 Web 控制台
+
+设备上运行一个 Python / ROS 2 服务，局域网浏览器访问 `http://设备IP:8080`。
+HTML、JavaScript、CSS、字体回退和品牌图片均在设备本地，无 CDN、Node.js 运行服务、
+rosbridge 或外部云服务依赖。Node.js 仅用于可选的浏览器自动化测试。
+
+界面沿用用户提供的 `/home/hi/MSHEEP/web_frontend`：原始 `robot_ui.css`、品牌图片、
+地图画布的绘制与交互代码，并改为 Kiwi 底盘的 ROS 2 接口。保留建图、修图、导航、遥控、
+设置页；不展示未接入的相机、热成像、空气质量、三维雷达、地形规划、机器狗姿态和动作。
+
+## 功能
+
+| 页面 | 已接入的功能 |
+| --- | --- |
+| 建图 | 显式开始/停止 SLAM Toolbox、M10P 扫描和位姿显示、建图门控状态、键盘遥控、停车保存 PGM/YAML |
+| 修图 | 选择地图、停止运行模式、障碍/可通行/未知画笔、矩形框选、半径调整、撤销/重做、版本校验保存、导出 |
+| 导航 | 加载地图、AMCL 初始位置与朝向、激光和规划路径、单点目标、真实任务反馈、取消、清理代价地图 |
+| 多点路径 | 地图添加目标、数值编辑坐标/朝向、排序/删除、按地图保存路径、顺序执行、暂停/继续/跳过/停止 |
+| 遥控 | W/S 前后、A/D 横移、Q/E 转向、按住屏幕方向键、速度比例、X 松控停车、T/空格软件急停 |
+| 设置 | 地图导入/导出/删除、CPU/内存/磁盘/连接数、往返时延、ROS 诊断与启动日志 |
+
+地图拖拽确定位置和朝向；右键平移，滚轮缩放。手机支持触摸绘制/选点、普通模式拖动和平移、
+双指缩放及屏幕方向键。切页不会自动开始运动，也不会因另一个浏览器打开页面而重启机器人。
+导航任务由设备运行，浏览器离开页面或断开连接后继续执行；**手动遥控**失焦、断线后停止。
+
+## 安装和启动
+
+```bash
+cd /path/to/your/workspace
+source /opt/ros/humble/setup.bash
+rosdep install --from-paths src --ignore-src -r -y --rosdistro humble
+colcon build --symlink-install --packages-up-to kiwi_web \
+  --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo
+source install/setup.bash
+ros2 launch kiwi_web web.launch.py
+```
+
+默认监听 `0.0.0.0:8080`。用 `hostname -I` 查询设备 IP，然后在局域网电脑/手机中打开
+`http://该IP:8080`。如果系统启用了防火墙，允许可信局域网访问 TCP 8080 即可；不需要向
+浏览器开放 DDS 或额外 WebSocket 端口。IPv4/IPv6 地址跟随当前页面，不使用固定远端地址。
+
+默认使用独立 `ROS_DOMAIN_ID=42`，避免同一局域网其他 ROS 项目的同名话题影响底盘。
+服务启动的硬件、SLAM、Nav2 节点自动继承此域。命令行调试时先 `export ROS_DOMAIN_ID=42`。
+可在 `web.yaml` 修改 `ros_domain_id`；如果启动前显式导出了 `ROS_DOMAIN_ID`，环境变量优先。
+
+直接运行并覆盖端口/地图目录：
+
+```bash
+ros2 run kiwi_web kiwi_web_server --host 0.0.0.0 --port 8080 \
+  --maps-dir maps
+```
+
+默认地图目录为**当前安装所属工作空间的 `maps/`**，自动识别普通 colcon 隔离安装和
+`--merge-install`，与启动命令所在目录无关。原有地图直接显示，不需要复制到用户目录。
+`maps_dir` 和非空的参数文件覆盖路径如果是相对路径，均相对工作空间解析。
+非标准安装布局通过 `workspace:=/absolute/workspace` 或 `--workspace` 明确指定。
+外部 YAML 引用的图像必须在地图目录内。
+支持标准二维 `trinary` 地图，包括非零原点朝向。浏览器修图不支持 `scale/raw` 模式地图。
+
+启动服务时不启动硬件。点击“开始建图”“加载此地图”或“启动遥控模式”才启动所需 ROS 节点，
+默认关闭 RViz。模式切换先归零速度、取消 action、退出本服务拥有的进程组，再启动新模式。
+不要同时用原来的导航 launch 或命令行键盘控制同一机器人；检测到旧节点时网页会拒绝重复启动。
+底盘、EKF、M10P、SLAM 参数直接复用已有包，硬件串口和安装外参仍按原项目配置。
+
+第一次建图流程：
+
+1. 打开“建图”，点击“开始建图”。底盘保持静止，等待 IMU 标定与稳定扫描门控就绪。
+2. 开启遥控，在现场确认空间后按住 W/S/A/D/Q/E 移动。松开即停止。
+3. 完成后松开控制并停车，填写新地图名并保存。保存不会覆盖已有同名地图。
+4. 需要修图时打开“修图”，选择地图，点击“打开修图”，编辑后“覆盖保存”。
+5. 在“导航”加载地图，选择“设置初始点”，拖拽箭头指定真实位置和朝向。
+6. 确认激光与地图对齐后，选目标并点击“开始导航”，或编辑保存多点路径再开始。
+
+## 运行配置与访问密码
+
+所有默认参数保留在所属功能包内，Web 包只管理服务配置和调用入口：
+
+| 所属包 | 参数文件 | 使用者 / 传递路径 |
+| --- | --- | --- |
+| `kiwi_web` | `config/web.yaml` | HTTP/WS 服务、地图目录、遥控上限、可选参数文件覆盖 |
+| `kiwi_base` | `config/kiwi_base.yaml` | 底盘、EKF、URDF；Web 从同一份文件读取物理限速 |
+| `kiwi_slam` | `config/ls_m10p_uart.yaml` | M10P UART 驱动 |
+| `kiwi_slam` | `config/slam_toolbox.yaml` | SLAM Toolbox |
+| `kiwi_slam` | `config/mapping_gate.yaml` | 建图前 IMU / 扫描门控 |
+| `kiwi_slam` | `config/monitor.yaml` | 链路诊断 |
+| `kiwi_navigation` | `config/nav2.yaml`、`behavior_trees/` | AMCL、地图服务器、规划、控制、平滑器和导航行为树 |
+
+`web.launch.py → Web 服务 → Supervisor → stack.launch.py` 完整传递
+`base_params_file`、`lidar_params_file`、`slam_params_file`、`mapping_gate_params_file`、
+`monitor_params_file`、`nav2_params_file`。空覆盖值在隔离的 launch 作用域内交给子包默认值，
+不会把空字符串传给 ROS 参数加载器。Nav2 节点编排位于 `kiwi_navigation/navigation_core.launch.py`，
+该入口只负责定位导航，独立于 Web；Web 指定速度输出话题以接入仲裁。原有 RViz 启动入口保留。
+
+参数优先级：命令行 / launch 显式覆盖 > 所选 `config` > 包内 `web.yaml`；
+算法参数不复制进 Web 配置。`base_params_file` 对 Web 物理限速检查、底盘和 EKF 同时生效。
+自主导航仍使用 `kiwi_navigation` 中的速度和加速度配置。
+
+```bash
+# 在目标设备修改各功能包内的配置，然后构建 / 重新构建。
+# --symlink-install 时包内 YAML 修改会直接反映到安装目录。
+ros2 launch kiwi_web web.launch.py
+
+# 可选：覆盖某一个功能包的配置文件；相对路径从工作空间解析。
+ros2 launch kiwi_web web.launch.py port:=8080 \
+  slam_params_file:=src/kiwi_slam/config/slam_toolbox.yaml
+```
+
+默认允许可信局域网内访问。需要密码时，在配置中设置 `access_token`，或在设备端设置
+`KIWI_WEB_TOKEN` 环境变量。页面通过同源、HttpOnly、SameSite=Strict 的会话 cookie 使用
+密码，不将密码存入前端源码、URL 或 localStorage。HTTP 是局域网明文传输；需要加密时可在
+设备上配置 HTTPS 反向代理，同时转发 WebSocket 和原始 Host/Origin。
+
+可选用户服务：在**目标设备**构建并 source 后生成匹配当前路径的服务文件。
+服务只记录目标工作空间路径，运行配置仍读取各功能包；不复制 YAML 到 `~/.config/kiwi`。
+
+```bash
+ros2 run kiwi_web kiwi_web_install_service
+systemctl --user daemon-reload
+systemctl --user enable --now kiwi-web.service
+journalctl --user -u kiwi-web.service -f
+```
+
+服务生成器也支持 `--workspace /absolute/workspace` 和 `--output /tmp/kiwi-web.service`。
+用户服务在用户会话启动时启动；无人登录启动由设备管理员启用该用户的 linger。
+安装服务前先退出前台启动的 Web 服务。同一 ROS 域只允许一个本地服务实例。
+
+迁移时复制 `src/`、工作空间下的 `maps/`（包括 `.versions/`、`.routes/` 隐藏目录），
+以及需要的项目工具与文档。不要跨设备搬运 `build/`、`install/`、`log/`；
+在目标设备安装 ROS 2 Humble 依赖并重新构建。硬件串口名称和安装外参在所属功能包修改。
+前端使用当前页面的 IP / 端口，不需要修改 JS；本机 IP、用户名和参考页面目录均不是运行依赖。
+
+## 控制与通信契约
+
+```text
+Browser --same-origin WS--> CommandGate --/cmd_vel--> kiwi_base_node
+Nav2 -> velocity_smoother --/kiwi_web/nav_cmd_vel--^
+ROS /map /scan /plan /tf /odometry/filtered -> HTTP PNG + WS state -> Browser
+```
+
+- 网页按 20 Hz 发送遥控，ROS 侧以 50 Hz 输出；收到松键/释放/急停请求即发布当前安全速度。
+- 手动命令 250 ms 没有更新就归零，控制权租约 1 秒；设备发出的挑战码 300 ms 过期，
+  防止积压的旧速度在网络恢复后被执行。浏览器超过 350 ms 未收到状态会释放控制权。
+- 同时只有一个浏览器持有手动遥控权。导航模式不接受手动速度。重连、解除软件急停均不自动恢复运动。
+- 软件急停锁定速度输出并取消导航；该功能是 ROS 软件停车，不替代断电或硬件急停。
+- 实测反馈或 EKF 超过 500 ms 未更新时禁止运动；导航还要求激光和定位 TF 新鲜。
+  导航中发生此类中断会锁定软件急停并取消任务，恢复数据后需人工解除并重新启动任务。
+  底盘已有的 500 ms `/cmd_vel` 看门狗继续保留，Web 进程异常退出时仍可使底盘归零。
+- 每次模式/地图切换都会更换会话版本，其他浏览器在旧地图上产生的导航请求会被拒绝。
+- 非本服务速度发布者会显示冲突并抑制本服务运动。ROS 域内其他程序必须遵守统一控制入口。
+- 状态与激光以 10 Hz 推送，激光最多 720 点、路径最多 1500 点；地图按版本通过 PNG 获取。
+  WebSocket 不传整张 JSON 栅格、不传视频，慢客户端不积压速度，断开后可自动重连。
+- 后端的地图文件操作/PNG 编码在线程中执行，独立于 ROS 控制循环；浏览器地图最高约 30 FPS，
+  页面隐藏时停止绘制。地图上限 1600 万栅格、一次编辑 200 万栅格、每条路径最多 200 点。
+
+设置页的时延为浏览器到设备的 WebSocket 往返时间，不等于电机响应时间。实际局域网时延和
+建图/导航算力需在目标设备、无线链路和真实地图大小下测量；有线网络通常更稳定。
+
+## 地图保存与恢复
+
+地图名字只允许 1–64 位英文、数字、`_`、`-`。PGM 采用顶部开始的图像行，ROS 地图采用底部
+开始的栅格行，前后端明确进行翻转，并正确处理 `origin[2]` 的旋转。
+
+每次保存先持久化 `.versions/<name>_<id>.pgm` 和同版本 YAML，再原子替换根目录的
+`<name>.yaml`，避免中途断电产生新旧元数据混搭。修图用 SHA-256 版本校验，拒绝覆盖另一
+页面刚刚保存的版本。未知栅格固定为 205，配套 `free_thresh: 0.196`，避免重新加载成空闲。
+
+历史版本保存在地图目录的 `.versions/`；删除是移走地图 YAML 并保留历史像素和路径。
+恢复时先停止运行模式，将所需历史 YAML **复制回地图根目录并命名为原地图名**，其相对图像
+路径会正确指向 `.versions/`。导出的 ZIP 包含普通 PGM、YAML 和该地图的 `.routes.json`，
+可用于备份。导入界面读取 PGM/PNG + YAML；导出的路径 JSON 可由管理员还原到 `.routes/`。
+历史版本不自动清理，设置页显示磁盘占用。
+
+## 验证
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+colcon test --packages-select kiwi_base lslidar_driver kiwi_slam kiwi_navigation kiwi_web \
+  --event-handlers console_direct+
+colcon test-result --verbose
+```
+
+`test_control.py` 覆盖速度限幅、控制权、过期报文、断线/看门狗和软件急停；`test_maps.py`
+覆盖 PGM/ROS 坐标、未知栅格、非零原点朝向、事务版本、非法路径和导入导出；`test_http.py`
+使用真实 HTTP/WebSocket 验证接口、鉴权和多个浏览器；`test_ros_integration.py` 在
+localhost 的 ROS 域 216 中创建测试发布者和真实 ROS action server，不启动硬件。
+
+浏览器流程测试（两个终端，测试服务仅绑定 localhost:8081、使用 ROS 域 217）：
+
+```bash
+# 终端 1：先 source ROS 和工作区
+python3 src/kiwi_web/test/browser_fixture.py
+
+# 终端 2：Playwright 不属于设备运行依赖
+npm install --prefix /tmp/kiwi-web-browser playwright
+NODE_PATH=/tmp/kiwi-web-browser/node_modules node src/kiwi_web/test/browser_e2e.cjs
+```
+
+测试使用本机 `/usr/bin/google-chrome`，可通过 `CHROME` 指定其他 Chromium 可执行文件。
+截图默认保存到 `/tmp/kiwi-web-screenshots`，`KIWI_SCREENSHOTS` 可覆盖。
+此测试验证真实浏览器 + Web 服务 + ROS action 链路；测试地图和传感器是隔离的测试数据，
+不能替代实车的串口、运动方向、定位精度、避障、无线断联和持续运行验收。
+
+验证真实 Nav2 启动与速度重映射（localhost ROS 域 218，不启动硬件、不发送导航目标）：
+
+```bash
+python3 src/kiwi_web/test/validate_nav2_runtime.py
+```
+
+检查 map_server、AMCL 和六个 Nav2 节点均进入 active 状态，控制器/行为服务速度进入
+`/kiwi_web/nav_raw`，平滑器输出 `/kiwi_web/nav_cmd_vel`，不存在绕过仲裁的 `/cmd_vel` 发布者。
+
+真实进程启停检查（localhost ROS 域 219，串口明确指向测试目录中不存在的文件）：
+
+```bash
+python3 src/kiwi_web/test/validate_supervisor_runtime.py
+```
+
+分别启动遥控和建图进程，确认底盘/EKF/SLAM 节点存在，然后停止并检查无存活子进程。
+
+
+完整控制链路联调（localhost ROS 域 220，预计约一分钟）：
+
+```bash
+python3 src/kiwi_web/test/validate_full_runtime.py
+```
+
+该脚本运行真实 Web HTTP/WS、原底盘 C++ 驱动、EKF、URDF、建图门控、SLAM Toolbox、
+map_server、AMCL 和 Nav2，只以 PTY 串口固件和房间 LaserScan 替代硬件。测试包含三轴
+遥控串口值、超时停车、实际建图保存、修图后三类栅格的全图比对、AMCL 初始定位、
+真实两点导航、暂停/继续、雷达断流锁停及原有地图加载。原有地图仅只读加载，不改动文件。
+测试复制参数到临时目录，以不同取值验证 SLAM / 门控 / 诊断 / Nav2 的参数覆盖实际生效；
+不更改生产配置。日志保留在脚本打印的 `/tmp/kiwi-full-runtime-*`。
+
+测试 ROS 域使用 216–220，与原底盘测试的随机 100–199 范围分离，避免并行验证时串话。

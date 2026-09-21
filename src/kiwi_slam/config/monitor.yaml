@@ -10,6 +10,8 @@ kiwi_slam_monitor:
     map_frame: map
     timeout_sec: 1.0
     map_timeout_sec: 5.0
+    # Localization mode uses a latched map_server map, with no periodic updates.
+    map_is_static: false
     min_valid_scan_ratio: 0.10
     require_map_tf: true
     debug_log: true

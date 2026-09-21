@@ -42,6 +42,8 @@ class KiwiSlamMonitor(Node):
         self.map_frame = str(self._required("map_frame", Parameter.Type.STRING))
         self.timeout_sec = float(self._required("timeout_sec", Parameter.Type.DOUBLE))
         self.map_timeout_sec = float(self._required("map_timeout_sec", Parameter.Type.DOUBLE))
+        # A static map_server publishes once; preserve dynamic SLAM checks by default.
+        self.map_is_static = self.declare_parameter("map_is_static", False).value
         self.min_valid_ratio = float(
             self._required("min_valid_scan_ratio", Parameter.Type.DOUBLE)
         )
@@ -185,7 +187,7 @@ class KiwiSlamMonitor(Node):
                 level, message = DiagnosticStatus.ERROR, "unexpected map frame"
             elif grid.info.width == 0 or grid.info.height == 0 or not grid.data:
                 level, message = DiagnosticStatus.ERROR, "empty map"
-            elif age > self.map_timeout_sec:
+            elif not self.map_is_static and age > self.map_timeout_sec:
                 level, message = DiagnosticStatus.WARN, "map update timeout"
             statuses.append(
                 self._status(

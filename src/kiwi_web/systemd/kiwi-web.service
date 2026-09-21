@@ -1,0 +1,17 @@
+[Unit]
+Description=Kiwi local web control console
+After=network.target
+
+[Service]
+Type=simple
+Environment="KIWI_WORKSPACE=@WORKSPACE@"
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/bin/bash -c 'source /opt/ros/humble/setup.bash && source "${KIWI_WORKSPACE}/install/setup.bash" && exec ros2 launch kiwi_web web.launch.py workspace:="${KIWI_WORKSPACE}"'
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGINT
+KillMode=control-group
+TimeoutStopSec=25
+
+[Install]
+WantedBy=default.target

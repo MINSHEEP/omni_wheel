@@ -2,7 +2,7 @@
 """启动 Kiwi 底盘、镭神 M10P 雷达、SLAM Toolbox、模型和诊断。"""
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (
@@ -14,13 +14,25 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
+def _monitor_node(context):
+    parameters = [LaunchConfiguration("monitor_params_file").perform(context)]
+    static_map = LaunchConfiguration("monitor_map_is_static").perform(context)
+    if static_map:
+        if static_map not in ("true", "false"):
+            raise ValueError("monitor_map_is_static must be true or false")
+        parameters.append({"map_is_static": static_map == "true"})
+    return [Node(
+        package="kiwi_slam", executable="kiwi_slam_monitor", name="kiwi_slam_monitor",
+        output="screen", parameters=parameters,
+    )]
+
+
 def generate_launch_description():
     """复用公共底盘层，构成可按模块启停的 M10P 二维建图链路。"""
     package_share = FindPackageShare("kiwi_slam")
     lidar_params = LaunchConfiguration("lidar_params_file")
     slam_params = LaunchConfiguration("slam_params_file")
     base_params = LaunchConfiguration("base_params_file")
-    monitor_params = LaunchConfiguration("monitor_params_file")
     mapping_gate_params = LaunchConfiguration("mapping_gate_params_file")
     rviz_config = LaunchConfiguration("rviz_config_file")
 
@@ -34,6 +46,10 @@ def generate_launch_description():
     rviz_software_rendering = LaunchConfiguration("rviz_software_rendering")
 
     arguments = [
+        DeclareLaunchArgument(
+            "monitor_map_is_static", default_value="",
+            description="可选运行模式覆盖；留空使用 monitor.yaml 的 map_is_static",
+        ),
         DeclareLaunchArgument(
             "lidar_params_file",
             default_value=PathJoinSubstitution(
@@ -140,13 +156,9 @@ def generate_launch_description():
             output="screen",
             parameters=[slam_params],
         ),
-        Node(
-            package="kiwi_slam",
-            executable="kiwi_slam_monitor",
-            name="kiwi_slam_monitor",
+        OpaqueFunction(
+            function=_monitor_node,
             condition=IfCondition(start_monitor),
-            output="screen",
-            parameters=[monitor_params],
         ),
         Node(
             package="rviz2",

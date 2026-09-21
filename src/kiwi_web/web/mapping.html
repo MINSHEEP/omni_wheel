@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>建图 · Kiwi 底盘控制</title>
+    <link rel="stylesheet" href="robot_ui.css" />
+    <link rel="stylesheet" href="kiwi.css" />
+    <script src="map_canvas.js" defer></script>
+    <script src="canvas_extensions.js" defer></script>
+    <script src="app.js" defer></script>
+  </head>
+  <body data-page="mapping">
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">Kiwi 底盘控制</div>
+        <nav class="page-nav" aria-label="功能页面">
+          <a href="mapping.html" class="active" aria-current="page">建图</a
+          ><a href="map_editor.html">修图</a><a href="navigation.html">导航</a
+          ><a href="remote_control.html">遥控</a
+          ><a href="settings.html">设置</a>
+        </nav>
+        <div class="topbar-statuses">
+          <div id="connection-status" class="page-status">○ 正在连接…</div>
+          <button id="global-stop" class="danger global-stop" type="button">
+            软件急停
+          </button>
+        </div>
+      </header>
+      <div id="estop-banner" class="estop-banner" hidden>
+        <span>软件急停已锁定，运动指令已停止</span
+        ><button id="banner-reset">解除软件急停</button>
+      </div>
+      <main class="workspace">
+        <section id="map-wrapper" class="map-wrapper" aria-label="二维地图">
+          <canvas id="map-canvas" aria-label="地图画布"></canvas>
+          <div id="map-overlay" class="map-overlay">
+            等待地图数据。右键拖拽平移，滚轮缩放。
+          </div>
+          <div class="zoom-controls" aria-label="地图缩放">
+            <button id="btn-zoom-in" title="放大">＋</button
+            ><button id="btn-zoom-out" title="缩小">－</button
+            ><button id="btn-reset-view" title="适应全图">⌂</button>
+          </div>
+          <div class="map-footer">
+            <span id="pose-display">位置 --</span
+            ><span id="map-detail">地图 --</span>
+          </div>
+        </section>
+        <aside class="panel">
+          <h1>二维建图</h1>
+          <p class="subtitle">
+            使用 M10P
+            激光雷达构建二维地图。开始后保持底盘静止，等待标定和扫描检查完成。
+          </p>
+          <section class="section">
+            <div class="section-title">建图状态</div>
+            <div class="status-grid">
+              <div class="status-card">
+                <span class="label">模式</span
+                ><span id="mode-display" class="value">等待</span>
+              </div>
+              <div class="status-card">
+                <span class="label">二维地图</span
+                ><span id="map-display" class="value">等待</span>
+              </div>
+              <div class="status-card">
+                <span class="label">建图就绪</span
+                ><span id="gate-display" class="value">等待</span>
+              </div>
+              <div class="status-card">
+                <span class="label">遥控</span
+                ><span id="remote-display" class="value">等待</span>
+              </div>
+            </div>
+            <div class="row">
+              <button id="btn-start-mapping" class="primary flex" type="button">
+                开始建图</button
+              ><button id="btn-stop-mode" class="danger flex" type="button">
+                停止建图
+              </button>
+            </div>
+            <p id="readiness" class="hint"></p>
+          </section>
+          <section class="section">
+            <div class="section-title">键盘遥控</div>
+            <div class="row toggle-row">
+              <span>开启遥控模式</span
+              ><button
+                id="remote-toggle"
+                class="toggle"
+                type="button"
+                aria-pressed="false"
+                aria-label="切换遥控模式"
+              ></button>
+            </div>
+            <div class="row">
+              <span>速度</span
+              ><input
+                id="speed-slider"
+                aria-label="遥控速度比例"
+                type="range"
+                min="0.1"
+                max="1"
+                step="0.05"
+                value="0.5"
+              /><strong id="speed-label">50%</strong>
+            </div>
+            <p id="keyboard-hint" class="hint disabled">
+              <kbd>W</kbd>/<kbd>S</kbd> 前后　<kbd>A</kbd>/<kbd>D</kbd>
+              横移<br /><kbd>Q</kbd>/<kbd>E</kbd> 转向　<kbd>X</kbd>
+              停止<br /><kbd>T</kbd>/<kbd>空格</kbd> 软件急停　<kbd>+</kbd>/<kbd
+                >-</kbd
+              >
+              调速
+            </p>
+            <p class="hint">
+              按住移动，松开停止。开启后仅当前页面持有遥控权。后退和横移前请确认周围空间。
+            </p>
+          </section>
+          <section class="section">
+            <div class="section-title">保存地图</div>
+            <div class="row">
+              <input
+                id="map-name"
+                aria-label="地图名称"
+                type="text"
+                maxlength="64"
+                placeholder="地图名称，例如 office_a"
+              /><button id="btn-save-map" class="success" type="button">
+                保存
+              </button>
+            </div>
+            <p class="hint">
+              停车后保存为 PGM +
+              YAML。名称使用英文、数字、下划线或连字符；已有地图请另存新名称。
+            </p>
+          </section>
+          <section class="section">
+            <div class="section-title">运行日志</div>
+            <div id="log-area" class="log-area" aria-live="polite"></div>
+          </section>
+        </aside>
+      </main>
+    </div>
+    <div id="toast" role="status" hidden></div>
+    <dialog id="confirm-dialog">
+      <h2 id="confirm-title">确认操作</h2>
+      <p id="confirm-message"></p>
+      <div class="dialog-actions">
+        <button id="confirm-no">取消</button
+        ><button id="confirm-yes" class="primary">确认</button>
+      </div>
+    </dialog>
+    <dialog id="login-dialog">
+      <h2>连接底盘</h2>
+      <p>请输入设备访问密码。</p>
+      <form id="login-form">
+        <input
+          id="access-token"
+          aria-label="设备访问密码"
+          type="password"
+          autocomplete="current-password"
+          required
+        />
+        <p id="login-error" class="hint"></p>
+        <button class="primary" type="submit">连接</button>
+      </form>
+    </dialog>
+  </body>
+</html>

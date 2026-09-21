@@ -1,0 +1,302 @@
+/* Preserve the supplied MSHEEP palette, header, controls and panel proportions. */
+.app-shell {
+  height: 100dvh;
+  min-height: 620px;
+  overflow: hidden;
+}
+.workspace {
+  overflow: hidden;
+}
+.panel {
+  overflow-y: auto;
+}
+.page-status {
+  font-variant-numeric: tabular-nums;
+}
+.health-good {
+  color: var(--success);
+}
+.health-bad {
+  color: var(--warning);
+}
+.global-stop {
+  padding: 8px 13px;
+  white-space: nowrap;
+}
+.map-footer {
+  position: absolute;
+  left: 14px;
+  bottom: 16px;
+  display: flex;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  background: #101425e6;
+  padding: 8px 12px;
+  border-radius: 6px;
+  pointer-events: none;
+}
+.map-overlay {
+  pointer-events: none;
+  bottom: 55px;
+  max-width: calc(100% - 100px);
+}
+.map-overlay.blocked {
+  pointer-events: none;
+}
+.remote-stage {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 20px;
+  gap: 16px;
+  flex: 1;
+  overflow: auto;
+}
+.remote-stage .map-wrapper {
+  min-height: 240px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.drive-panel {
+  width: 100%;
+  flex: 0;
+}
+.drive-grid {
+  max-width: 500px;
+  margin: 0 auto;
+}
+.drive-button {
+  touch-action: none;
+  user-select: none;
+}
+.drive-button.pressed {
+  background: var(--accent-strong);
+  border-color: var(--accent);
+}
+.settings-stage {
+  flex: 1;
+  padding: 24px;
+  overflow: auto;
+  min-width: 0;
+}
+.settings-card {
+  padding: 20px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  margin-bottom: 18px;
+}
+.settings-card h2 {
+  margin-top: 0;
+  font-size: 18px;
+}
+.settings-card pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 12px;
+}
+.settings-card label {
+  display: block;
+  margin-bottom: 12px;
+}
+.settings-card input[type="file"] {
+  width: 100%;
+  margin-top: 6px;
+}
+.route-list {
+  list-style: none;
+  margin: 10px 0;
+  padding: 0;
+  max-height: 260px;
+  overflow: auto;
+}
+.route-list li {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+}
+.route-list input {
+  min-width: 0;
+  width: 63px;
+  padding: 6px;
+  font-size: 12px;
+}
+.route-list button {
+  padding: 6px;
+  min-width: 28px;
+}
+.route-list .point-number {
+  min-width: 22px;
+  color: var(--accent);
+}
+.route-list li.current {
+  background: #247fbe30;
+}
+.route-list li.completed {
+  opacity: 0.55;
+}
+.pose-value {
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+}
+.notice {
+  border-left: 3px solid var(--warning);
+  padding: 8px 10px;
+  color: var(--warning);
+  background: #ffbd590d;
+  font-size: 13px;
+  margin: 10px 0;
+}
+.status-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.estop-banner {
+  background: #7d2335;
+  padding: 8px 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+[hidden] {
+  display: none !important;
+}
+dialog {
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  width: min(440px, 90vw);
+  padding: 25px;
+}
+dialog::backdrop {
+  background: #020713aa;
+}
+dialog h2 {
+  margin-top: 0;
+}
+dialog p {
+  line-height: 1.7;
+  color: var(--muted);
+}
+dialog input {
+  width: 100%;
+  margin-bottom: 12px;
+}
+.dialog-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: 25px;
+  transform: translateX(-50%);
+  background: #202944f5;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 12px 22px;
+  max-width: 90vw;
+  z-index: 100;
+  box-shadow: 0 8px 30px #0008;
+}
+#toast.error {
+  border-color: var(--danger);
+}
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+@media (max-width: 520px) {
+  .topbar .brand {
+    display: flex;
+    font-size: 14px;
+  }
+  .topbar .brand::before {
+    width: 58px;
+    flex-basis: 58px;
+  }
+  .topbar .page-status {
+    display: block;
+  }
+  .topbar .topbar-statuses {
+    flex: 1;
+  }
+  .topbar .page-nav {
+    flex-basis: 100%;
+  }
+}
+@media (max-width: 1100px) {
+  .topbar {
+    gap: 10px;
+    padding: 0 12px;
+  }
+  .brand::before {
+    width: 78px;
+    flex-basis: 78px;
+  }
+  .brand {
+    font-size: 16px;
+  }
+  .page-nav a {
+    padding: 0 12px;
+  }
+  .topbar-statuses {
+    gap: 8px;
+  }
+}
+@media (max-width: 900px) {
+  .app-shell {
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+  }
+  .workspace {
+    flex-direction: column;
+    overflow: visible;
+  }
+  .topbar {
+    flex-wrap: wrap;
+    padding: 10px 12px;
+  }
+  .page-nav {
+    order: 3;
+    width: 100%;
+  }
+  .page-nav a {
+    min-height: 42px;
+    flex: 1;
+    justify-content: center;
+  }
+  .topbar-statuses {
+    flex-wrap: wrap;
+    font-size: 12px;
+  }
+  .map-wrapper {
+    height: 55dvh;
+    min-height: 320px;
+    flex: none;
+    border-right: 0;
+  }
+  .panel,
+  .navigation-panel {
+    width: 100%;
+    max-height: none;
+  }
+  .remote-stage .map-wrapper {
+    height: 35dvh;
+    min-height: 230px;
+  }
+  .drive-header {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .remote-stage {
+    overflow: visible;
+  }
+}

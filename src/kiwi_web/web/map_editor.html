@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>修图 · Kiwi 底盘控制</title>
+    <link rel="stylesheet" href="robot_ui.css" />
+    <link rel="stylesheet" href="kiwi.css" />
+    <script src="map_canvas.js" defer></script>
+    <script src="canvas_extensions.js" defer></script>
+    <script src="app.js" defer></script>
+  </head>
+  <body data-page="map_editor">
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">Kiwi 底盘控制</div>
+        <nav class="page-nav" aria-label="功能页面">
+          <a href="mapping.html">建图</a
+          ><a href="map_editor.html" class="active" aria-current="page">修图</a
+          ><a href="navigation.html">导航</a
+          ><a href="remote_control.html">遥控</a
+          ><a href="settings.html">设置</a>
+        </nav>
+        <div class="topbar-statuses">
+          <div id="connection-status" class="page-status">○ 正在连接…</div>
+          <button id="global-stop" class="danger global-stop" type="button">
+            软件急停
+          </button>
+        </div>
+      </header>
+      <div id="estop-banner" class="estop-banner" hidden>
+        <span>软件急停已锁定，运动指令已停止</span
+        ><button id="banner-reset">解除软件急停</button>
+      </div>
+      <main class="workspace">
+        <section id="map-wrapper" class="map-wrapper" aria-label="二维地图">
+          <canvas id="map-canvas" aria-label="地图画布"></canvas>
+          <div id="map-overlay" class="map-overlay">
+            等待地图数据。右键拖拽平移，滚轮缩放。
+          </div>
+          <div class="zoom-controls" aria-label="地图缩放">
+            <button id="btn-zoom-in" title="放大">＋</button
+            ><button id="btn-zoom-out" title="缩小">－</button
+            ><button id="btn-reset-view" title="适应全图">⌂</button>
+          </div>
+          <div class="map-footer">
+            <span id="pose-display">位置 --</span
+            ><span id="map-detail">地图 --</span>
+          </div>
+        </section>
+        <aside class="panel">
+          <h1>修图</h1>
+          <p class="subtitle">
+            编辑已保存地图。打开修图时会停止建图和导航；修改保存后，在导航页重新加载即可生效。
+          </p>
+          <section class="section">
+            <div class="section-title">选择地图</div>
+            <div class="row">
+              <select id="map-selector" aria-label="已保存地图">
+                <option value="">请选择已保存地图</option>
+              </select>
+            </div>
+            <div class="row">
+              <button id="btn-refresh-maps" class="flex" type="button">
+                刷新列表</button
+              ><button id="btn-open-map" class="primary flex" type="button">
+                打开修图
+              </button>
+            </div>
+            <div class="status-grid">
+              <div class="status-card">
+                <span class="label">当前地图</span
+                ><span id="editing-map-display" class="value">等待</span>
+              </div>
+              <div class="status-card">
+                <span class="label">编辑状态</span
+                ><span id="edit-status-display" class="value">等待</span>
+              </div>
+            </div>
+          </section>
+          <section class="section">
+            <div class="section-title">绘制内容</div>
+            <div class="row">
+              <button
+                id="btn-tool-obstacle"
+                class="tool-active flex"
+                type="button"
+              >
+                画障碍</button
+              ><button id="btn-tool-free" class="flex" type="button">
+                可通行</button
+              ><button id="btn-tool-unknown" class="flex" type="button">
+                未知
+              </button>
+            </div>
+            <div class="section-title" style="margin-top: 14px">绘制方式</div>
+            <div class="row">
+              <button
+                id="btn-shape-brush"
+                class="choice-active flex"
+                type="button"
+              >
+                画笔拖拽</button
+              ><button id="btn-shape-rectangle" class="flex" type="button">
+                矩形框选
+              </button>
+            </div>
+            <div class="row">
+              <span>画笔半径</span
+              ><input
+                id="brush-radius"
+                aria-label="画笔半径"
+                type="range"
+                min="0"
+                max="10"
+                value="2"
+              /><strong id="brush-radius-value">2</strong>
+            </div>
+            <p class="hint">
+              左键绘制，右键平移，滚轮缩放。每次拖拽或框选可以单步撤销。
+            </p>
+          </section>
+          <section class="section">
+            <div class="section-title">提交修改</div>
+            <div class="row">
+              <button id="btn-undo" class="warning flex" type="button">
+                撤销上一步</button
+              ><button id="btn-redo" class="flex" type="button">重做</button>
+            </div>
+            <div class="row">
+              <button id="btn-save-edits" class="success flex" type="button">
+                覆盖保存</button
+              ><button id="btn-export-map" class="flex" type="button">
+                导出地图
+              </button>
+            </div>
+            <p class="hint">
+              保留分辨率与原点。覆盖前自动保留历史版本；其他页面修改了同一地图时会提示重新打开。
+            </p>
+          </section>
+          <section class="section">
+            <div class="section-title">运行日志</div>
+            <div id="log-area" class="log-area" aria-live="polite"></div>
+          </section>
+        </aside>
+      </main>
+    </div>
+    <div id="toast" role="status" hidden></div>
+    <dialog id="confirm-dialog">
+      <h2 id="confirm-title">确认操作</h2>
+      <p id="confirm-message"></p>
+      <div class="dialog-actions">
+        <button id="confirm-no">取消</button
+        ><button id="confirm-yes" class="primary">确认</button>
+      </div>
+    </dialog>
+    <dialog id="login-dialog">
+      <h2>连接底盘</h2>
+      <p>请输入设备访问密码。</p>
+      <form id="login-form">
+        <input
+          id="access-token"
+          aria-label="设备访问密码"
+          type="password"
+          autocomplete="current-password"
+          required
+        />
+        <p id="login-error" class="hint"></p>
+        <button class="primary" type="submit">连接</button>
+      </form>
+    </dialog>
+  </body>
+</html>
