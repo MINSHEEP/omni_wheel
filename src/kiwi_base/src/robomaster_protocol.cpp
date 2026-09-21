@@ -1,6 +1,6 @@
 /**
  * @file robomaster_protocol.cpp
- * @brief 实现 0x3A 命令组帧、0x3B 反馈解析和 CRC。
+ * @brief 实现 0x3A 命令组帧、0x3B/0x3C 混合帧解析和 CRC。
  */
 #include "kiwi_base/robomaster_protocol.hpp"
 
@@ -101,8 +101,11 @@ std::vector<uint8_t> encode_command(const CommandFrame &command)
   return frame;
 }
 
-FrameParser::FrameParser(FeedbackCallback callback, RawFrameCallback raw_callback)
-: callback_(std::move(callback)), raw_callback_(std::move(raw_callback))
+FrameParser::FrameParser(
+  FeedbackCallback callback, RawFrameCallback raw_callback,
+  RemoteControlCallback remote_callback)
+: callback_(std::move(callback)), raw_callback_(std::move(raw_callback)),
+  remote_callback_(std::move(remote_callback))
 {
 }
 
@@ -137,7 +140,12 @@ void FrameParser::consume()
       continue;
     }
 
-    if (buffer_[2] != feedback_id || buffer_[1] != kFeedbackPayloadLength)
+    const bool is_feedback = buffer_[2] == feedback_id;
+    const bool is_remote = buffer_[2] == static_cast<uint8_t>(FrameType::RemoteControl);
+    const size_t payload_length = buffer_[1];
+    if ((!is_feedback && !is_remote) ||
+      (is_feedback && payload_length != kFeedbackPayloadLength) ||
+      (is_remote && payload_length != kRemoteControlPayloadLength))
     {
       buffer_.erase(buffer_.begin());
       ++errors_;
@@ -151,7 +159,7 @@ void FrameParser::consume()
       continue;
     }
 
-    constexpr size_t total_length = 4 + kFeedbackPayloadLength + 2;
+    const size_t total_length = 4 + payload_length + 2;
     if (buffer_.size() < total_length)
       return;
 
@@ -164,7 +172,7 @@ void FrameParser::consume()
     }
 
     bool finite = true;
-    for (size_t offset = 4; offset < 4 + kFeedbackPayloadLength; offset += sizeof(float))
+    for (size_t offset = 4; is_feedback && offset < 4 + payload_length; offset += sizeof(float))
       finite = finite && std::isfinite(get_f32(buffer_.data() + offset));
     if (!finite)
     {
@@ -175,14 +183,50 @@ void FrameParser::consume()
 
     const std::vector<uint8_t> raw(buffer_.begin(), buffer_.begin() + total_length);
     const std::vector<uint8_t> payload(
-      buffer_.begin() + 4, buffer_.begin() + 4 + kFeedbackPayloadLength);
-    if (raw_callback_)
-      raw_callback_(raw);
-    if (callback_)
-      callback_(buffer_[0], payload);
-    ++frames_;
+      buffer_.begin() + 4, buffer_.begin() + 4 + payload_length);
+    if (is_feedback)
+    {
+      // 保留既有回调和 frames() 的 0x3B 专属语义。
+      if (raw_callback_)
+        raw_callback_(raw);
+      if (callback_)
+        callback_(buffer_[0], payload);
+      ++frames_;
+    }
+    else
+    {
+      RemoteControlFrame remote{};
+      if (decode_remote_control(payload, remote) && remote_callback_)
+        remote_callback_(remote);
+      ++remote_frames_;
+    }
     buffer_.erase(buffer_.begin(), buffer_.begin() + total_length);
   }
+}
+
+bool decode_remote_control(const std::vector<uint8_t> &payload, RemoteControlFrame &out)
+{
+  if (payload.size() != kRemoteControlPayloadLength)
+    return false;
+  out.timestamp_ms = get_u32(payload.data());
+  for (size_t i = 0; i < out.channels.size(); ++i)
+  {
+    const uint16_t bits = get_u16(payload.data() + 4 + 2 * i);
+    // 显式符号扩展，不依赖超范围 unsigned -> signed 转换行为。
+    out.channels[i] = static_cast<int16_t>(
+      bits < 0x8000U ? static_cast<int32_t>(bits) : static_cast<int32_t>(bits) - 65536);
+  }
+  out.sw_right = payload[12];
+  out.sw_left = payload[13];
+  return true;
+}
+
+bool remote_controls_valid(const RemoteControlFrame &frame)
+{
+  return frame.sw_right >= 1 && frame.sw_right <= 3 &&
+         frame.sw_left >= 1 && frame.sw_left <= 3 &&
+         std::all_of(frame.channels.begin(), frame.channels.end(),
+    [](int16_t value) { return value >= -700 && value <= 700; });
 }
 
 bool decode_feedback(const std::vector<uint8_t> &payload, FeedbackFrame &out)

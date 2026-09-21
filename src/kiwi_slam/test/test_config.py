@@ -77,9 +77,9 @@ def test_urdf_has_required_tf_links_and_joint_names():
     assert "base_link_to_lidar" in joints
     assert set(arguments) == {"hardware_config"}
     text = (PACKAGE / "urdf" / "kiwi.urdf.xacro").read_text(encoding="utf-8")
-    assert 'name="chassis_imu_xyz" value="0.0115 -0.149 0.0"' in text
-    # 锁定 M10P 当前安装值；实机复测后需同步修改 URDF 与本断言。
-    assert 'name="lidar_xyz" value="0.32 0.0 0.20"' in text
+    # 锁定第二版底盘安装值（127417e）；实机复测后同步修改 URDF 与本断言。
+    assert 'name="chassis_imu_xyz" value="-0.0118 0.0 0.0"' in text
+    assert 'name="lidar_xyz" value="0.209 0.0 0.20"' in text
     assert "wheel_radius_m" in text
     assert "wheel_center_distance_m" in text
 

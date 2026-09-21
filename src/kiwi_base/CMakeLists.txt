@@ -14,9 +14,10 @@ find_package(sensor_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
 
-# 调试消息只描述已解码的 0x3B 字段，不参与底盘控制和 EKF 接口。
+# 0x3B 调试和 0x3C 遥控状态消息；遥控输入不自动生成运动命令。
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/FeedbackDebug.msg"
+  "msg/RemoteControl.msg"
   DEPENDENCIES std_msgs
 )
 include_directories(include)
@@ -73,5 +74,6 @@ if(BUILD_TESTING)
   target_link_libraries(test_stationary_covariance_estimator kiwi_base_core)
   ament_add_pytest_test(test_ekf_config test/test_ekf_config.py)
   ament_add_pytest_test(test_cmd_vel_watchdog test/test_cmd_vel_watchdog.py TIMEOUT 30)
+  ament_add_pytest_test(test_remote_control test/test_remote_control.py TIMEOUT 30)
 endif()
 ament_package()

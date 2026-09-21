@@ -122,3 +122,46 @@ colcon test --packages-select kiwi_base --event-handlers console_cohesion+ \
 colcon test-result --all --verbose
 python3 src/kiwi_base/tools/kiwi_serial_test.py --self-test
 ```
+## 遥控器 USB 上报接入（2026-09-10）
+
+`kiwi_base_node` 在同一串口解析 `0x3B` 电机/IMU 与 `0x3C` 遥控帧，
+后者发布为 `kiwi_base/msg/RemoteControl`，默认话题 `/chassis/remote_control`。
+当前接入仅发布状态，不生成 `/cmd_vel` 或躯干轨迹。
+
+在 Ubuntu 22.04 / ROS 2 Humble 的工作区根目录执行：
+
+```bash
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install --packages-select kiwi_base
+source tools/activate_workspace.sh
+colcon test --packages-select kiwi_base --event-handlers console_direct+
+colcon test-result --verbose
+ros2 launch kiwi_base kiwi_base_ekf.launch.py
+```
+
+另一个加载相同工作区的终端查看：
+
+```bash
+ros2 topic echo /chassis/remote_control
+```
+
+已经启动 SLAM/导航时，直接查看话题，不要再启动第二个底盘节点。
+必须使用 `feedback_framed: true`；历史裸 48 字节模式不能解析混合流。
+自定义底盘 YAML 还需添加 `remote_control_topic: /chassis/remote_control`
+和 `remote_frame_timeout_s: 0.20`（仓库 YAML 已配置）。
+
+消息包含四个摇杆通道、左右拨杆和 MCU 打包时间。按节点控制周期发布状态；
+`header.stamp` 保留最后一帧 CRC 合格遥控数据的 ROS 接收时间，
+`frame_fresh` 仅在最近 0.20 秒内收到此类帧时为 true（主机单调时钟）。
+超时保留旧值用于诊断；启动无数据或串口关闭后清空值、时间戳和状态。
+`controls_valid` 仅检查通道范围 [-700,700]、拨杆范围 [1,3]；
+它不会因为 USB 帧超时自动变 false，因此消费者必须分别检查两个标志。
+CRC 合格但数值越界的帧仍发布原值，并立即设置 `controls_valid=false`。
+坏 CRC、0x3B 或其他字节不会刷新遥控帧计时器。
+
+注意：`ros2 topic hz` 测得的是状态发布频率，不能证明 MCU 正在上报；应查看
+`frame_fresh` 和接收时间。当前协议既没有滚轮 `ch[4]`，也没有接收机在线标志；
+即使两个标志均为 true，也可能是 MCU 反复打包已经失效的遥控值。
+后续连接躯干控制前，固件必须提供接收机有效状态/真实接收新鲜度；
+ROS 消费者还必须独立检测本话题断流，处理停止保持和控制权切换。
+不能将这四个通道重新映射到底盘 `/cmd_vel` 与固件本地遥控叠加。

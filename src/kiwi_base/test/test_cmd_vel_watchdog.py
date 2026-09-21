@@ -11,6 +11,7 @@ from pathlib import Path
 
 import rclpy
 import pytest
+import yaml
 from geometry_msgs.msg import Twist
 from kiwi_base.msg import FeedbackDebug
 from nav_msgs.msg import Odometry
@@ -104,6 +105,9 @@ def quaternion_yaw(orientation):
 
 def test_no_ack_watchdog_and_feedback_odometry(monkeypatch, tmp_path):
     """无反馈时控制不阻塞；只有异步电机实测值能够驱动里程计。"""
+    base = yaml.safe_load((PACKAGE / "config" / "kiwi_base.yaml").read_text())[
+        "kiwi_base_node"
+    ]["ros__parameters"]
     domain_id = str(100 + os.getpid() % 100)
     monkeypatch.setenv("ROS_DOMAIN_ID", domain_id)
     monkeypatch.setenv("ROS_LOCALHOST_ONLY", "1")
@@ -151,12 +155,14 @@ def test_no_ack_watchdog_and_feedback_odometry(monkeypatch, tmp_path):
         publisher = publisher_node.create_publisher(Twist, "/cmd_vel", 10)
         odom_twists = []
         odom_positions = []
+        odom_messages = []
         joint_velocities = []
         imu_messages = []
         feedback_messages = []
 
         def on_odometry(message):
             """同时保存速度与积分位姿，验证反馈里程计的完整输出。"""
+            odom_messages.append(message)
             odom_twists.append(message.twist.twist)
             odom_positions.append(
                 (message.pose.pose.position.x, message.pose.pose.position.y)
@@ -344,15 +350,42 @@ def test_no_ack_watchdog_and_feedback_odometry(monkeypatch, tmp_path):
         while not odom_twists or not joint_velocities:
             rclpy.spin_once(publisher_node, timeout_sec=0.02)
             assert time.monotonic() < feedback_deadline, "等待反馈里程计消息超时"
-        # [19, 0, -19] / 19 = [1, 0, -1] rad/s，对应纯 +X 约 0.1172 m/s。
+        # 从实际标定配置独立计算期望轮速，避免继续假定历史减速比 19。
+        expected_wheels = tuple(
+            raw * base["feedback_motor_scale_to_rad_s"] / ratio
+            for raw, ratio in zip((19.0, 0.0, -19.0), base["motor_reduction_ratio"])
+        )
         assert odom_twists[-1].linear.x == pytest.approx(
-            0.1015 / math.sin(math.pi / 3.0), rel=0.02
+            base["wheel_radius_m"] * (expected_wheels[0] - expected_wheels[2])
+            / (2.0 * math.sin(math.pi / 3.0)), rel=0.02
         )
         assert odom_twists[-1].linear.y == pytest.approx(0.0, abs=1e-5)
         assert odom_twists[-1].angular.z == pytest.approx(0.0, abs=1e-5)
-        assert joint_velocities[-1] == pytest.approx((1.0, 0.0, -1.0), rel=0.02)
+        assert joint_velocities[-1] == pytest.approx(expected_wheels, rel=0.02)
         assert odom_positions[-1][0] > 0.0
         assert odom_positions[-1][1] == pytest.approx(0.0, abs=1e-5)
+
+        # 同时平移/旋转：与每个采样区间的解析圆弧比较，覆盖中点积分的精度。
+        odom_messages.clear()
+        for _ in range(12):
+            inject_feedback([4.0, -2.0, -6.0] + [0.0] * 8 + [9.81])
+            time.sleep(0.03)
+        assert len(odom_messages) >= 10
+        for previous, current in zip(odom_messages, odom_messages[1:]):
+            yaw0 = quaternion_yaw(previous.pose.pose.orientation)
+            yaw1 = quaternion_yaw(current.pose.pose.orientation)
+            twist = current.twist.twist
+            assert abs(twist.angular.z) > 0.03
+            ds = math.sin(yaw1) - math.sin(yaw0)
+            dc = math.cos(yaw1) - math.cos(yaw0)
+            expected_dx = (twist.linear.x * ds + twist.linear.y * dc) / twist.angular.z
+            expected_dy = (-twist.linear.x * dc + twist.linear.y * ds) / twist.angular.z
+            assert current.pose.pose.position.x - previous.pose.pose.position.x == (
+                pytest.approx(expected_dx, rel=0.001, abs=1e-6)
+            )
+            assert current.pose.pose.position.y - previous.pose.pose.position.y == (
+                pytest.approx(expected_dy, rel=0.001, abs=1e-6)
+            )
 
         # 断开伪终端后继续发送非零目标；节点不得退出，也不得把仅存在于主机
         # 内存中的 /cmd_vel 积分成新的里程计消息。

@@ -13,9 +13,12 @@ kiwi_base_node:
     feedback_framed: true
     # /cmd_vel 发布中断后最多保持该时长，超时由 50 Hz 控制循环主动归零。
     cmd_vel_timeout_s: 0.5
+    # 仅检测 0x3C USB 数据流超时，不代表遥控接收机在线；使用主机单调时钟。
+    remote_frame_timeout_s: 0.20
+    remote_control_topic: /chassis/remote_control
     # 遥测电机数值 -> 电机转子 rad/s 的倍率；反馈里程计与静止判定共用。
     # 该遥测是异步状态流，不是 0x3A 命令 ACK。
-    feedback_motor_scale_to_rad_s: 1.0
+    feedback_motor_scale_to_rad_s: 0.93457944
     # 电机转子速度一阶低通截止频率；在死区和正运动学之前抑制地面振动噪声。
     # 50 Hz 遥测下 8 Hz 兼顾约 20 ms 量级响应与里程计速度稳定性。
     motor_feedback_lowpass_cutoff_hz: 8.0
@@ -26,7 +29,7 @@ kiwi_base_node:
     motor_feedback_deadband_rad_s: [0.20, 0.20, 0.20]
 
     # 实车几何：203 mm 轮径；中心到轮心距离 350 mm。
-    wheel_radius_m: 0.1015
+    wheel_radius_m: 0.107
     wheel_center_distance_m: 0.35
     # 轮输出轴物理上限；多轴合成超限时保持 Twist 方向等比例缩放。
     max_wheel_speed_rad_s: 8.0

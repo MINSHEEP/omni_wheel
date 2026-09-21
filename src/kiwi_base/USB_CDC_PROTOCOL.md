@@ -6,6 +6,7 @@ RoboMaster C 板接收 0x3A 速度命令，并独立异步上报 0x3B 遥测。0
 ```text
 主机 -> C 板：0x33 / len=12 / id=0x3A，三个电机目标速度
 C 板 -> 主机：0x33 / len=48 / id=0x3B，电机/欧拉角/IMU 异步遥测
+C 板 -> 主机：0x33 / len=14 / id=0x3C，四通道/拨杆遥控状态
 ```
 
 协议实现位于 `src/kiwi_base/src/robomaster_protocol.cpp`，声明位于
@@ -26,12 +27,13 @@ C 板 -> 主机：0x33 / len=48 / id=0x3B，电机/欧拉角/IMU 异步遥测
 4+len 2     crc16     CRC16(偏移 0 到 3+len)，低字节在前
 ```
 
-代码中保留两个 ID：
+代码中保留三个 ID（0x3C 详见第 7 节）：
 
 ```text
 ID     方向          payload  总长度  含义
 0x3A   主机 -> C 板  12 B     18 B    三电机目标角速度
 0x3B   C 板 -> 主机  48 B     54 B    异步电机/IMU 遥测（不是命令 ACK）
+0x3C   C 板 -> 主机  14 B     20 B    四通道/拨杆遥控状态
 ```
 
 0x3A 没有 ACK，主机从不等待 0x3B。节点在每个控制周期对同一非阻塞串口做有界读取，
@@ -154,3 +156,48 @@ test/test_protocol.cpp                        命令 golden、反馈字段、分
 2. ROS 节点参数 `log_serial_frames=true` 只用于输出命令映射；不得把缺少反馈记录为 TX 故障。
 3. 里程计唯一使用经过低通和死区处理的遥测电机值；禁止回退为 `/cmd_vel` 开环积分。
 4. 修改 0x3B 格式或单位前必须先冻结两端协议，并同步协议、PTY 与字段顺序测试。
+
+## 7. 遥控状态 0x3C（当前固件兼容布局）
+
+0x3C 与 0x3B 共用 USB 字节流，独立校验；不能追加到 0x3B 的 48 字节 payload 内。
+遥控 payload 固定 14 字节，整帧 20 字节：
+
+```text
+payload 偏移  类型        字段
+0             uint32 LE   timestamp_ms（MCU 打包时刻）
+4             int16 LE    ch[0]
+6             int16 LE    ch[1]
+8             int16 LE    ch[2]
+10            int16 LE    ch[3]
+12            uint8       sw_right（上1、下2、中3）
+13            uint8       sw_left（上1、下2、中3）
+```
+
+CRC8/CRC16 与原协议一致。固件每隔约 20 ms 尝试在 0x3B 后拼接一帧 0x3C；
+USB 忙时实际间隔可能更长。USB 读取可能出现半帧、多帧或 64 字节边界切分，
+解析不能依赖一次 read() 恰好对应一帧。
+
+`FrameParser` 按 ID/长度分发；原 feedback/raw 回调与 `frames()` 只统计 0x3B，
+新增 remote 回调与 `remote_frames()` 只处理 0x3C，遥控字节不进入浮点解码或里程计。
+旧固件只发 0x3B 时原链路仍可运行。历史裸数据模式不支持混合流，必须保持
+`feedback_framed: true`。
+
+`kiwi_base_node` 将遥控状态发布到 `/chassis/remote_control`，类型为
+`kiwi_base/msg/RemoteControl`，频率等于节点控制周期（默认 50 Hz）。
+该话题频率不是 USB 遥控上报频率；`header.stamp` 保留最后一帧合法 CRC 数据的
+ROS 接收时间，`mcu_timestamp_ms` 原样保留 MCU 打包时间。
+
+`frame_fresh` 由主机单调时钟与 `remote_frame_timeout_s`（默认 0.20 s）计算。
+未收到数据或串口关闭时清零；帧超时则保留原字段及原时间戳、置 frame_fresh=false。
+`controls_valid` 独立检查四通道 [-700,700]、拨杆 [1,3]，不代表在线或使能。
+CRC 合格但数值异常的帧仍发布给诊断；坏 CRC 或 0x3B 不刷新遥控计时器。
+
+当前协议没有 ch[4]、接收机在线状态或真实遥控接收序号。
+MCU 持续打包旧遥控值时，frame_fresh 和 controls_valid 都可能为 true；
+不能只靠这两个标志启动躯干。后续动作控制需要固件提供真实遥控有效状态，
+并由 ROS 消费者检测话题本身的断流。当前节点仅发布状态，不自动产生运动命令。
+
+联调：重新构建 kiwi_base、加载工作区后，运行现有底盘/SLAM 入口，执行
+`ros2 topic echo /chassis/remote_control`。节点已运行时不再打开同一串口。
+新增测试在 `test/test_protocol.cpp` 与 `test/test_remote_control.py`；
+`tools/kiwi_feedback_receiver.py --self-test` 仍仅用于历史 0x3B 离线自检。

@@ -12,6 +12,7 @@
  *   /chassis/imu/data_raw   - 异步 0x3B IMU 遥测
  *   /chassis/imu/calibration_ready - IMU 首个完整静止标定窗口完成状态
  *   /chassis/feedback/raw  - 异步 0x3B 原始字段调试消息
+ *   /chassis/remote_control - 0x3C 遥控原始值及 USB 帧超时状态
  *
  * 0x3A 命令没有 ACK，发送链永不等待 0x3B。异步 0x3B 只作为独立的电机/IMU
  * 测量流，里程计不使用 /cmd_vel 做开环推算。
@@ -30,6 +31,7 @@
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <kiwi_base/msg/feedback_debug.hpp>
+#include <kiwi_base/msg/remote_control.hpp>
 
 #include <fcntl.h>
 #include <sys/ioctl.h>
@@ -221,7 +223,8 @@ namespace kiwi_base
     KiwiBaseNode()
         : Node("kiwi_base_node"),
           parser_([this](uint8_t ver, const std::vector<uint8_t> &payload)
-                  { on_feedback_frame(ver, payload); })
+                  { on_feedback_frame(ver, payload); }, {},
+                  [this](const RemoteControlFrame &frame) { on_remote_control(frame); })
     {
       load_parameters();
       create_publishers();
@@ -263,6 +266,7 @@ namespace kiwi_base
       double feedback_motor_scale;
       double motor_feedback_lowpass_cutoff;
       double cmd_vel_timeout_s;
+      double remote_frame_timeout_s;
 
       // 机械参数
       std::array<double, 3> motor_ratio;
@@ -322,6 +326,7 @@ namespace kiwi_base
       std::string topic_imu_ready;
       std::string topic_joints;
       std::string topic_debug;
+      std::string topic_remote;
       std::string frame_odom;
       std::string frame_base;
       std::string frame_imu;
@@ -338,6 +343,9 @@ namespace kiwi_base
       int fd{-1};
       std::vector<uint8_t> raw_buffer;
       std::optional<FeedbackFrame> pending_feedback;
+      std::optional<RemoteControlFrame> remote;
+      Clock::time_point remote_received_at;
+      rclcpp::Time remote_stamp{0, 0, RCL_ROS_TIME};
 
       // 控制
       Twist2D cmd{0.0, 0.0, 0.0};
@@ -394,6 +402,7 @@ namespace kiwi_base
       cfg_.motor_feedback_lowpass_cutoff = require_positive<double>(
         *this, "motor_feedback_lowpass_cutoff_hz");
       cfg_.cmd_vel_timeout_s = require_positive<double>(*this, "cmd_vel_timeout_s");
+      cfg_.remote_frame_timeout_s = require_positive<double>(*this, "remote_frame_timeout_s");
 
       // 机械参数
       cfg_.motor_ratio = require_positive_vector3(*this, "motor_reduction_ratio");
@@ -471,6 +480,7 @@ namespace kiwi_base
         *this, "imu_calibration_ready_topic");
       cfg_.topic_joints = require_param<std::string>(*this, "joint_states_topic");
       cfg_.topic_debug = require_param<std::string>(*this, "feedback_debug_topic");
+      cfg_.topic_remote = require_param<std::string>(*this, "remote_control_topic");
       cfg_.frame_odom = require_param<std::string>(*this, "odom_frame_id");
       cfg_.frame_base = require_param<std::string>(*this, "base_frame_id");
       cfg_.frame_imu = require_param<std::string>(*this, "imu_frame_id");
@@ -517,6 +527,9 @@ namespace kiwi_base
         cfg_.topic_imu_ready, rclcpp::QoS(1).reliable().transient_local());
       pub_joints_ = create_publisher<sensor_msgs::msg::JointState>(cfg_.topic_joints, 10);
       pub_debug_ = create_publisher<kiwi_base::msg::FeedbackDebug>(cfg_.topic_debug, 10);
+      // volatile + depth=1：不向新订阅者重放历史遥控数据。
+      pub_remote_ = create_publisher<kiwi_base::msg::RemoteControl>(
+        cfg_.topic_remote, rclcpp::QoS(1).reliable().durability_volatile());
 
       std_msgs::msg::Bool initial_state;
       initial_state.data = false;
@@ -590,6 +603,8 @@ namespace kiwi_base
       parser_.reset();
       state_.raw_buffer.clear();
       state_.pending_feedback.reset();
+      state_.remote.reset();
+      state_.remote_stamp = rclcpp::Time(0, 0, RCL_ROS_TIME);
       // 串口断开/重连会破坏样本连续性；只清尚未提交的观测状态，已提交方差保留。
       state_.have_prev_time = false;
       state_.have_previous_feedback_yaw = false;
@@ -709,7 +724,35 @@ namespace kiwi_base
         state_.pending_feedback = frame;
     }
 
-    /** 裸数据回调 - 按 48 字节拼接 */
+    /** 仅缓存 CRC 合格的 0x3C，不转换为底盘或躯干运动命令。 */
+    void on_remote_control(const RemoteControlFrame &frame)
+    {
+      state_.remote = frame;
+      state_.remote_received_at = Clock::now();
+      state_.remote_stamp = this->now();
+    }
+
+    /** 周期报告帧超时；不能用 USB 打包时间伪造接收机在线状态。 */
+    void publish_remote_control()
+    {
+      kiwi_base::msg::RemoteControl msg;
+      msg.header.stamp = state_.remote_stamp;
+      msg.header.frame_id = cfg_.frame_base;
+      if (state_.remote)
+      {
+        const auto &frame = *state_.remote;
+        msg.mcu_timestamp_ms = frame.timestamp_ms;
+        msg.channels = frame.channels;
+        msg.sw_right = frame.sw_right;
+        msg.sw_left = frame.sw_left;
+        msg.controls_valid = remote_controls_valid(frame);
+        msg.frame_fresh = std::chrono::duration<double>(
+          Clock::now() - state_.remote_received_at).count() <= cfg_.remote_frame_timeout_s;
+      }
+      pub_remote_->publish(msg);
+    }
+
+    /** 裸数据回调 - 按 48 字节拼接；不支持 0x3C 混合流。 */
     void on_raw_data(const uint8_t *data, size_t size)
     {
       state_.raw_buffer.insert(state_.raw_buffer.end(), data, data + size);
@@ -754,6 +797,7 @@ namespace kiwi_base
 
       // 0x3B 是可有可无的异步遥测；非阻塞读取绝不构成 0x3A 的 ACK 等待。
       read_serial();
+      publish_remote_control();
       if (state_.pending_feedback)
       {
         process_feedback(*state_.pending_feedback);
@@ -1023,8 +1067,12 @@ namespace kiwi_base
       // 位姿积分（仅供调试，EKF 不融合位姿）
       if (dt > 0.0 && dt < 1.0)
       {
-        const double c = std::cos(state_.odom_yaw);
-        const double s = std::sin(state_.odom_yaw);
+        // const double c = std::cos(state_.odom_yaw);
+        // const double s = std::sin(state_.odom_yaw);
+        const double yaw_mid = state_.odom_yaw + 0.5 * twist.wz * dt;
+        const double c = std::cos(yaw_mid);
+        const double s = std::sin(yaw_mid);
+
         state_.odom_x += (twist.vx * c - twist.vy * s) * dt;
         state_.odom_y += (twist.vx * s + twist.vy * c) * dt;
         state_.odom_yaw += twist.wz * dt;
@@ -1162,6 +1210,7 @@ namespace kiwi_base
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr pub_imu_ready_;
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr pub_joints_;
     rclcpp::Publisher<kiwi_base::msg::FeedbackDebug>::SharedPtr pub_debug_;
+    rclcpp::Publisher<kiwi_base::msg::RemoteControl>::SharedPtr pub_remote_;
   };
 
 } // namespace kiwi_base
