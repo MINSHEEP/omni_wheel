@@ -73,56 +73,46 @@ Nav2 还会在 `kiwi_navigation/config/nav2.yaml` 中对自主导航速度进行
 
 ## 3. 全新上位机部署
 
-### 3.1 安装 Ubuntu、ROS 2 和构建工具
+### 3.1 已安装 ROS 2 的上位机：准备构建工具
 
-使用 Ubuntu 22.04（Jammy，`amd64` 或 `arm64`）和 ROS 2 Humble；先用 `locale` 确认系统使用 UTF-8。
-以下命令遵循 [ROS 2 Humble 官方 deb 安装步骤](https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html)。
-若机器已有 `/opt/ros/humble/setup.bash`，跳过 ROS 2 仓库配置和安装部分。
-
-```bash
-sudo apt update
-sudo apt install -y software-properties-common curl
-sudo add-apt-repository -y universe
-ROS_APT_SOURCE_VERSION="$(curl -fsSL https://api.github.com/repos/ros-infrastructure/ros-apt-source/releases/latest | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')"
-curl -fL -o /tmp/ros2-apt-source.deb "https://github.com/ros-infrastructure/ros-apt-source/releases/download/${ROS_APT_SOURCE_VERSION}/ros2-apt-source_${ROS_APT_SOURCE_VERSION}.$(. /etc/os-release && echo "${UBUNTU_CODENAME:-${VERSION_CODENAME}}")_all.deb"
-sudo dpkg -i /tmp/ros2-apt-source.deb
-sudo apt update
-sudo apt upgrade -y
-sudo apt install -y ros-humble-desktop ros-dev-tools git python3-rosdep python3-vcstool python3-serial usbutils
-```
-
-`ros-humble-desktop` 包含 RViz；无图形界面时可改装 `ros-humble-ros-base`，
-但本 README 中 `use_rviz:=true` 的命令需要桌面环境。雷达驱动源码直接使用 PCL、Boost、
-Eigen、`yaml-cpp` 和 `libpcap`；`kiwi_web` 需要 `aiohttp`、Pillow 和 `psutil`。
-安装对应系统包，再由 `rosdep` 补齐其余 ROS 包依赖：
+前提：上位机是 Ubuntu 22.04，已安装 ROS 2 Humble，且
+`/opt/ros/humble/setup.bash` 可读取。本项目部署不重复安装 ROS 2；新终端先加载它，
+再安装 `rosdep`、源码管理/构建工具和驱动遗漏的 `yaml-cpp` 开发包：
 
 ```bash
-sudo apt install -y libpcl-dev libboost-thread-dev libeigen3-dev libyaml-cpp-dev libpcap-dev
-sudo apt install -y python3-aiohttp python3-pil python3-psutil
 source /opt/ros/humble/setup.bash
+sudo apt update
+sudo apt install -y git usbutils python3-rosdep python3-vcstool \
+  python3-colcon-common-extensions python3-serial libyaml-cpp-dev
 ```
 
-### 3.2 获取项目与依赖源码
+`rosdep` 会按工作空间的 `package.xml` 安装 M10P 驱动需要的 PCL、Boost、Eigen、
+`libpcap`，以及导航和 `kiwi_web` 的 ROS/Python 依赖。`lslidar_driver` 源码还使用
+`yaml-cpp`，但包清单未声明它，因此上面单独安装 `libyaml-cpp-dev`。
 
-以下以新机上的 `~/ros2_ws` 为例；若已有授权的工作区副本，在其根目录切换到 `test` 分支即可。
-克隆前，源机器需先把本地 `test` 分支发布到远端：`git push -u origin test`；
-Gitee 私有仓库还需配置访问权限。不要复制旧机器的 `build/`、`install/`。
+### 3.2 获取源码并安装工作空间依赖
+
+以下以 `~/ros2_ws` 为例。已有完整 `test` 分支源码的上位机可直接进入工作空间，
+不用再次克隆；全新机器克隆前，源机器需先将本地 `test` 分支发布到远端
+（`git push -u origin test`）。不要复制旧机器的 `build/`、`install/`。
 
 ```bash
-ROS_WS="$HOME/ros2_ws"
-git clone --branch test https://gitee.com/yonheybot/omni-wheel-arm-chassis.git "$ROS_WS"
-cd "$ROS_WS"
+# 仅首次获取项目时执行；已有 ~/ros2_ws 则跳过此行。
+git clone --branch test https://gitee.com/yonheybot/omni-wheel-arm-chassis.git "$HOME/ros2_ws"
+cd "$HOME/ros2_ws"
+source /opt/ros/humble/setup.bash
+# 仅首次需要履带里程计时执行；已有 src/rf2o_laser_odometry 则跳过。
 vcs import src < tools/platform_dependencies.repos
-test -f /etc/ros/rosdep/sources.list.d/20-default.list || sudo rosdep init
-rosdep update
-rosdep install --from-paths src --ignore-src --rosdistro humble --skip-keys cmake_modules -y
 ```
 
-若 `sudo rosdep init` 因 `raw.githubusercontent.com` TLS 超时而失败，先停止后续
-`rosdep update/install`。可按[清华 TUNA 的 GitHub Raw 镜像说明](https://mirrors.tuna.tsinghua.edu.cn/help/github-raw/)
-和[ROS Distro 镜像说明](https://mirrors.tuna.tsinghua.edu.cn/help/rosdistro/)
-手动建立数据源，并同时切换 rosdistro 索引。下面的三个 YAML 是 Ubuntu 所需的
-rosdep 通用规则，不再运行会访问 GitHub Raw 的 `sudo rosdep init`：
+`vcs import` 从 `tools/platform_dependencies.repos` 获取履带底盘的 RF2O 固定版本，
+需要访问 GitHub；只用 Kiwi 底盘时可跳过此行。项目源码已包含 M10P 的
+`lslidar_driver` 和 `lslidar_msgs`。
+
+这台上位机访问 GitHub Raw 时 `rosdep init` 出现 TLS 握手超时。按
+[清华 TUNA 的 GitHub Raw 镜像说明](https://mirrors.tuna.tsinghua.edu.cn/help/github-raw/)
+和 [ROS Distro 镜像说明](https://mirrors.tuna.tsinghua.edu.cn/help/rosdistro/)
+手动配置 `rosdep` 数据源和索引；**配置后不再执行 `sudo rosdep init`**：
 
 ```bash
 sudo install -d -m 755 /etc/ros/rosdep/sources.list.d
@@ -136,74 +126,51 @@ rosdep update --rosdistro humble
 rosdep install --from-paths src --ignore-src --rosdistro humble --skip-keys cmake_modules -y
 ```
 
-以后在新终端再次执行 `rosdep update` 前，需重新设置上述 `ROSDISTRO_INDEX_URL`；
-如果镜像也无法访问，先检查网络和代理，不要用关闭 TLS 校验的方式绕过。
+RF2O 上游包清单有未被 CMake 使用的旧 `cmake_modules` 键，Humble 下无对应
+rosdep 定义，所以只跳过该键。以后在新终端再次运行 `rosdep update` 前，需重新设置
+`ROSDISTRO_INDEX_URL`；若镜像也无法访问，先检查网络，不要关闭 TLS 校验。
 
-`vcs import` 按 `tools/platform_dependencies.repos` 获取履带激光里程计 RF2O 的固定版本；
-它需要访问 GitHub。项目内的 `lslidar_driver`、`lslidar_msgs` 是 M10P 的源码驱动，
-无需另装同名 deb 包。RF2O 上游 `package.xml` 中有未被 CMake 使用的旧 `cmake_modules`
-键，Humble 下无对应 rosdep 定义，因此上面的命令只跳过该键。若不使用履带底盘，
-可以跳过 RF2O 导入，并在构建命令中去掉它。
+### 3.3 配置这台上位机的雷达与下位机 USB 串口
 
-### 3.3 识别雷达和下位机 USB 串口
+实测设备信息如下。`ttyACM0/1` 仅为本次插入顺序，udev 规则按设备序列号匹配，
+重启或换 USB 口后仍使用固定名称：
 
-连接 M10P 和 C 板，用设备属性辨认端口，**不要依据 `ttyACM0/1` 的顺序判断**：
+| 设备 | VID:PID | 序列号 | 固定名称 |
+| --- | --- | --- | --- |
+| M10P 雷达 WCH USB 串口 | `1a86:55d4` | `0001` | `/dev/wheeltec_lidar` |
+| STM32 C 板 USB CDC | `0483:5740` | `364E30673533` | `/dev/robomaster_c` |
 
-```bash
-lsusb
-ls -l /dev/serial/by-id/ /dev/serial/by-path/
-for port in /dev/ttyACM* /dev/ttyUSB*; do
-  [[ -e "$port" ]] || continue
-  echo "$port"
-  udevadm info --query=property --name="$port" | grep -E '^(ID_VENDOR_ID|ID_MODEL_ID|ID_SERIAL_SHORT|ID_PATH)='
-done
-```
-
-当前 M10P USB 转串口芯片为 WCH `1a86:55d4`，通常枚举成 `ttyACM*`。安装稳定名称
-`/dev/wheeltec_lidar`；若实测 VID/PID 不同，先按 `lsusb`/`udevadm` 输出调整规则：
+在该上位机创建两条规则：
 
 ```bash
 sudo tee /etc/udev/rules.d/99-wheeltec-lidar.rules >/dev/null <<'RULE'
-SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d4", SYMLINK+="wheeltec_lidar", GROUP="dialout", MODE="0660"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d4", ATTRS{serial}=="0001", SYMLINK+="wheeltec_lidar", GROUP="dialout", MODE="0660"
 RULE
-```
-
-C 板 USB CDC 也通常是 `ttyACM*`。根据 `/dev/serial/by-id/` 和 `udevadm` 输出，
-把下面第一行改为**实际 C 板端口**；规则同时匹配该板的 VID、PID 和唯一序列号，
-生成 `/dev/robomaster_c`：
-
-```bash
-C_BOARD_TTY=/dev/ttyACM1  # TODO：替换为刚确认的 C 板设备，不能照抄编号
-C_BOARD_VENDOR_ID="$(udevadm info --query=property --name="$C_BOARD_TTY" | sed -n 's/^ID_VENDOR_ID=//p')"
-C_BOARD_PRODUCT_ID="$(udevadm info --query=property --name="$C_BOARD_TTY" | sed -n 's/^ID_MODEL_ID=//p')"
-C_BOARD_SERIAL="$(udevadm info --query=property --name="$C_BOARD_TTY" | sed -n 's/^ID_SERIAL_SHORT=//p')"
-if [[ -z "$C_BOARD_VENDOR_ID" || -z "$C_BOARD_PRODUCT_ID" || -z "$C_BOARD_SERIAL" ]]; then
-  echo 'C 板缺少 VID/PID/序列号；检查设备，或使用 /dev/serial/by-path/ 的稳定名称。' >&2
-else
-  printf 'SUBSYSTEM=="tty", ATTRS{idVendor}=="%s", ATTRS{idProduct}=="%s", ATTRS{serial}=="%s", SYMLINK+="robomaster_c", GROUP="dialout", MODE="0660"\n' \
-    "$C_BOARD_VENDOR_ID" "$C_BOARD_PRODUCT_ID" "$C_BOARD_SERIAL" | sudo tee /etc/udev/rules.d/99-robomaster-c.rules
-fi
-```
-
-若 C 板没有 `ID_SERIAL_SHORT`，可直接在底盘 YAML 中把 `device` 改成
-`/dev/serial/by-path/` 下对应的稳定链接（换 USB 物理口后需重新核对），不用创建 C 板规则。
-同型号 WCH 设备有多个时，雷达规则也需加 `ATTRS{serial}` 或使用对应的 `by-path` 链接。
-
-```bash
+sudo tee /etc/udev/rules.d/99-robomaster-c.rules >/dev/null <<'RULE'
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", ATTRS{serial}=="364E30673533", SYMLINK+="robomaster_c", GROUP="dialout", MODE="0660"
+RULE
 sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=tty
 sudo usermod -aG dialout "$USER"
-# 注销并重新登录后，在新终端执行：
-id -nG | grep -w dialout
-ls -l /dev/wheeltec_lidar /dev/robomaster_c
 ```
 
-若使用 `by-path` 方案，最后一行只检查实际使用的设备。雷达路径配置在
-`src/kiwi_slam/config/ls_m10p_uart.yaml` 的 `serial_port`；Kiwi 和履带底盘路径分别配置在
-`src/kiwi_base/config/kiwi_base.yaml`、`src/kiwi_base/config/tracked_pwm.yaml` 的 `device`。
-M10P 的串口速率 500000 由驱动按型号设置；C 板 USB CDC 不需要设置波特率。
+注销并重新登录，使 `dialout` 组权限生效；然后检查链接目标及权限：
 
-每次新终端先加载环境：
+```bash
+id -nG | grep -w dialout
+ls -l /dev/wheeltec_lidar /dev/robomaster_c
+readlink -f /dev/wheeltec_lidar
+readlink -f /dev/robomaster_c
+```
+
+更换雷达转串口模块或 C 板后，先运行 `lsusb` 与
+`udevadm info --query=property --name=/dev/ttyACM0` 等命令重新确认 VID/PID、
+`ID_SERIAL_SHORT`，再改规则；不要照搬旧序列号。雷达路径在
+`src/kiwi_slam/config/ls_m10p_uart.yaml` 的 `serial_port`；Kiwi 和履带底盘路径分别在
+`src/kiwi_base/config/kiwi_base.yaml`、`src/kiwi_base/config/tracked_pwm.yaml` 的 `device`。
+M10P 串口速率 500000 由驱动按型号设置；C 板 USB CDC 不需要设置波特率。
+
+完成第 4 节构建后，每次新终端先加载环境：
 
 ```bash
 cd "$HOME/ros2_ws"
@@ -216,7 +183,7 @@ EKF 因误读旧 YAML 而静默回退到没有 `odom0/imu0` 的默认配置。
 
 ## 4. 构建和测试
 
-首次或源码变更后，从工作区根目录构建导航链路、M10P 驱动、Web 控制台和履带 RF2O：
+依赖安装和 udev 配置完成后，从工作区根目录构建导航、M10P 驱动、Web 控制台和履带 RF2O：
 
 ```bash
 cd "$HOME/ros2_ws"
