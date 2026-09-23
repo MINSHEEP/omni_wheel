@@ -12,6 +12,20 @@
 
 坐标树只有一个发布者负责每段 TF：SLAM Toolbox 或 AMCL 发布 `map -> odom`，EKF 发布 `odom -> base_footprint`，URDF 发布 `base_footprint -> base_link -> lidar_link/chassis_imu_link`。RF2O 的 `publish_tf=false`，仅发布 `/chassis/odom/laser`，避免与 EKF 抢同一 TF。履带底盘不会发布 `/chassis/odom/raw` 或伪造的 `/joint_states`；固件 0x3B 中的全零电机速度不能进入 EKF。
 
+## 共享节点与底盘配置
+
+统一入口按 `chassis` 选择 `kiwi_base_node` 或 `tracked_base_node`；这两个节点分别处理
+三轮反馈里程计和双路 PWM 无电机反馈协议。其余 `kiwi_teleop_keyboard`、
+`robot_state_publisher`、M10P 驱动、EKF、建图门控、SLAM Toolbox 和 Nav2 复用。
+Kiwi 与履带专属参数分别集中在 `src/kiwi_base/config/kiwi_base.yaml` 和
+`src/kiwi_base/config/tracked_pwm.yaml`。雷达、SLAM 和 Nav2 的公共参数继续共用；
+统一入口会从所选底盘 YAML 读取建图门控及差速 Nav2 覆盖值。
+
+键盘沿用同一节点；Kiwi 直接运行 `ros2 run kiwi_base kiwi_teleop_keyboard`，
+履带运行 `ros2 run kiwi_base kiwi_teleop_keyboard --ros-args --params-file src/kiwi_base/config/tracked_pwm.yaml`。
+履带使用 `w/s` 前后和 `q/e` 转向；`a/d` 发布横移，会被履带节点拒绝并停车。
+当前运动锁定时键盘仍可发布 `/cmd_vel`，下位机只收到零电机命令。
+
 ## 两电机履带底盘
 
 上位机沿用 C 板 USB CDC 协议：0x3A 的 `motor1=左履带`、`motor2=右履带`、`motor3=0`，无 ACK；0x3B 仍读取惯导字段，不把电机字段当反馈。遥控优先级和 USB 超时由下位机负责；上位机另有 0.20 s `/cmd_vel` 看门狗。横向速度命令和非有限值会被拒绝。双履带速度按 `v_left = vx - wz * track_separation_m / 2`、`v_right = vx + wz * track_separation_m / 2` 转为固件命令，并在超限时等比例缩放。

@@ -276,7 +276,12 @@ def _setup(context):
     )
     nav_data = _load(nav_file)
     if chassis == "tracked_pwm":
-        _merge(nav_data, _load(nav_share / "config/tracked_nav2_overlay.yaml"))
+        # 履带差速 AMCL 与外形参数来自同一底盘 YAML，公共 Nav2 参数继续复用。
+        overlay_keys = ("amcl", "local_costmap", "global_costmap")
+        overlay = {key: base_config.get(key) for key in overlay_keys}
+        if not all(isinstance(value, dict) for value in overlay.values()):
+            raise ValueError("履带 YAML 缺少 amcl/local_costmap/global_costmap 参数")
+        _merge(nav_data, overlay)
     nav_file = Path(_materialize(nav_data, "platform_nav2"))
     bt_params = RewrittenYaml(
         source_file=str(nav_file),
@@ -293,15 +298,8 @@ def _setup(context):
         },
     )
     if mode == "mapping":
-        gate_file = _config(context, "mapping_gate_params_file") or str(
-            slam_share
-            / "config"
-            / (
-                "mapping_gate.yaml"
-                if chassis == "kiwi"
-                else "tracked_mapping_gate.yaml"
-            )
-        )
+        # 两种底盘各自的建图门控值均放在所选底盘 YAML 中。
+        gate_file = _config(context, "mapping_gate_params_file") or str(base_file)
         actions.extend(
             [
                 Node(

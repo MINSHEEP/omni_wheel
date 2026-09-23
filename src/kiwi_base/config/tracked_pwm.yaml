@@ -68,3 +68,54 @@ tracked_robot_model:
     lidar_rpy: [0.0, 0.0, 0.0]
     imu_xyz: [0.0, 0.0, 0.0]
     imu_rpy: [0.0, 0.0, 0.0]
+
+# 复用同一个键盘节点；只发送 /cmd_vel，履带不能横移。
+kiwi_teleop_keyboard:
+  ros__parameters:
+    cmd_vel_topic: /cmd_vel
+    speed_m_s: 0.10
+    yaw_rad_s: 0.30
+    deadman_timeout_ms: 200
+
+# 履带专属建图门控设置，与底盘参数放在同一 YAML。
+kiwi_mapping_scan_gate:
+  ros__parameters:
+    use_sim_time: false
+    input_scan_topic: /scan
+    output_scan_topic: /scan_slam
+    odom_topic: /odometry/filtered
+    imu_ready_topic: /chassis/imu/calibration_ready
+    gate_ready_topic: /kiwi_slam/mapping_gate_ready
+    laser_frame: lidar_link
+    odom_frame: odom
+    base_frame: base_footprint
+    # 履带平台无电机反馈；用激光里程计静止证据，不等待原 Kiwi 电机标定 Bool。
+    require_imu_ready: false
+    stationary_duration_s: 0.5
+    max_linear_speed_m_s: 0.02
+    max_angular_speed_rad_s: 0.03
+    max_yaw_step_rad: 0.01
+    max_message_age_s: 0.20
+    required_stable_scans: 8
+    min_valid_scan_ratio: 0.10
+    min_scan_overlap_ratio: 0.50
+    max_median_range_delta_m: 0.05
+
+# 履带专属 Nav2 差速模型与外形参数；其余参数共用 nav2.yaml。
+amcl:
+  ros__parameters:
+    robot_model_type: nav2_amcl::DifferentialMotionModel
+    alpha1: 0.40
+    alpha2: 0.40
+    alpha3: 0.40
+    alpha4: 0.40
+    # 差速模型不使用 alpha5。
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      # TODO 实测外接尺寸后设置 footprint；目前保留 Kiwi 0.37m 半径并锁定导航。
+      robot_radius: 0.37
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      robot_radius: 0.37

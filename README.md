@@ -233,6 +233,65 @@ ros2 run kiwi_slam kiwi_slam_compatibility --require-hardware
 不带 `--require-hardware` 时，缺少串口只会给出警告，适合在无实车环境检查配置；实车启动前
 应使用带该选项的检查。
 
+### 统一入口：切换底盘、建图与导航
+
+`chassis` 选择底盘节点、模型和**一份底盘 YAML**；公共 M10P、SLAM Toolbox 和
+Nav2 参数继续共用。两种底盘的专属运动、EKF、模型、键盘、建图门控及 Nav2 覆盖值分别在：
+
+| 底盘 | `chassis` | 底盘节点 | 底盘 YAML | 默认里程计 |
+| --- | --- | --- | --- | --- |
+| 三轮全向 | `kiwi` | `kiwi_base_node` | `src/kiwi_base/config/kiwi_base.yaml` | 电机反馈轮式里程计 |
+| 两电机履带 | `tracked_pwm` | `tracked_base_node` | `src/kiwi_base/config/tracked_pwm.yaml` | RF2O 激光里程计 |
+
+`robot_state_publisher`、M10P 驱动、EKF、建图门控、SLAM Toolbox、Nav2 和
+`kiwi_teleop_keyboard` 均复用已有节点；只需切换底盘 YAML 和底盘驱动节点。
+旧 Kiwi 专用启动文件仍可使用，但下面的命令统一由 `platform.launch.py` 选择。
+
+```bash
+# 原 Kiwi：驱动联调 / 建图
+ros2 launch kiwi_navigation platform.launch.py chassis:=kiwi mode:=driver
+ros2 launch kiwi_navigation platform.launch.py chassis:=kiwi mode:=mapping
+
+# 履带：目前只能用 driver 检查 USB 和 IMU；完成标定后才能用 mapping。
+ros2 launch kiwi_navigation platform.launch.py chassis:=tracked_pwm mode:=driver
+ros2 launch kiwi_navigation platform.launch.py chassis:=tracked_pwm mode:=mapping
+```
+
+`mode:=mapping` 启动 SLAM Toolbox 和 Nav2。地图稳定后，在另一个已加载工作区的终端保存：
+
+```bash
+mkdir -p "$HOME/ros2_ws/maps"
+ros2 run nav2_map_server map_saver_cli -f "$HOME/ros2_ws/maps/warehouse"
+```
+
+保存成功后先停止建图进程，再用已有地图定位导航；`map` 必须是存在的绝对 YAML 路径：
+
+```bash
+ros2 launch kiwi_navigation platform.launch.py chassis:=kiwi \
+  mode:=localization map:="$HOME/ros2_ws/maps/warehouse.yaml"
+# 履带完成标定后：
+ros2 launch kiwi_navigation platform.launch.py chassis:=tracked_pwm \
+  mode:=localization map:="$HOME/ros2_ws/maps/warehouse.yaml"
+```
+
+**键盘节点只需一份**：它发布 `/cmd_vel`，不直接打开下位机串口。在另一个前台终端运行；
+默认命令读取 Kiwi YAML，履带必须显式指定自己的 YAML：
+
+```bash
+# Kiwi
+ros2 run kiwi_base kiwi_teleop_keyboard
+# 履带
+ros2 run kiwi_base kiwi_teleop_keyboard --ros-args \
+  --params-file "$HOME/ros2_ws/src/kiwi_base/config/tracked_pwm.yaml"
+```
+
+履带键盘用 `w/s` 前后、`q/e` 原地转向、空格或 `x` 停车。`a/d` 会发送横移
+`linear.y`，履带驱动会拒绝并停车；它们仍是 Kiwi 的左右横移键。当前履带
+`hardware_calibrated=false`、`enable_motion=false`，即使键盘已经发布 `/cmd_vel`，
+底盘也只发送零电机命令。完成履带中心距、速度换算及传感器外参标定和空载方向验证后，
+才能按 [履带标定说明](documents/platform_architecture.md) 开启运动、建图及导航。
+执行 Nav2 导航目标时不要同时运行键盘；切换模式前先停止旧启动进程。
+
 ### 网页控制台（当前适用于 Kiwi 底盘）
 
 `kiwi_web` 的服务和静态页面都在本机运行，不需要 Node.js、CDN 或 rosbridge。

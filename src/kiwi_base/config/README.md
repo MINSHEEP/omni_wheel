@@ -1,6 +1,9 @@
 # kiwi_base 参数说明
 
-本目录只有一个运行参数入口：`kiwi_base.yaml`。
+统一平台按底盘选择一份专属参数：Kiwi 使用 `kiwi_base.yaml`，履带使用 `tracked_pwm.yaml`。
+两份 YAML 各自包含底盘、EKF、模型、键盘和建图门控参数；履带 YAML 还包含 Nav2 差速覆盖值。
+
+以下是原 Kiwi 节点和话题；履带改用 `tracked_base_node`，不会发布轮速里程计或 `/joint_states`。
 
 ```text
 kiwi_base_node        底盘硬件、运动学、限幅、反馈里程计、话题和 frame
@@ -25,5 +28,6 @@ kiwi_robot_model      URDF 使用的底盘结构尺寸
 断流不会阻止 TX。电机实测值经低通、死区和减速比换算后驱动里程计；反馈断流期间不使用
 `/cmd_vel` 补算位移，恢复首帧也不会跨越未知时间积分。
 
-传感器相对底盘的安装外参维护在 `kiwi_slam/urdf/kiwi.urdf.xacro`；导航避障半径维护在
-`kiwi_navigation/config/nav2.yaml`。本目录不再保留按雷达型号拆分的 EKF 文件。
+Kiwi 的安装外参维护在 `kiwi_slam/urdf/kiwi.urdf.xacro`，履带占位外参维护在
+`tracked_pwm.yaml` 并由 `kiwi_slam/urdf/tracked.urdf.xacro` 使用。公共 Nav2 参数在
+`kiwi_navigation/config/nav2.yaml`；履带专属避障半径在 `tracked_pwm.yaml`。
