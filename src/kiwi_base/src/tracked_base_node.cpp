@@ -6,6 +6,7 @@
 #include <geometry_msgs/msg/twist.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
+#include <std_msgs/msg/float32_multi_array.hpp>
 
 #include <algorithm>
 #include <cerrno>
@@ -48,6 +49,16 @@ public:
     gyro_z_variance_ = declare_parameter<double>("gyro_z_variance", 0.01);
     const bool calibrated = declare_parameter<bool>("hardware_calibrated", false);
     motion_enabled_ = declare_parameter<bool>("enable_motion", false);
+    test_enabled_ = declare_parameter<bool>("open_loop_test_enabled", false);
+    test_topic_ = declare_parameter<std::string>(
+      "open_loop_test_topic", "/chassis/open_loop_motor_cmd");
+    test_limit_ = declare_parameter<double>("open_loop_test_limit_rad_s", 0.0);
+    if (test_enabled_ && motion_enabled_)
+      throw std::invalid_argument("open-loop test and calibrated cmd_vel cannot run together");
+    if (test_enabled_ && (test_topic_.empty() ||
+                         !std::isfinite(test_limit_) || test_limit_ <= 0.0 ||
+                         !std::isfinite(max_command) || test_limit_ > max_command))
+      throw std::invalid_argument("invalid open-loop test limit");
     if (motion_enabled_ && !calibrated)
       throw std::invalid_argument("enable_motion requires hardware_calibrated=true");
     if (!std::isfinite(max_linear_) || max_linear_ <= 0.0 ||
@@ -58,7 +69,7 @@ public:
         (gyro_z_sign_ != 1.0 && gyro_z_sign_ != -1.0) ||
         !std::isfinite(gyro_z_variance_) || gyro_z_variance_ <= 0.0)
       throw std::invalid_argument("invalid tracked base limits or IMU calibration");
-    // 未标定时可以接收 IMU 和验证通讯，但只发送零命令。
+    // 未标定时普通 /cmd_vel 锁定；原始电机试车由独立话题和限幅控制。
     if (calibrated)
       kinematics_ = std::make_unique<TrackedKinematics>(
         separation, command_gain, max_command);
@@ -70,6 +81,16 @@ public:
       cmd_topic_, 10, [this](geometry_msgs::msg::Twist::SharedPtr msg) {
         on_cmd_vel(*msg);
       });
+    if (test_enabled_)
+    {
+      sub_test_ = create_subscription<std_msgs::msg::Float32MultiArray>(
+        test_topic_, 10, [this](std_msgs::msg::Float32MultiArray::SharedPtr msg) {
+          on_test_motor_cmd(*msg);
+        });
+      RCLCPP_WARN(get_logger(),
+                  "Open-loop motor test enabled on %s (limit %.1f rad/s per track); cmd_vel locked",
+                  test_topic_.c_str(), test_limit_);
+    }
     timer_ = create_wall_timer(
       std::chrono::duration<double>(1.0 / rate), [this]() { update(); });
     RCLCPP_INFO(get_logger(), "Tracked USB bridge ready; motion=%s",
@@ -106,6 +127,27 @@ private:
     }
     last_cmd_ = std::chrono::steady_clock::now();
     have_cmd_ = true;
+  }
+
+  void on_test_motor_cmd(const std_msgs::msg::Float32MultiArray & msg)
+  {
+    const bool valid = msg.data.size() == 2 &&
+      std::isfinite(msg.data[0]) && std::isfinite(msg.data[1]) &&
+      std::abs(msg.data[0]) <= test_limit_ &&
+      std::abs(msg.data[1]) <= test_limit_;
+    if (valid)
+    {
+      test_left_ = msg.data[0];
+      test_right_ = msg.data[1];
+    }
+    else
+    {
+      test_left_ = test_right_ = 0.0F;
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+                           "Rejected invalid or over-limit open-loop motor command");
+    }
+    last_test_cmd_ = std::chrono::steady_clock::now();
+    have_test_cmd_ = true;
   }
 
   void open_device()
@@ -212,6 +254,12 @@ private:
       const auto motors = kinematics_->command(vx_, wz_);
       command.motor_rad_s = {motors.first, motors.second, 0.0F};
     }
+    else if (test_enabled_ && have_test_cmd_ &&
+             std::chrono::duration<double>(
+               std::chrono::steady_clock::now() - last_test_cmd_).count() <= timeout_)
+    {
+      command.motor_rad_s = {test_left_, test_right_, 0.0F};
+    }
     const auto frame = encode_command(command);
     const ssize_t written = ::write(fd_, frame.data(), frame.size());
     if (written < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
@@ -219,17 +267,20 @@ private:
     // 0x3A 无 ACK；绝不从命令积分里程计。短写在下一周期重发完整帧。
   }
 
-  std::string device_, cmd_topic_, imu_topic_, imu_frame_;
-  double max_linear_{}, max_angular_{}, timeout_{};
+  std::string device_, cmd_topic_, imu_topic_, imu_frame_, test_topic_;
+  double max_linear_{}, max_angular_{}, timeout_{}, test_limit_{};
   double gyro_z_sign_{}, gyro_z_scale_{}, gyro_z_variance_{};
   bool motion_enabled_{false}, have_cmd_{false};
+  bool test_enabled_{false}, have_test_cmd_{false};
   double vx_{0.0}, wz_{0.0};
-  std::chrono::steady_clock::time_point last_cmd_{};
+  float test_left_{0.0F}, test_right_{0.0F};
+  std::chrono::steady_clock::time_point last_cmd_{}, last_test_cmd_{};
   int fd_{-1};
   std::unique_ptr<TrackedKinematics> kinematics_;
   FrameParser parser_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr pub_imu_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr sub_cmd_;
+  rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr sub_test_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
 

@@ -30,15 +30,19 @@ Kiwi 与履带专属参数分别集中在 `src/kiwi_base/config/kiwi_base.yaml` 
 
 上位机沿用 C 板 USB CDC 协议：0x3A 的 `motor1=左履带`、`motor2=右履带`、`motor3=0`，无 ACK；0x3B 仍读取惯导字段，不把电机字段当反馈。遥控优先级和 USB 超时由下位机负责；上位机另有 0.20 s `/cmd_vel` 看门狗。横向速度命令和非有限值会被拒绝。双履带速度按 `v_left = vx - wz * track_separation_m / 2`、`v_right = vx + wz * track_separation_m / 2` 转为固件命令，并在超限时等比例缩放。
 
-`src/kiwi_base/config/tracked_pwm.yaml` 中以下值为 TODO，**必须在断开电机负载的状态下核对方向、量纲和上限**：
+`src/kiwi_base/config/tracked_pwm.yaml` 中已记录实测值及待标定项，**试车前须架空履带核对方向**：
 
-- 左右履带中心距 `track_separation_m`。
+- 左右履带中心距 `track_separation_m=0.50 m`，已实测。
 - 每 1 m/s 对应固件电机命令的 `command_per_m_s`；需考虑减速比、驱动器 PWM 映射和正反方向。
 - `max_motor_command` 已按当前固件 `PWM_DIFF_USB_MAX_COMMAND=20.0 rad/s` 设置；后续固件变化时同步。
-- `tracked_robot_model` 的机身、履带、雷达及惯导安装尺寸，以及 Nav2 代价地图的外接半径或足迹。
+- `tracked_robot_model` 机身长 `0.70 m`、宽 `0.59 m` 已实测；高度、履带宽高、雷达及惯导安装外参仍需补测。Nav2 暂取 `robot_radius=0.48 m`，须复核完整外形和碰撞余量。
 - 0x3B 惯导安装轴和 gyro_z 比例；更换惯导时重新标定协方差与外参。
 
-当前 `hardware_calibrated=false`、`enable_motion=false`：驱动联调模式可以启动串口和 IMU，但发送零命令。完成实测和空载方向验证后再开启运动；建图和导航入口在两个开关打开前会报错退出。
+当前 `hardware_calibrated=false`、`enable_motion=false`：驱动联调模式可以启动串口和 IMU，
+正常 `/cmd_vel` 只发送零命令。已增加独立的 `/chassis/open_loop_motor_cmd` 原始双路
+rad/s 试车入口，统一启动文件仅在 `mode=driver` 允许它生效，初始限制每路 ±10 rad/s，0.20 s 无新消息停车；
+不能据此称上位机的 m/s 已标定。建图和导航仍需完成速度、传感器标定，关闭
+`open_loop_test_enabled`，再开启正常运动。试车命令见根 README。
 
 ## 启动
 

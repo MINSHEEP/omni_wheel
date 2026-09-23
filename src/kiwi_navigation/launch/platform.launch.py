@@ -139,6 +139,9 @@ def _setup(context):
             raise ValueError("tracked_base_node.ros__parameters 缺失")
         calibrated = tracked.get("hardware_calibrated") is True
         motion_enabled = tracked.get("enable_motion") is True
+        open_loop_test = tracked.get("open_loop_test_enabled") is True
+        if mode != "driver" and open_loop_test:
+            raise ValueError("原始电机试车仅允许 mode=driver；建图导航前关闭 open_loop_test_enabled")
         if motion_enabled and not calibrated:
             raise ValueError("enable_motion=true 需要先完成硬件标定")
         if calibrated:

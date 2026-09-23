@@ -31,3 +31,8 @@ kiwi_robot_model      URDF 使用的底盘结构尺寸
 Kiwi 的安装外参维护在 `kiwi_slam/urdf/kiwi.urdf.xacro`，履带占位外参维护在
 `tracked_pwm.yaml` 并由 `kiwi_slam/urdf/tracked.urdf.xacro` 使用。公共 Nav2 参数在
 `kiwi_navigation/config/nav2.yaml`；履带专属避障半径在 `tracked_pwm.yaml`。
+
+履带的 `hardware_calibrated=false`、`enable_motion=false` 保持普通 `/cmd_vel` 锁定；
+`open_loop_test_enabled=true` 时仅在统一入口 `mode:=driver` 用
+`/chassis/open_loop_motor_cmd` 试发 `[左, 右]` 两路原始 rad/s 命令。
+试车上限、超时和后续标定步骤见工作区根 [README](../../../README.md)。

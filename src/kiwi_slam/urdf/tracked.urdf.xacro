@@ -23,14 +23,14 @@
   </link>
   <joint name="left_track_joint" type="fixed">
     <parent link="base_link"/><child link="left_track"/>
-    <origin xyz="0 ${model['base_width_m'] / 2 + model['track_width_m'] / 2} ${-model['base_height_m'] / 2}"/>
+    <origin xyz="0 ${hardware['tracked_base_node']['ros__parameters']['track_separation_m'] / 2} ${-model['base_height_m'] / 2}"/>
   </joint>
   <link name="right_track">
     <visual><geometry><box size="${model['base_length_m']} ${model['track_width_m']} ${model['track_height_m']}"/></geometry></visual>
   </link>
   <joint name="right_track_joint" type="fixed">
     <parent link="base_link"/><child link="right_track"/>
-    <origin xyz="0 ${-model['base_width_m'] / 2 - model['track_width_m'] / 2} ${-model['base_height_m'] / 2}"/>
+    <origin xyz="0 ${-hardware['tracked_base_node']['ros__parameters']['track_separation_m'] / 2} ${-model['base_height_m'] / 2}"/>
   </joint>
   <link name="lidar_link"/>
   <joint name="base_link_to_lidar" type="fixed">

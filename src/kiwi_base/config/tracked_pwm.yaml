@@ -10,8 +10,8 @@ tracked_base_node:
     cmd_vel_timeout_s: 0.20
     max_linear_speed_m_s: 0.30
     max_angular_speed_rad_s: 0.80
-    # TODO 实测左右履带中心距；差速角速度换算使用该值。
-    track_separation_m: 0.0
+    # 2026-09-23 实测左右履带中心距 50 cm。
+    track_separation_m: 0.50
     # TODO 标定 1 m/s 对应固件 motor1/motor2 命令数值，包含减速比及 PWM 映射。
     command_per_m_s: 0.0
     # 已核对固件 robot_param_pwm_diff.h: PWM_DIFF_USB_MAX_COMMAND=20 rad/s。
@@ -22,6 +22,10 @@ tracked_base_node:
     gyro_z_variance: 0.01
     hardware_calibrated: false
     enable_motion: false
+    # 仅供 driver 模式原始电机命令试车；/cmd_vel 仍锁定。
+    open_loop_test_enabled: true
+    open_loop_test_topic: /chassis/open_loop_motor_cmd
+    open_loop_test_limit_rad_s: 10.0
 
 ekf_filter_node:
   ros__parameters:
@@ -56,9 +60,9 @@ ekf_filter_node:
 
 tracked_robot_model:
   ros__parameters:
-    # TODO 以下仅供模型预览；导航启动前必须替换为实测尺寸和外参。
-    base_length_m: 0.60
-    base_width_m: 0.50
+    # 机身长宽、履带中心距已实测；高度、履带尺寸、质量和外参仍为 TODO。
+    base_length_m: 0.70
+    base_width_m: 0.59
     base_height_m: 0.15
     base_z_m: 0.15
     track_width_m: 0.10
@@ -113,9 +117,9 @@ amcl:
 local_costmap:
   local_costmap:
     ros__parameters:
-      # TODO 实测外接尺寸后设置 footprint；目前保留 Kiwi 0.37m 半径并锁定导航。
-      robot_radius: 0.37
+      # 70×59 cm 外接圆约 0.458 m；先留余量，最终按完整外形复核。
+      robot_radius: 0.48
 global_costmap:
   global_costmap:
     ros__parameters:
-      robot_radius: 0.37
+      robot_radius: 0.48

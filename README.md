@@ -292,6 +292,52 @@ ros2 run kiwi_base kiwi_teleop_keyboard --ros-args \
 才能按 [履带标定说明](documents/platform_architecture.md) 开启运动、建图及导航。
 执行 Nav2 导航目标时不要同时运行键盘；切换模式前先停止旧启动进程。
 
+### 履带开环试车与速度标定
+
+已实测机身长 0.70 m、宽 0.59 m、左右履带中心距 0.50 m，已写入
+`src/kiwi_base/config/tracked_pwm.yaml`。机身高度、履带宽高、雷达/惯导外参和速度换算仍待测。
+`hardware_calibrated=false`、`enable_motion=false` 保持不变：普通 `/cmd_vel` 和键盘仍不会驱动电机；
+`mode:=mapping`、`mode:=localization` 也仍会被启动校验阻止。
+
+| 条件 | 实际表现 |
+| --- | --- |
+| `hardware_calibrated=false`、`enable_motion=false` | 底盘节点仍启动、打开 USB、发布 IMU；普通 `/cmd_vel` 输出零电机命令 |
+| `enable_motion=true` 但未标定，或标定后 `command_per_m_s` 仍为零 | 底盘节点启动时报错；不能用猜测倍率解锁键盘 |
+| `open_loop_test_enabled=true` | 统一入口仅允许 `mode:=driver`；与正常运动开关不能同时开启 |
+| `/dev/robomaster_c` 不可读写、被占用或下位机未切到上位机模式 | 串口无法打开，或固件不执行上位机命令 |
+| 命令超过 `cmd_vel_timeout_s=0.20` 秒未刷新 | 上位机持续发送零电机命令；固件还有自己的超时停车逻辑 |
+
+已单独开启仅供 `mode:=driver` 使用的 `/chassis/open_loop_motor_cmd` 试车话题，消息为
+`std_msgs/msg/Float32MultiArray`，`data` 必须恰好是 `[左履带, 右履带]` 两个固件
+**rad/s 命令值**，不是实测履带速度。每路初始上限 ±10 rad/s；非法或超限命令停车，
+消息超过 0.20 s 未刷新也停车。此话题和正常 `/cmd_vel` 不能同时使能。
+
+更新工作区并构建 `kiwi_base` 后，先把履带架空、切到上位机控制模式，启动驱动；
+在第二个已加载工作区的终端依次短时测试单侧、双侧方向：
+
+```bash
+ros2 launch kiwi_navigation platform.launch.py chassis:=tracked_pwm mode:=driver
+# 另一个终端，先测左履带；-r 10 -t 10 表示 10 Hz 连发 1 秒。
+ros2 topic pub -r 10 -t 10 /chassis/open_loop_motor_cmd std_msgs/msg/Float32MultiArray '{data: [5.0, 0.0]}'
+ros2 topic pub -r 10 -t 10 /chassis/open_loop_motor_cmd std_msgs/msg/Float32MultiArray '{data: [0.0, 5.0]}'
+ros2 topic pub -r 10 -t 10 /chassis/open_loop_motor_cmd std_msgs/msg/Float32MultiArray '{data: [5.0, 5.0]}'
+```
+
+确认两路正方向一致后，地面测量前可把命令改为 `[10.0, 10.0]`，以 10 Hz 持续发布并
+计时走 1 m；持续命令示例：
+
+```bash
+ros2 topic pub -r 10 /chassis/open_loop_motor_cmd std_msgs/msg/Float32MultiArray '{data: [10.0, 10.0]}'
+```
+
+按 Ctrl+C 停止发布后，0.20 s 内由上位机看门狗发零命令。若实际速度为 `v` m/s，
+`10/v` rad/s 只作为下一次试验的换算起点，最终仍需多次实测标定，并受固件
+`±20 rad/s` 饱和上限约束。当前固件上位机命令 `0 / +10 / +20 / -20 rad/s`
+分别约对应 `1500 / 1750 / 2000 / 1000 µs` 的 PWM4/5 输出；遥控 PWM2/3 满摇杆
+输出尚未测量，不能据此推断。已测遥控开机居中约 `1510/1510 µs`、关机后约
+`1445/1525 µs`；固件把输入 `1400～1600 µs` 归零到 `1500 µs`，最终输出限在
+`1000～2000 µs`。正常键盘控制要等 `command_per_m_s` 等参数标定后再开启。
+
 ### 网页控制台（当前适用于 Kiwi 底盘）
 
 `kiwi_web` 的服务和静态页面都在本机运行，不需要 Node.js、CDN 或 rosbridge。
