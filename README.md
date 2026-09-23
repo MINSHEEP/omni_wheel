@@ -2,7 +2,7 @@
 
 新增两电机履带底盘与底盘/雷达/惯导一键选择入口，参见 [可切换底盘平台架构](documents/platform_architecture.md)。本文件下方仍记录原 Kiwi 平台的运行方法。
 
-这是 Kiwi 三轮全向底盘的 ROS 2 Humble 工作区。当前运行链路只使用：
+这是 ROS 2 Humble 移动机器人工作区。原 Kiwi 三轮全向底盘的运行链路使用：
 
 - RoboMaster C 板 USB CDC 底盘驱动（0x3A 命令无 ACK，0x3B 电机/IMU 异步遥测）
 - 镭神 LSLIDAR M10P 二维 UART 激光雷达
@@ -29,7 +29,7 @@ ros2_ws/
 地图文件不放在源码包中。建议统一保存到：
 
 ```text
-/home/ym/ros2_ws/maps/
+$HOME/ros2_ws/maps/
 ```
 
 每张地图至少包含同名的 `.yaml` 和 `.pgm` 文件，例如：
@@ -39,7 +39,7 @@ maps/warehouse.yaml
 maps/warehouse.pgm
 ```
 
-导航启动参数使用 `.yaml` 文件：`map:=/home/ym/ros2_ws/maps/warehouse.yaml`。
+导航启动参数使用 `.yaml` 文件：`map:=$HOME/ros2_ws/maps/warehouse.yaml`。
 
 ## 2. 坐标、话题和速度接口
 
@@ -69,32 +69,119 @@ TF 链应为：
 速度，底盘的 `max_*` 是所有 `/cmd_vel` 输入的最终安全上限；两者不是重复配置。
 Nav2 还会在 `kiwi_navigation/config/nav2.yaml` 中对自主导航速度进行单独限制。
 
-## 3. 环境和硬件准备
+## 3. 全新上位机部署
 
-支持环境：Ubuntu 22.04、ROS 2 Humble。连接硬件后确认设备节点：
+### 3.1 安装 Ubuntu、ROS 2 和构建工具
 
-```bash
-ls -l /dev/robomaster_c   # C 板 USB CDC
-ls -l /dev/wheeltec_lidar # M10P UART 的 udev 稳定名称
-```
-
-若设备名不同，修改以下两个参数后重新启动：
-
-```text
-src/kiwi_base/config/kiwi_base.yaml      device
-src/kiwi_slam/config/ls_m10p_uart.yaml   serial_port
-```
-
-建议加入串口用户组并重新登录：
+使用 Ubuntu 22.04（Jammy，`amd64` 或 `arm64`）和 ROS 2 Humble；先用 `locale` 确认系统使用 UTF-8。
+以下命令遵循 [ROS 2 Humble 官方 deb 安装步骤](https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html)。
+若机器已有 `/opt/ros/humble/setup.bash`，跳过 ROS 2 仓库配置和安装部分。
 
 ```bash
+sudo apt update
+sudo apt install -y software-properties-common curl
+sudo add-apt-repository -y universe
+ROS_APT_SOURCE_VERSION="$(curl -fsSL https://api.github.com/repos/ros-infrastructure/ros-apt-source/releases/latest | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')"
+curl -fL -o /tmp/ros2-apt-source.deb "https://github.com/ros-infrastructure/ros-apt-source/releases/download/${ROS_APT_SOURCE_VERSION}/ros2-apt-source_${ROS_APT_SOURCE_VERSION}.$(. /etc/os-release && echo "${UBUNTU_CODENAME:-${VERSION_CODENAME}}")_all.deb"
+sudo dpkg -i /tmp/ros2-apt-source.deb
+sudo apt update
+sudo apt upgrade -y
+sudo apt install -y ros-humble-desktop ros-dev-tools git python3-rosdep python3-vcstool python3-serial usbutils
+```
+
+`ros-humble-desktop` 包含 RViz；无图形界面时可改装 `ros-humble-ros-base`，
+但本 README 中 `use_rviz:=true` 的命令需要桌面环境。雷达驱动源码直接使用 PCL、Boost、
+Eigen、`yaml-cpp` 和 `libpcap`，安装其开发包，再由 `rosdep` 补齐 ROS 包依赖：
+
+```bash
+sudo apt install -y libpcl-dev libboost-thread-dev libeigen3-dev libyaml-cpp-dev libpcap-dev
+source /opt/ros/humble/setup.bash
+```
+
+### 3.2 获取项目与依赖源码
+
+以下以新机上的 `~/ros2_ws` 为例；若已有授权的工作区副本，在其根目录切换到 `test` 分支即可。
+克隆前，源机器需先把本地 `test` 分支发布到远端：`git push -u origin test`；
+Gitee 私有仓库还需配置访问权限。不要复制旧机器的 `build/`、`install/`。
+
+```bash
+ROS_WS="$HOME/ros2_ws"
+git clone --branch test https://gitee.com/yonheybot/omni-wheel-arm-chassis.git "$ROS_WS"
+cd "$ROS_WS"
+vcs import src < tools/platform_dependencies.repos
+test -f /etc/ros/rosdep/sources.list.d/20-default.list || sudo rosdep init
+rosdep update
+rosdep install --from-paths src --ignore-src --rosdistro humble --skip-keys cmake_modules -y
+```
+
+`vcs import` 按 `tools/platform_dependencies.repos` 获取履带激光里程计 RF2O 的固定版本；
+它需要访问 GitHub。项目内的 `lslidar_driver`、`lslidar_msgs` 是 M10P 的源码驱动，
+无需另装同名 deb 包。RF2O 上游 `package.xml` 中有未被 CMake 使用的旧 `cmake_modules`
+键，Humble 下无对应 rosdep 定义，因此上面的命令只跳过该键。若不使用履带底盘，
+可以跳过 RF2O 导入，并在构建命令中去掉它。
+
+### 3.3 识别雷达和下位机 USB 串口
+
+连接 M10P 和 C 板，用设备属性辨认端口，**不要依据 `ttyACM0/1` 的顺序判断**：
+
+```bash
+lsusb
+ls -l /dev/serial/by-id/ /dev/serial/by-path/
+for port in /dev/ttyACM* /dev/ttyUSB*; do
+  [[ -e "$port" ]] || continue
+  echo "$port"
+  udevadm info --query=property --name="$port" | grep -E '^(ID_VENDOR_ID|ID_MODEL_ID|ID_SERIAL_SHORT|ID_PATH)='
+done
+```
+
+当前 M10P USB 转串口芯片为 WCH `1a86:55d4`，通常枚举成 `ttyACM*`。安装稳定名称
+`/dev/wheeltec_lidar`；若实测 VID/PID 不同，先按 `lsusb`/`udevadm` 输出调整规则：
+
+```bash
+sudo tee /etc/udev/rules.d/99-wheeltec-lidar.rules >/dev/null <<'RULE'
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d4", SYMLINK+="wheeltec_lidar", GROUP="dialout", MODE="0660"
+RULE
+```
+
+C 板 USB CDC 也通常是 `ttyACM*`。根据 `/dev/serial/by-id/` 和 `udevadm` 输出，
+把下面第一行改为**实际 C 板端口**；规则同时匹配该板的 VID、PID 和唯一序列号，
+生成 `/dev/robomaster_c`：
+
+```bash
+C_BOARD_TTY=/dev/ttyACM1  # TODO：替换为刚确认的 C 板设备，不能照抄编号
+C_BOARD_VENDOR_ID="$(udevadm info --query=property --name="$C_BOARD_TTY" | sed -n 's/^ID_VENDOR_ID=//p')"
+C_BOARD_PRODUCT_ID="$(udevadm info --query=property --name="$C_BOARD_TTY" | sed -n 's/^ID_MODEL_ID=//p')"
+C_BOARD_SERIAL="$(udevadm info --query=property --name="$C_BOARD_TTY" | sed -n 's/^ID_SERIAL_SHORT=//p')"
+if [[ -z "$C_BOARD_VENDOR_ID" || -z "$C_BOARD_PRODUCT_ID" || -z "$C_BOARD_SERIAL" ]]; then
+  echo 'C 板缺少 VID/PID/序列号；检查设备，或使用 /dev/serial/by-path/ 的稳定名称。' >&2
+else
+  printf 'SUBSYSTEM=="tty", ATTRS{idVendor}=="%s", ATTRS{idProduct}=="%s", ATTRS{serial}=="%s", SYMLINK+="robomaster_c", GROUP="dialout", MODE="0660"\n' \
+    "$C_BOARD_VENDOR_ID" "$C_BOARD_PRODUCT_ID" "$C_BOARD_SERIAL" | sudo tee /etc/udev/rules.d/99-robomaster-c.rules
+fi
+```
+
+若 C 板没有 `ID_SERIAL_SHORT`，可直接在底盘 YAML 中把 `device` 改成
+`/dev/serial/by-path/` 下对应的稳定链接（换 USB 物理口后需重新核对），不用创建 C 板规则。
+同型号 WCH 设备有多个时，雷达规则也需加 `ATTRS{serial}` 或使用对应的 `by-path` 链接。
+
+```bash
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=tty
 sudo usermod -aG dialout "$USER"
+# 注销并重新登录后，在新终端执行：
+id -nG | grep -w dialout
+ls -l /dev/wheeltec_lidar /dev/robomaster_c
 ```
+
+若使用 `by-path` 方案，最后一行只检查实际使用的设备。雷达路径配置在
+`src/kiwi_slam/config/ls_m10p_uart.yaml` 的 `serial_port`；Kiwi 和履带底盘路径分别配置在
+`src/kiwi_base/config/kiwi_base.yaml`、`src/kiwi_base/config/tracked_pwm.yaml` 的 `device`。
+M10P 的串口速率 500000 由驱动按型号设置；C 板 USB CDC 不需要设置波特率。
 
 每次新终端先加载环境：
 
 ```bash
-cd /home/ym/ros2_ws
+cd "$HOME/ros2_ws"
 source tools/activate_workspace.sh
 ```
 
@@ -104,14 +191,28 @@ EKF 因误读旧 YAML 而静默回退到没有 `odom0/imu0` 的默认配置。
 
 ## 4. 构建和测试
 
-首次或源码变更后构建当前链路：
+首次或源码变更后，从工作区根目录构建导航链路、M10P 驱动和履带 RF2O：
 
 ```bash
-cd /home/ym/ros2_ws
+cd "$HOME/ros2_ws"
 source /opt/ros/humble/setup.bash
-colcon build --symlink-install --packages-up-to kiwi_navigation
+colcon build --symlink-install --packages-up-to kiwi_navigation rf2o_laser_odometry
 source tools/activate_workspace.sh
 ```
+
+不使用履带时可把构建命令末尾的 `rf2o_laser_odometry` 去掉。构建后先检查包来源和设备：
+
+```bash
+ros2 pkg prefix kiwi_navigation
+ros2 pkg prefix lslidar_driver
+ros2 pkg prefix rf2o_laser_odometry  # 仅履带需要
+ros2 run kiwi_slam kiwi_slam_compatibility --require-hardware  # 原 Kiwi 配置检查
+```
+
+要单独检查雷达驱动，在一个终端运行 `ros2 launch kiwi_slam m10p_uart_lidar.launch.py`，
+另一个已加载工作区的终端运行 `ros2 topic hz /scan`。底盘联调和建图导航的完整启动命令见
+[可切换底盘平台架构](documents/platform_architecture.md)；履带参数尚未标定时只能使用
+`chassis:=tracked_pwm mode:=driver`，默认禁用运动，不能直接启动建图或导航。
 
 只构建底盘：
 
@@ -190,7 +291,7 @@ Nav2：    src/kiwi_navigation/config/nav2.yaml
 在第二个终端运行键盘节点（必须使用前台可交互终端）：
 
 ```bash
-cd /home/ym/ros2_ws
+cd $HOME/ros2_ws
 source tools/activate_workspace.sh
 ros2 run kiwi_base kiwi_teleop_keyboard
 ```
@@ -217,23 +318,23 @@ ros2 run tf2_ros tf2_echo map odom
 另开终端创建固定地图目录，然后保存：
 
 ```bash
-mkdir -p /home/ym/ros2_ws/maps
+mkdir -p $HOME/ros2_ws/maps
 ros2 run nav2_map_server map_saver_cli \
-  -f /home/ym/ros2_ws/maps/warehouse
+  -f $HOME/ros2_ws/maps/warehouse
 ```
 
 命令成功后会生成：
 
 ```text
-/home/ym/ros2_ws/maps/warehouse.yaml
-/home/ym/ros2_ws/maps/warehouse.pgm
+$HOME/ros2_ws/maps/warehouse.yaml
+$HOME/ros2_ws/maps/warehouse.pgm
 ```
 
 保存前应停止机器人并等待地图稳定。`.yaml` 是导航启动入口，`.pgm` 是地图图像，不能只保留
 其中一个文件。保存后可检查：
 
 ```bash
-ls -lh /home/ym/ros2_ws/maps/warehouse.*
+ls -lh $HOME/ros2_ws/maps/warehouse.*
 ```
 
 保存完毕后在建图终端按 `Ctrl-C`，再停止键盘终端。
@@ -246,7 +347,7 @@ ls -lh /home/ym/ros2_ws/maps/warehouse.*
 
 ```bash
 ros2 launch kiwi_navigation localization_navigation.launch.py \
-  map:=/home/a/ros2_ws/maps/ceshi3.yaml \
+  map:=$HOME/ros2_ws/maps/ceshi3.yaml \
   use_rviz:=true
 ```
 
@@ -254,7 +355,7 @@ ros2 launch kiwi_navigation localization_navigation.launch.py \
 
 ```bash
 ros2 launch kiwi_navigation localization_navigation.launch.py \
-  map:=/home/ym/ros2_ws/maps/lab.yaml
+  map:=$HOME/ros2_ws/maps/lab.yaml
 ```
 
 该 launch 会启动底盘、EKF、M10P、Nav2 的 AMCL、map_server、costmap、规划器、DWB 全向控制器
@@ -314,7 +415,7 @@ ros2 topic echo /diagnostics
 | SLAM 诊断 | `src/kiwi_slam/config/monitor.yaml` |
 | Nav2、AMCL、DWB、代价地图 | `src/kiwi_navigation/config/nav2.yaml` |
 | 机器人结构和传感器 TF | `src/kiwi_slam/urdf/kiwi.urdf.xacro` |
-| 地图 | `/home/ym/ros2_ws/maps/*.yaml` 和对应 `.pgm` |
+| 地图 | `$HOME/ros2_ws/maps/*.yaml` 和对应 `.pgm` |
 
 修改参数后重新构建相关包并重新 `source install/setup.bash`。地图文件不需要重新构建，直接在
 启动导航时通过 `map:=绝对路径` 选择。
