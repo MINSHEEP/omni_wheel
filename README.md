@@ -118,6 +118,27 @@ rosdep update
 rosdep install --from-paths src --ignore-src --rosdistro humble --skip-keys cmake_modules -y
 ```
 
+若 `sudo rosdep init` 因 `raw.githubusercontent.com` TLS 超时而失败，先停止后续
+`rosdep update/install`。可按[清华 TUNA 的 GitHub Raw 镜像说明](https://mirrors.tuna.tsinghua.edu.cn/help/github-raw/)
+和[ROS Distro 镜像说明](https://mirrors.tuna.tsinghua.edu.cn/help/rosdistro/)
+手动建立数据源，并同时切换 rosdistro 索引。下面的三个 YAML 是 Ubuntu 所需的
+rosdep 通用规则，不再运行会访问 GitHub Raw 的 `sudo rosdep init`：
+
+```bash
+sudo install -d -m 755 /etc/ros/rosdep/sources.list.d
+sudo tee /etc/ros/rosdep/sources.list.d/20-default.list >/dev/null <<'SOURCES'
+yaml https://mirrors.tuna.tsinghua.edu.cn/github-raw/ros/rosdistro/master/rosdep/base.yaml
+yaml https://mirrors.tuna.tsinghua.edu.cn/github-raw/ros/rosdistro/master/rosdep/python.yaml
+yaml https://mirrors.tuna.tsinghua.edu.cn/github-raw/ros/rosdistro/master/rosdep/ruby.yaml
+SOURCES
+export ROSDISTRO_INDEX_URL=https://mirrors.tuna.tsinghua.edu.cn/rosdistro/index-v4.yaml
+rosdep update --rosdistro humble
+rosdep install --from-paths src --ignore-src --rosdistro humble --skip-keys cmake_modules -y
+```
+
+以后在新终端再次执行 `rosdep update` 前，需重新设置上述 `ROSDISTRO_INDEX_URL`；
+如果镜像也无法访问，先检查网络和代理，不要用关闭 TLS 校验的方式绕过。
+
 `vcs import` 按 `tools/platform_dependencies.repos` 获取履带激光里程计 RF2O 的固定版本；
 它需要访问 GitHub。项目内的 `lslidar_driver`、`lslidar_msgs` 是 M10P 的源码驱动，
 无需另装同名 deb 包。RF2O 上游 `package.xml` 中有未被 CMake 使用的旧 `cmake_modules`
