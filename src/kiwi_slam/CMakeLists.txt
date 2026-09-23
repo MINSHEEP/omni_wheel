@@ -22,7 +22,7 @@ install(
     launch/m10p_uart_lidar.launch.py
   DESTINATION share/${PROJECT_NAME}/launch)
 install(
-  FILES urdf/kiwi.urdf.xacro
+  FILES urdf/kiwi.urdf.xacro urdf/tracked.urdf.xacro
   DESTINATION share/${PROJECT_NAME}/urdf)
 
 if(BUILD_TESTING)

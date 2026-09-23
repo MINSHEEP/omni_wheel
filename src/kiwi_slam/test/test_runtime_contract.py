@@ -55,4 +55,4 @@ def test_workspace_install_root_supports_isolated_and_merged_layouts():
 def test_active_workspace_packages_are_colocated():
     """测试环境也不得从其他 overlay 偷取同名 kiwi_base。"""
     root = validate_workspace_overlay(required_packages=("kiwi_base",))
-    assert root.name == "install"
+    assert (root / ".colcon_install_layout").is_file()

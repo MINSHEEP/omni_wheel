@@ -1,0 +1,18 @@
+# 只覆盖履带平台与 Kiwi 平台确实不同的导航项，其余参数沿用 nav2.yaml。
+amcl:
+  ros__parameters:
+    robot_model_type: nav2_amcl::DifferentialMotionModel
+    alpha1: 0.40
+    alpha2: 0.40
+    alpha3: 0.40
+    alpha4: 0.40
+    # 差速模型不使用 alpha5。
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      # TODO 实测外接尺寸后设置 footprint；目前保留 Kiwi 0.37m 半径并锁定导航。
+      robot_radius: 0.37
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      robot_radius: 0.37

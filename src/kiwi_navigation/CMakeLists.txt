@@ -11,6 +11,7 @@ install(
     launch/localization_navigation.launch.py
     launch/mapping_navigation.launch.py
     launch/navigation_core.launch.py
+    launch/platform.launch.py
   DESTINATION share/${PROJECT_NAME}/launch)
 
 if(BUILD_TESTING)

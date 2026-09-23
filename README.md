@@ -1,5 +1,7 @@
 # Kiwi ROS 2 移动机器人工作区
 
+新增两电机履带底盘与底盘/雷达/惯导一键选择入口，参见 [可切换底盘平台架构](documents/platform_architecture.md)。本文件下方仍记录原 Kiwi 平台的运行方法。
+
 这是 Kiwi 三轮全向底盘的 ROS 2 Humble 工作区。当前运行链路只使用：
 
 - RoboMaster C 板 USB CDC 底盘驱动（0x3A 命令无 ACK，0x3B 电机/IMU 异步遥测）

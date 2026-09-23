@@ -31,6 +31,9 @@ add_library(
 add_executable(kiwi_base_node src/kiwi_base_node.cpp)
 target_link_libraries(kiwi_base_node kiwi_base_core)
 ament_target_dependencies(kiwi_base_node rclcpp geometry_msgs nav_msgs sensor_msgs std_msgs)
+add_executable(tracked_base_node src/tracked_base_node.cpp)
+target_link_libraries(tracked_base_node kiwi_base_core)
+ament_target_dependencies(tracked_base_node rclcpp geometry_msgs sensor_msgs)
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 target_link_libraries(kiwi_base_node "${cpp_typesupport_target}")
 add_executable(kiwi_teleop_keyboard src/kiwi_teleop_keyboard.cpp)
@@ -38,7 +41,7 @@ ament_target_dependencies(kiwi_teleop_keyboard ament_index_cpp rclcpp geometry_m
 add_executable(kiwi_odom_test src/kiwi_odom_test.cpp)
 ament_target_dependencies(kiwi_odom_test rclcpp nav_msgs)
 install(
-  TARGETS kiwi_base_node kiwi_teleop_keyboard kiwi_odom_test kiwi_base_core
+  TARGETS kiwi_base_node tracked_base_node kiwi_teleop_keyboard kiwi_odom_test kiwi_base_core
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME})
@@ -62,6 +65,7 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
   ament_add_gtest(test_kinematics test/test_kinematics.cpp)
   target_link_libraries(test_kinematics kiwi_base_core)
+  ament_add_gtest(test_tracked_kinematics test/test_tracked_kinematics.cpp)
   ament_add_gtest(test_protocol test/test_protocol.cpp)
   target_link_libraries(test_protocol kiwi_base_core)
   ament_add_gtest(test_measurement_processing test/test_measurement_processing.cpp)

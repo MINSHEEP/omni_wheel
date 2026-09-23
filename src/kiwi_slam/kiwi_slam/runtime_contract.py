@@ -19,7 +19,10 @@ def workspace_install_root(prefix: str, package_name: str) -> Path:
     resolved = Path(prefix).resolve()
     # 默认的隔离安装形如 ``install/kiwi_base``；合并安装的前缀直接是
     # ``install``。统一后的路径可用于判断两个同名包是否来自同一工作区。
-    if resolved.name == package_name and resolved.parent.name == "install":
+    if resolved.name == package_name and (
+        resolved.parent.name == "install"
+        or (resolved.parent / ".colcon_install_layout").is_file()
+    ):
         return resolved.parent
     return resolved
 

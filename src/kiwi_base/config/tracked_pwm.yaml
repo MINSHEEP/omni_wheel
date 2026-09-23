@@ -1,0 +1,70 @@
+# 两电机履带平台。TODO 标定后才能把 hardware_calibrated 和 enable_motion 改为 true。
+# motor1=左履带、motor2=右履带、motor3=0；沿用 C 板 0x3A/0x3B 协议。
+tracked_base_node:
+  ros__parameters:
+    device: /dev/robomaster_c
+    cmd_vel_topic: /cmd_vel
+    imu_topic: /chassis/imu/data_raw
+    imu_frame_id: chassis_imu_link
+    publish_rate: 50.0
+    cmd_vel_timeout_s: 0.20
+    max_linear_speed_m_s: 0.30
+    max_angular_speed_rad_s: 0.80
+    # TODO 实测左右履带中心距；差速角速度换算使用该值。
+    track_separation_m: 0.0
+    # TODO 标定 1 m/s 对应固件 motor1/motor2 命令数值，包含减速比及 PWM 映射。
+    command_per_m_s: 0.0
+    # 已核对固件 robot_param_pwm_diff.h: PWM_DIFF_USB_MAX_COMMAND=20 rad/s。
+    max_motor_command: 20.0
+    # C 板 IMU z 轴符号和倍率沿用原车实测值；更换惯导时重新标定。
+    gyro_z_sign: -1.0
+    gyro_z_scale: 1.69
+    gyro_z_variance: 0.01
+    hardware_calibrated: false
+    enable_motion: false
+
+ekf_filter_node:
+  ros__parameters:
+    use_sim_time: false
+    frequency: 30.0
+    sensor_timeout: 0.20
+    two_d_mode: true
+    publish_tf: true
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_footprint
+    world_frame: odom
+    odom0: /chassis/odom/laser
+    # 激光里程计提供平面位姿/线速度，绝不使用固件 0x3B 的全零电机字段。
+    odom0_config: [
+      true, true, false,
+      false, false, true,
+      true, true, false,
+      false, false, false,
+      false, false, false
+    ]
+    odom0_queue_size: 10
+    imu0: /chassis/imu/data_raw
+    imu0_config: [
+      false, false, false,
+      false, false, false,
+      false, false, false,
+      false, false, true,
+      false, false, false
+    ]
+    imu0_queue_size: 20
+
+tracked_robot_model:
+  ros__parameters:
+    # TODO 以下仅供模型预览；导航启动前必须替换为实测尺寸和外参。
+    base_length_m: 0.60
+    base_width_m: 0.50
+    base_height_m: 0.15
+    base_z_m: 0.15
+    track_width_m: 0.10
+    track_height_m: 0.10
+    mass_kg: 15.0
+    lidar_xyz: [0.20, 0.0, 0.20]
+    lidar_rpy: [0.0, 0.0, 0.0]
+    imu_xyz: [0.0, 0.0, 0.0]
+    imu_rpy: [0.0, 0.0, 0.0]

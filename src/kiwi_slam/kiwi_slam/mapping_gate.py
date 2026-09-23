@@ -280,6 +280,10 @@ class MappingScanGateNode(Node):
             self._required("base_frame", Parameter.Type.STRING)
         )
 
+        self.require_imu_ready = bool(
+            self.declare_parameter("require_imu_ready", True).value
+        )
+
         config = MappingGateConfig(
             stationary_duration_s=self._positive("stationary_duration_s"),
             max_linear_speed_m_s=self._positive("max_linear_speed_m_s"),
@@ -300,6 +304,9 @@ class MappingScanGateNode(Node):
                 "input_scan_topic and output_scan_topic must differ"
             )
         self.gate = MappingStartupGate(config)
+        if not self.require_imu_ready:
+            # 无轮反馈时仍需激光里程计静止和扫描连续性的证据。
+            self.gate.set_imu_ready(True)
         self.last_warning: dict[str, float] = {}
 
         state_qos = QoSProfile(
@@ -313,9 +320,11 @@ class MappingScanGateNode(Node):
         self.ready_pub = self.create_publisher(
             Bool, self.gate_ready_topic, state_qos
         )
-        self.ready_sub = self.create_subscription(
-            Bool, self.imu_ready_topic, self._on_imu_ready, state_qos
-        )
+        self.ready_sub = None
+        if self.require_imu_ready:
+            self.ready_sub = self.create_subscription(
+                Bool, self.imu_ready_topic, self._on_imu_ready, state_qos
+            )
         self.odom_sub = self.create_subscription(
             Odometry, self.odom_topic, self._on_odom, 10
         )
@@ -328,7 +337,8 @@ class MappingScanGateNode(Node):
         self.ready_pub.publish(Bool(data=False))
         self.get_logger().info(
             f"mapping gate {self.input_scan_topic}->{self.output_scan_topic}; "
-            "waiting for calibrated IMU, stationary EKF and consistent scans"
+            "waiting for stationary EKF and consistent scans"
+            + (" after calibrated IMU" if self.require_imu_ready else "")
         )
 
     def _required(self, name: str, parameter_type: Parameter.Type) -> object:
