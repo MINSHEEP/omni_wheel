@@ -43,8 +43,10 @@ def test_all_file_overrides_are_resolved_before_child_processes(tmp_path):
 
 def test_cli_base_override_controls_web_limits_and_ros_file(tmp_path):
     base = tmp_path / "base.yaml"
+    selector = tmp_path / "active.yaml"
+    selector.write_text("chassis: kiwi\n")
     from kiwi_platform import load_profile
-    data = load_profile().data("base")
+    data = load_profile(str(selector)).data("base")
     data["kiwi_base_node"]["ros__parameters"].update(
         max_linear_speed_m_s=0.12, max_lateral_speed_m_s=0.14,
         max_angular_speed_rad_s=0.2
@@ -52,7 +54,8 @@ def test_cli_base_override_controls_web_limits_and_ros_file(tmp_path):
     data["kiwi_teleop_keyboard"]["ros__parameters"].update(speed_m_s=0.1, yaw_rad_s=0.2)
     base.write_text(yaml.safe_dump(data))
     config, manual, navigation, _ = load_config(
-        Namespace(config=None, workspace=str(tmp_path), base_params_file="base.yaml", port=8899)
+        Namespace(config=None, workspace=str(tmp_path), platform_file=str(selector),
+                  base_params_file="base.yaml", port=8899)
     )
     assert tuple(manual) == navigation == (0.12, 0.14, 0.2)
     assert config["base_params_file"] == str(base)
@@ -103,7 +106,8 @@ def test_web_navigation_passes_selected_base_file_to_nav_core(tmp_path):
     base = profile.data("base")
     motor = base["tracked_base_node"]["ros__parameters"]
     motor.update(mapping_sensors_verified=True, hardware_calibrated=True,
-                 enable_motion=True, open_loop_test_enabled=False, command_per_m_s=10.0)
+                 enable_motion=True, open_loop_test_enabled=False,
+                 keyboard_trial_enabled=False, command_per_m_s=10.0)
     calibrated = tmp_path / "calibrated.yaml"
     calibrated.write_text(yaml.safe_dump(base))
     lidar = tmp_path / "lidar.yaml"

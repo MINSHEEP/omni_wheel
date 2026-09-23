@@ -58,6 +58,8 @@ def test_raw_motor_commands_are_separate_from_cmd_vel(monkeypatch, tmp_path):
             str(find_node_executable()),
             "--ros-args", "--params-file", str(PACKAGE / "config" / "tracked_pwm.yaml"),
             "-p", f"device:={device}",
+            "-p", "keyboard_trial_enabled:=false",
+            "-p", "open_loop_test_enabled:=true",
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -117,6 +119,106 @@ def test_raw_motor_commands_are_separate_from_cmd_vel(monkeypatch, tmp_path):
                 rclpy.spin_once(node, timeout_sec=0.03)
                 frames, buffer = read_frames(master_fd, buffer)
                 assert all(frame == (0.0, 0.0, 0.0) for frame in frames)
+    finally:
+        if node is not None:
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+        process.terminate()
+        try:
+            process.communicate(timeout=3.0)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate(timeout=3.0)
+        os.close(master_fd)
+
+
+def test_temporary_keyboard_trial_is_limited_and_stops_on_timeout(monkeypatch, tmp_path):
+    monkeypatch.setenv("ROS_DOMAIN_ID", str(100 + os.getpid() % 100))
+    monkeypatch.setenv("ROS_LOCALHOST_ONLY", "1")
+    monkeypatch.setenv("ROS_LOG_DIR", str(tmp_path / "ros_log"))
+    monkeypatch.setenv(
+        "FASTRTPS_DEFAULT_PROFILES_FILE",
+        str(PACKAGE / "test" / "fastdds_shm_profile.xml"),
+    )
+    master_fd, slave_fd = pty.openpty()
+    device = os.ttyname(slave_fd)
+    os.set_blocking(master_fd, False)
+    os.close(slave_fd)
+    process = subprocess.Popen(
+        [
+            str(find_node_executable()),
+            "--ros-args", "--params-file", str(PACKAGE / "config" / "tracked_pwm.yaml"),
+            "-p", f"device:={device}",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=os.environ.copy(),
+    )
+    node = None
+    try:
+        rclpy.init()
+        node = rclpy.create_node("tracked_keyboard_trial_publisher")
+        cmd_pub = node.create_publisher(Twist, "/cmd_vel", 10)
+        deadline = time.monotonic() + 5.0
+        while cmd_pub.get_subscription_count() == 0:
+            assert process.poll() is None, "履带节点在 DDS 发现前退出"
+            assert time.monotonic() < deadline, "等待键盘话题订阅者超时"
+            rclpy.spin_once(node, timeout_sec=0.05)
+
+        buffer = b""
+        forward = Twist()
+        forward.linear.x = 0.10
+        deadline = time.monotonic() + 2.0
+        seen = False
+        while not seen:
+            cmd_pub.publish(forward)
+            rclpy.spin_once(node, timeout_sec=0.03)
+            frames, buffer = read_frames(master_fd, buffer)
+            assert all(max(abs(motor) for motor in frame[:2]) <= 5.0 for frame in frames)
+            seen = (5.0, 5.0, 0.0) in frames
+            assert process.poll() is None
+            assert time.monotonic() < deadline, "临时键盘前进命令未到达电机"
+
+        turn = Twist()
+        turn.angular.z = 0.30
+        deadline = time.monotonic() + 2.0
+        seen = False
+        while not seen:
+            cmd_pub.publish(turn)
+            rclpy.spin_once(node, timeout_sec=0.03)
+            frames, buffer = read_frames(master_fd, buffer)
+            seen = (-3.75, 3.75, 0.0) in frames
+            assert time.monotonic() < deadline, "临时键盘旋转命令未到达电机"
+
+        lateral = Twist()
+        lateral.linear.y = 0.10
+        cmd_pub.publish(lateral)
+        deadline = time.monotonic() + 0.5
+        stopped = False
+        while not stopped:
+            rclpy.spin_once(node, timeout_sec=0.03)
+            frames, buffer = read_frames(master_fd, buffer)
+            stopped = (0.0, 0.0, 0.0) in frames
+            assert time.monotonic() < deadline, "横移命令未停车"
+
+        cmd_pub.publish(forward)
+        deadline = time.monotonic() + 1.0
+        while True:
+            rclpy.spin_once(node, timeout_sec=0.03)
+            frames, buffer = read_frames(master_fd, buffer)
+            if (5.0, 5.0, 0.0) in frames:
+                break
+            assert time.monotonic() < deadline, "超时测试前未收到前进命令"
+        time.sleep(0.3)
+        deadline = time.monotonic() + 0.5
+        while True:
+            frames, buffer = read_frames(master_fd, buffer)
+            if (0.0, 0.0, 0.0) in frames:
+                break
+            assert time.monotonic() < deadline, "停止键盘发布后未停车"
+            time.sleep(0.02)
     finally:
         if node is not None:
             node.destroy_node()

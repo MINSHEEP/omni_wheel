@@ -66,7 +66,8 @@ def test_mixed_base_and_nav2_are_rejected(source_shares):
     base = tracked.data("base")
     motor = base["tracked_base_node"]["ros__parameters"]
     motor.update(mapping_sensors_verified=True, hardware_calibrated=True,
-                 enable_motion=True, open_loop_test_enabled=False, command_per_m_s=10.0)
+                 enable_motion=True, open_loop_test_enabled=False,
+                 keyboard_trial_enabled=False, command_per_m_s=10.0)
     calibrated = source_shares / "calibrated.yaml"
     calibrated.write_text(yaml.safe_dump(base))
     wrong_nav = profiles.load_profile(str(source_shares / "tracked_pwm.yaml"),
@@ -136,3 +137,24 @@ def test_lidar_ranges_and_tracked_lateral_limit_cannot_silently_diverge(source_s
     with pytest.raises(ValueError, match="SLAM 最大量程"):
         profiles.validate_profile(profiles.load_profile(selector,
             {"base": str(verified), "lidar": str(wrong_lidar)}), "mapping")
+
+
+def test_keyboard_trial_cannot_unlock_tracked_navigation(source_shares, tmp_path):
+    selector = str(source_shares / "tracked_pwm.yaml")
+    base = profiles.load_profile(selector).data("base")
+    motor = base["tracked_base_node"]["ros__parameters"]
+    assert motor["keyboard_trial_enabled"] is True
+    assert motor["hardware_calibrated"] is False
+    assert profiles.validate_profile(profiles.load_profile(selector), "driver") is False
+    motor["mapping_sensors_verified"] = True
+    verified = tmp_path / "trial.yaml"
+    verified.write_text(yaml.safe_dump(base))
+    trial = profiles.load_profile(selector, {"base": str(verified)})
+    assert profiles.validate_profile(trial, "mapping") is False
+    with pytest.raises(ValueError, match="导航须关闭开环试车"):
+        profiles.validate_profile(trial, "localization")
+    motor["open_loop_test_enabled"] = True
+    both = tmp_path / "invalid_trial.yaml"
+    both.write_text(yaml.safe_dump(base))
+    with pytest.raises(ValueError, match="临时键盘试车不能"):
+        profiles.validate_profile(profiles.load_profile(selector, {"base": str(both)}))

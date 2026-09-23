@@ -50,8 +50,8 @@ Kiwi：`/chassis/odom/raw + /chassis/imu/data_raw → EKF → /odometry/filtered
 
 履带机身长 0.70 m、宽 0.59 m、左右履带中心距 0.50 m 已实测，Nav2 先用 0.48 m 外接半径。机身高度、履带宽高、质量、雷达和 IMU 安装位姿、IMU 轴向、RF2O 静止漂移、速度换算 `command_per_m_s` 仍需标定；配置中的临时结构尺寸不是实测值。履带 Nav2 禁止 `vy`，速度平滑开环，AMCL 用差速模型。导航上限只是待实测的保守起点。
 
-`tracked_pwm.yaml` 默认 `hardware_calibrated=false`、`enable_motion=false`、`mapping_sensors_verified=false`：普通 `/cmd_vel` 只发送零电机命令。核验雷达/惯导外参、轴向及 RF2O 后，设 `mapping_sensors_verified=true` 可手动建图。导航还需标定 `command_per_m_s`、确认空载方向、关闭 `open_loop_test_enabled`，再启用 `hardware_calibrated` 和 `enable_motion`。未标定时定位导航和 Web 导航均在启动前拒绝；建图入口不会启动 Nav2。
+`tracked_pwm.yaml` 默认 `keyboard_trial_enabled=true`、`hardware_calibrated=false`、`enable_motion=false`、`mapping_sensors_verified=false`：临时键盘试车可把 `/cmd_vel` 按试验倍率换成每路不超过 ±5 rad/s 的固件命令，参数名中的 m/s 此时不代表真实车速；Nav2 和 Web 遥控仍未解锁。核验雷达/惯导外参、轴向及 RF2O 后，设 `mapping_sensors_verified=true` 可手动建图。导航还需标定真实 `command_per_m_s`、确认空载方向、关闭 `keyboard_trial_enabled` 与 `open_loop_test_enabled`，再启用 `hardware_calibrated` 和 `enable_motion`。未标定时定位导航和 Web 导航均在启动前拒绝；建图入口不会启动 Nav2。
 
-驱动联调时先架空履带，原始命令 `/chassis/open_loop_motor_cmd` 为 `std_msgs/msg/Float32MultiArray` 的 `[左, 右]` 固件 rad/s 数值，初始每路限制 ±10 rad/s，0.20 s 超时停车。当前固件上位机 `0 / +10 / +20 / -20 rad/s` 约对应 PWM `1500 / 1750 / 2000 / 1000 µs`；地面测 1 m 用时后 `10/v` 仅是下一次试验换算起点。遥控器满摇杆脉宽尚未测量，不能由此推断真实速度。
+驱动联调时先架空履带，可直接运行 `ros2 launch kiwi_base kiwi_base.launch.py`，另一个终端运行 `ros2 run kiwi_base kiwi_teleop_keyboard`；两端均先加载工作区。若要使用原始命令话题，先将 `keyboard_trial_enabled=false`、`open_loop_test_enabled=true` 并重启驱动。`/chassis/open_loop_motor_cmd` 为 `std_msgs/msg/Float32MultiArray` 的 `[左, 右]` 固件 rad/s 数值，初始每路限制 ±10 rad/s，0.20 s 超时停车。当前固件上位机 `0 / +10 / +20 / -20 rad/s` 约对应 PWM `1500 / 1750 / 2000 / 1000 µs`；地面测 1 m 用时后 `10/v` 仅是下一次试验换算起点。遥控器满摇杆脉宽尚未测量，不能由此推断真实速度。
 
 Web 就绪链也按活动底盘切换：Kiwi 检查轮式反馈和 IMU 标定状态；履带检查 RF2O 激光里程计、融合里程计与实时 IMU。履带未启用正常运动时，Web 手动遥控保持未就绪。修改活动开关或底盘标定文件后需重启 Web 服务。

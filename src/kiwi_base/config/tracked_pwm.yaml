@@ -24,8 +24,13 @@ tracked_base_node:
     mapping_sensors_verified: false
     hardware_calibrated: false
     enable_motion: false
-    # 仅供 driver 模式原始电机命令试车；/cmd_vel 仍锁定。
-    open_loop_test_enabled: true
+    # 临时键盘试车：0.10 的键盘前进命令约换成每路 5 rad/s 固件命令。
+    # 这个倍率未经实测，speed_m_s 此时只是控制刻度，不代表真实 m/s。
+    keyboard_trial_enabled: true
+    keyboard_trial_command_gain: 50.0
+    keyboard_trial_limit_rad_s: 5.0
+    # 原始电机话题与键盘试车互斥；需要原始试车时将上面开关设 false、此处设 true。
+    open_loop_test_enabled: false
     open_loop_test_topic: /chassis/open_loop_motor_cmd
     open_loop_test_limit_rad_s: 10.0
 

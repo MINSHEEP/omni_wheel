@@ -193,8 +193,16 @@ def validate_profile(profile: Profile, mode: str = "driver") -> bool:
         calibrated = base["hardware_calibrated"] is True
         motion = base["enable_motion"] is True
         open_loop = base["open_loop_test_enabled"] is True
-        if motion and (not calibrated or open_loop):
-            raise ValueError("正常运动必须先标定速度并关闭开环试车")
+        trial = base["keyboard_trial_enabled"] is True
+        if motion and (not calibrated or open_loop or trial):
+            raise ValueError("正常运动必须先标定速度并关闭所有试车模式")
+        if trial:
+            if calibrated or open_loop:
+                raise ValueError("临时键盘试车不能与已标定或原始电机试车模式并用")
+            _positive("keyboard_trial_command_gain", base["keyboard_trial_command_gain"])
+            _positive("keyboard_trial_limit_rad_s", base["keyboard_trial_limit_rad_s"])
+            if base["keyboard_trial_limit_rad_s"] > base["max_motor_command"]:
+                raise ValueError("临时键盘试车上限超过固件命令上限")
         if calibrated:
             _positive("command_per_m_s", base["command_per_m_s"])
     if mode == "driver":

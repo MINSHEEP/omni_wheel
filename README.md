@@ -275,7 +275,7 @@ ros2 launch kiwi_navigation localization_navigation.launch.py \
   map:="$HOME/ros2_ws/maps/warehouse.yaml" use_rviz:=true
 ```
 
-建图开始前，履带必须先核验雷达与惯导外参、IMU 轴向、RF2O 静止漂移，再把 `tracked_pwm.yaml` 的 `mapping_sensors_verified` 设为 `true`。速度未标定时可用遥控器或 `/chassis/open_loop_motor_cmd` 手动建图，普通 `/cmd_vel` 仍锁定。导航需要实际标定 `command_per_m_s`、设置 `hardware_calibrated=true`、`enable_motion=true`，并关闭 `open_loop_test_enabled`；仅改 Nav2 参数不能解除运动锁。RF2O 只发里程计消息，EKF 独占 `odom → base_footprint`；SLAM Toolbox 或 AMCL 发布 `map → odom`。
+建图开始前，履带必须先核验雷达与惯导外参、IMU 轴向、RF2O 静止漂移，再把 `tracked_pwm.yaml` 的 `mapping_sensors_verified` 设为 `true`。速度未标定时可用遥控器或临时键盘模式手动建图；原始电机话题可按下文切换启用。临时键盘命令只是电机控制刻度，不代表实际 m/s。导航需要实际标定 `command_per_m_s`、设置 `hardware_calibrated=true`、`enable_motion=true`，并关闭所有试车模式；仅改 Nav2 参数不能解除运动锁。RF2O 只发里程计消息，EKF 独占 `odom → base_footprint`；SLAM Toolbox 或 AMCL 发布 `map → odom`。
 
 同一个键盘节点使用同一个命令，并自动读取活动底盘的参数：
 
@@ -290,53 +290,56 @@ mkdir -p "$HOME/ros2_ws/maps"
 ros2 run nav2_map_server map_saver_cli -f "$HOME/ros2_ws/maps/warehouse"
 ```
 
-### 履带开环试车与速度标定
+### 履带临时键盘试车与速度标定
 
-已实测机身长 0.70 m、宽 0.59 m、左右履带中心距 0.50 m，已写入
-`src/kiwi_base/config/tracked_pwm.yaml`。机身高度、履带宽高、雷达/惯导外参和速度换算仍待测。
-`hardware_calibrated=false`、`enable_motion=false` 保持不变：普通 `/cmd_vel` 和键盘仍不会驱动电机；
-`mapping_sensors_verified=false` 时建图和导航仍会被启动校验阻止。
+机身长 0.70 m、宽 0.59 m、左右履带中心距 0.50 m 已实测；机身高度、雷达/惯导外参及真实速度换算仍待测。`tracked_pwm.yaml` 当前启用 `keyboard_trial_enabled=true`，保持 `hardware_calibrated=false`、`enable_motion=false`、`mapping_sensors_verified=false`。这允许键盘短时开环试车，但建图和导航仍被传感器核验/速度标定关锁限制，Web 手动遥控也保持未就绪。
 
-| 条件 | 实际表现 |
-| --- | --- |
-| `hardware_calibrated=false`、`enable_motion=false` | 底盘节点仍启动、打开 USB、发布 IMU；普通 `/cmd_vel` 输出零电机命令 |
-| `enable_motion=true` 但未标定，或标定后 `command_per_m_s` 仍为零 | 底盘节点启动时报错；不能用猜测倍率解锁键盘 |
-| `open_loop_test_enabled=true` | 可在驱动联调和传感器核验后的手动建图中使用；与正常运动或定位导航不能同时开启 |
-| `/dev/robomaster_c` 不可读写、被占用或下位机未切到上位机模式 | 串口无法打开，或固件不执行上位机命令 |
-| 命令超过 `cmd_vel_timeout_s=0.20` 秒未刷新 | 上位机持续发送零电机命令；固件还有自己的超时停车逻辑 |
+临时倍率 `keyboard_trial_command_gain=50.0` 只把键盘前进刻度 `0.10` 换成两路各 `+5 rad/s` 的固件命令；`keyboard_trial_limit_rad_s=5.0` 将每路限制在 ±5 rad/s。此时键盘参数名中的 `m_s` **不代表实际 m/s**。固件实测 `+10 rad/s` 对应约 1750 µs，真实车速仍需地面计时标定。
 
-已单独开启供驱动联调及传感器核验后手动建图使用的 `/chassis/open_loop_motor_cmd` 话题，消息为
-`std_msgs/msg/Float32MultiArray`，`data` 必须恰好是 `[左履带, 右履带]` 两个固件
-**rad/s 命令值**，不是实测履带速度。每路初始上限 ±10 rad/s；非法或超限命令停车，
-消息超过 0.20 s 未刷新也停车。此话题和正常 `/cmd_vel` 不能同时使能。
-
-更新工作区并构建 `kiwi_base` 后，先把履带架空、切到上位机控制模式，启动驱动；
-在第二个已加载工作区的终端依次短时测试单侧、双侧方向：
+将更新后的源码同步到上位机后，从工作区根目录重新构建底盘及其配置选择包：
 
 ```bash
-ros2 launch kiwi_slam kiwi_robot.launch.py start_ekf:=false start_lidar:=false
-# 另一个终端，先测左履带；-r 10 -t 10 表示 10 Hz 连发 1 秒。
+cd "$HOME/ros2_ws"
+source /opt/ros/humble/setup.bash
+sed -i 's/^chassis:.*/chassis: tracked_pwm/' src/kiwi_platform/config/active_platform.yaml
+colcon build --symlink-install --packages-up-to kiwi_base
+```
+
+先架空履带并确认下位机切到上位机模式。在两个终端都加载同一工作区，且不要同时运行 Web、Nav2 或其他 `/cmd_vel` 发布者：
+
+```bash
+# 终端 1：只启动当前所选底盘节点，不需要先启动雷达、RF2O 或 EKF。
+cd "$HOME/ros2_ws"
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch kiwi_base kiwi_base.launch.py
+```
+
+```bash
+# 终端 2：必须是能接收按键的前台终端。
+cd "$HOME/ros2_ws"
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 run kiwi_base kiwi_teleop_keyboard
+```
+
+键盘 `w/s` 前后、`q/e` 原地转向、空格或 `x` 停车；`a/d` 横移会被履带驱动拒绝并停车。先短按 `w` 核实两条履带的正方向，再短按 `q/e` 核实转向。停止按键约 200 ms 后键盘自动发布零命令；速度命令断发超过 `cmd_vel_timeout_s=0.20` 秒时，底盘节点持续发零电机命令。按 `Ctrl-C` 退出键盘，再停止驱动。若日志出现 `Cannot open /dev/robomaster_c`，检查串口链接和 `dialout` 权限；串口已打开但不动，检查下位机控制模式与电调状态。
+
+| 配置条件 | 实际表现 |
+| --- | --- |
+| `keyboard_trial_enabled=true`，`hardware_calibrated=false` | 键盘试车可用，每路受 `keyboard_trial_limit_rad_s` 限制；不解锁导航 |
+| `keyboard_trial_enabled=false`、`open_loop_test_enabled=false`、`enable_motion=false` | 普通 `/cmd_vel` 只输出零电机命令 |
+| `open_loop_test_enabled=true`、`keyboard_trial_enabled=false` | 原始电机话题可用；与临时键盘及正常运动互斥 |
+| 已实测速度并设 `hardware_calibrated=true`、`enable_motion=true`，关闭两种试车模式 | 才可使用真实标定的 `/cmd_vel`；导航仍要求核验传感器和定位 |
+
+若需要旧的 `/chassis/open_loop_motor_cmd` 双路单侧试车，先停止底盘节点，在同一份 `tracked_pwm.yaml` 中把 `keyboard_trial_enabled` 改为 `false`，把 `open_loop_test_enabled` 改为 `true`，再重启底盘。该话题消息为 `std_msgs/msg/Float32MultiArray` 的 `[左履带, 右履带]` 两个固件 rad/s 数值，当前每路上限 ±10 rad/s；非法/超限命令与断发超过 0.20 秒都会停车。架空履带时的短时命令示例：
+
+```bash
 ros2 topic pub -r 10 -t 10 /chassis/open_loop_motor_cmd std_msgs/msg/Float32MultiArray '{data: [5.0, 0.0]}'
 ros2 topic pub -r 10 -t 10 /chassis/open_loop_motor_cmd std_msgs/msg/Float32MultiArray '{data: [0.0, 5.0]}'
-ros2 topic pub -r 10 -t 10 /chassis/open_loop_motor_cmd std_msgs/msg/Float32MultiArray '{data: [5.0, 5.0]}'
 ```
 
-确认两路正方向一致后，地面测量前可把命令改为 `[10.0, 10.0]`，以 10 Hz 持续发布并
-计时走 1 m；持续命令示例：
-
-```bash
-ros2 topic pub -r 10 /chassis/open_loop_motor_cmd std_msgs/msg/Float32MultiArray '{data: [10.0, 10.0]}'
-```
-
-按 Ctrl+C 停止发布后，0.20 s 内由上位机看门狗发零命令。若实际速度为 `v` m/s，
-`10/v` rad/s 只作为下一次试验的换算起点，最终仍需多次实测标定，并受固件
-`±20 rad/s` 饱和上限约束。当前固件上位机命令 `0 / +10 / +20 / -20 rad/s`
-分别约对应 `1500 / 1750 / 2000 / 1000 µs` 的 PWM4/5 输出；遥控 PWM2/3 满摇杆
-输出尚未测量，不能据此推断。已测遥控开机居中约 `1510/1510 µs`、关机后约
-`1445/1525 µs`；固件把输入 `1400～1600 µs` 归零到 `1500 µs`，最终输出限在
-`1000～2000 µs`。手动建图前须核验雷达/惯导安装位姿、IMU 轴向及 RF2O 静止漂移，
-再把同一 YAML 中的 `mapping_sensors_verified` 改为 `true`。正常键盘控制和导航仍要等
-`command_per_m_s` 等参数标定、关闭 `open_loop_test_enabled` 后再开启。
+地面标定时，先确认正方向，再持续发送相同的已知电机命令，测量走 1 m 的用时。若发送两路 `10 rad/s` 时实测速度为 `v` m/s，`10/v` 仅是 `command_per_m_s` 的下一次试验起点；需多次测量并核对转向后再标记 `hardware_calibrated=true`。切换到正常运动前关闭 `keyboard_trial_enabled` 和 `open_loop_test_enabled`。雷达/惯导外参与 RF2O 尚未核验时，保持 `mapping_sensors_verified=false`。
 
 ### 网页控制台（跟随活动底盘）
 

@@ -118,7 +118,8 @@ def test_calibrated_tracked_localization_uses_own_nav2_and_rf2o(tmp_path):
     base = profile.data("base")
     base["tracked_base_node"]["ros__parameters"].update(
         mapping_sensors_verified=True, hardware_calibrated=True,
-        enable_motion=True, open_loop_test_enabled=False, command_per_m_s=10.0,
+        enable_motion=True, open_loop_test_enabled=False,
+                 keyboard_trial_enabled=False, command_per_m_s=10.0,
     )
     calibrated = tmp_path / "calibrated.yaml"
     calibrated.write_text(yaml.safe_dump(base))

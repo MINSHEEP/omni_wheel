@@ -49,12 +49,21 @@ public:
     gyro_z_variance_ = declare_parameter<double>("gyro_z_variance", 0.01);
     const bool calibrated = declare_parameter<bool>("hardware_calibrated", false);
     motion_enabled_ = declare_parameter<bool>("enable_motion", false);
+    trial_enabled_ = declare_parameter<bool>("keyboard_trial_enabled", false);
+    const double trial_gain = declare_parameter<double>("keyboard_trial_command_gain", 0.0);
+    const double trial_limit = declare_parameter<double>("keyboard_trial_limit_rad_s", 0.0);
     test_enabled_ = declare_parameter<bool>("open_loop_test_enabled", false);
     test_topic_ = declare_parameter<std::string>(
       "open_loop_test_topic", "/chassis/open_loop_motor_cmd");
     test_limit_ = declare_parameter<double>("open_loop_test_limit_rad_s", 0.0);
     if (test_enabled_ && motion_enabled_)
       throw std::invalid_argument("open-loop test and calibrated cmd_vel cannot run together");
+    if (trial_enabled_ && (calibrated || motion_enabled_ || test_enabled_))
+      throw std::invalid_argument("keyboard trial must be separate from calibrated and raw motor modes");
+    if (trial_enabled_ && (!std::isfinite(trial_gain) || trial_gain <= 0.0 ||
+                          !std::isfinite(trial_limit) || trial_limit <= 0.0 ||
+                          !std::isfinite(max_command) || trial_limit > max_command))
+      throw std::invalid_argument("invalid keyboard trial command gain or limit");
     if (test_enabled_ && (test_topic_.empty() ||
                          !std::isfinite(test_limit_) || test_limit_ <= 0.0 ||
                          !std::isfinite(max_command) || test_limit_ > max_command))
@@ -69,10 +78,18 @@ public:
         (gyro_z_sign_ != 1.0 && gyro_z_sign_ != -1.0) ||
         !std::isfinite(gyro_z_variance_) || gyro_z_variance_ <= 0.0)
       throw std::invalid_argument("invalid tracked base limits or IMU calibration");
-    // 未标定时普通 /cmd_vel 锁定；原始电机试车由独立话题和限幅控制。
+    // 临时键盘倍率只把 Twist 换成限幅电机命令，不代表实测 m/s，且不能解锁导航。
     if (calibrated)
       kinematics_ = std::make_unique<TrackedKinematics>(
         separation, command_gain, max_command);
+    else if (trial_enabled_)
+    {
+      kinematics_ = std::make_unique<TrackedKinematics>(
+        separation, trial_gain, trial_limit);
+      RCLCPP_WARN(get_logger(),
+                  "Uncalibrated keyboard trial enabled: gain %.1f, motor limit %.1f rad/s",
+                  trial_gain, trial_limit);
+    }
     else
       RCLCPP_WARN(get_logger(), "Tracked geometry/command gain TODO: motion locked");
 
@@ -94,7 +111,7 @@ public:
     timer_ = create_wall_timer(
       std::chrono::duration<double>(1.0 / rate), [this]() { update(); });
     RCLCPP_INFO(get_logger(), "Tracked USB bridge ready; motion=%s",
-                motion_enabled_ ? "enabled" : "locked");
+                motion_enabled_ ? "calibrated" : trial_enabled_ ? "keyboard_trial" : "locked");
   }
 
   ~TrackedBaseNode() override
@@ -249,7 +266,7 @@ private:
     const bool fresh = have_cmd_ &&
       std::chrono::duration<double>(std::chrono::steady_clock::now() - last_cmd_).count()
       <= timeout_;
-    if (fresh && motion_enabled_ && kinematics_)
+    if (fresh && (motion_enabled_ || trial_enabled_) && kinematics_)
     {
       const auto motors = kinematics_->command(vx_, wz_);
       command.motor_rad_s = {motors.first, motors.second, 0.0F};
@@ -270,7 +287,7 @@ private:
   std::string device_, cmd_topic_, imu_topic_, imu_frame_, test_topic_;
   double max_linear_{}, max_angular_{}, timeout_{}, test_limit_{};
   double gyro_z_sign_{}, gyro_z_scale_{}, gyro_z_variance_{};
-  bool motion_enabled_{false}, have_cmd_{false};
+  bool motion_enabled_{false}, trial_enabled_{false}, have_cmd_{false};
   bool test_enabled_{false}, have_test_cmd_{false};
   double vx_{0.0}, wz_{0.0};
   float test_left_{0.0F}, test_right_{0.0F};
