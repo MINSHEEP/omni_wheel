@@ -123,3 +123,56 @@ def test_invalid_configuration_is_rejected():
         assert "required_stable_scans" in str(error)
     else:
         raise AssertionError("invalid mapping gate configuration was accepted")
+
+
+def test_tracked_gate_requires_fresh_imu_and_laser_odometry():
+    config = MappingGateConfig(
+        stationary_duration_s=0.5,
+        max_linear_speed_m_s=0.02,
+        max_angular_speed_rad_s=0.03,
+        max_yaw_step_rad=0.01,
+        max_message_age_s=0.20,
+        required_stable_scans=2,
+        min_valid_scan_ratio=0.25,
+        min_scan_overlap_ratio=0.50,
+        max_median_range_delta_m=0.05,
+        require_imu_samples=True,
+        require_source_odom=True,
+    )
+    gate = MappingStartupGate(config)
+    gate.set_imu_ready(True)  # 履带无原 Kiwi 电机标定 Bool。
+    observe_stationary(gate)
+    assert not gate.observe_scan(0.61, [1.0] * 8, 0.1, 5.0)
+    gate.observe_imu(0.60, True)
+    assert not gate.observe_scan(0.61, [1.0] * 8, 0.1, 5.0)
+    gate.observe_source_odom(0.60, True)
+    assert not gate.observe_scan(0.61, [1.0] * 8, 0.1, 5.0)
+    assert gate.observe_scan(0.66, [1.0] * 8, 0.1, 5.0)
+    # 已开门后任一传感器断流，都暂停 /scan_slam，恢复后再转发。
+    assert not gate.observe_scan(0.90, [1.0] * 8, 0.1, 5.0)
+    gate.observe_imu(0.90, True)
+    assert not gate.observe_scan(0.91, [1.0] * 8, 0.1, 5.0)
+    gate.observe_source_odom(0.91, True)
+    gate.observe_odometry(0.91, 0.0, 0.0, 0.0, 0.0)
+    assert gate.observe_scan(0.92, [1.0] * 8, 0.1, 5.0)
+    gate.observe_imu(0.93, False)
+    assert not gate.observe_scan(0.94, [1.0] * 8, 0.1, 5.0)
+
+
+def test_tracked_gate_pauses_when_filtered_odometry_stops():
+    config = MappingGateConfig(
+        0.5, 0.02, 0.03, 0.01, 0.20, 2, 0.25, 0.50, 0.05,
+        require_imu_samples=True, require_source_odom=True,
+    )
+    gate = MappingStartupGate(config)
+    gate.set_imu_ready(True)
+    observe_stationary(gate)
+    gate.observe_imu(0.60, True)
+    gate.observe_source_odom(0.60, True)
+    assert not gate.observe_scan(0.61, [1.0] * 8, 0.1, 5.0)
+    assert gate.observe_scan(0.66, [1.0] * 8, 0.1, 5.0)
+    gate.observe_imu(0.85, True)
+    gate.observe_source_odom(0.85, True)
+    assert not gate.observe_scan(0.85, [1.0] * 8, 0.1, 5.0)
+    gate.observe_odometry(0.86, 0.2, 0.0, 0.1, 0.1)
+    assert gate.observe_scan(0.87, [1.0] * 8, 0.1, 5.0)

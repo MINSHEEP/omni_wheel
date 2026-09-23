@@ -20,6 +20,8 @@ tracked_base_node:
     gyro_z_sign: -1.0
     gyro_z_scale: 1.69
     gyro_z_variance: 0.01
+    # TODO 核验雷达/惯导外参、IMU 轴向、RF2O 静止漂移后才允许手动建图。
+    mapping_sensors_verified: false
     hardware_calibrated: false
     enable_motion: false
     # 仅供 driver 模式原始电机命令试车；/cmd_vel 仍锁定。
@@ -95,6 +97,12 @@ kiwi_mapping_scan_gate:
     base_frame: base_footprint
     # 履带平台无电机反馈；用激光里程计静止证据，不等待原 Kiwi 电机标定 Bool。
     require_imu_ready: false
+    # 履带不发布原 Kiwi 的电机标定 Bool；开门和持续转发仍要求新鲜 IMU 与 RF2O。
+    require_imu_samples: true
+    imu_topic: /chassis/imu/data_raw
+    imu_frame: chassis_imu_link
+    require_source_odom: true
+    source_odom_topic: /chassis/odom/laser
     stationary_duration_s: 0.5
     max_linear_speed_m_s: 0.02
     max_angular_speed_rad_s: 0.03
@@ -113,7 +121,7 @@ amcl:
     alpha2: 0.40
     alpha3: 0.40
     alpha4: 0.40
-    # 差速模型不使用 alpha5。
+    # 差速模型不使用 alpha5；四项噪声系数待实测扫描匹配质量后复核。
 local_costmap:
   local_costmap:
     ros__parameters:
@@ -123,3 +131,52 @@ global_costmap:
   global_costmap:
     ros__parameters:
       robot_radius: 0.48
+
+# 履带 Nav2 专属值：保留公共算法/话题；下列速度和加速度只是待标定的保守上限，
+# hardware_calibrated=false 时禁止导航，不能把这些数值当成实测运动能力。
+controller_server:
+  ros__parameters:
+    progress_checker:
+      required_movement_radius: 0.12
+      required_movement_angle: 0.15
+      movement_time_allowance: 15.0
+    general_goal_checker:
+      xy_goal_tolerance: 0.20
+      yaw_goal_tolerance: 0.40
+    FollowPath:
+      min_vel_x: 0.0
+      max_vel_x: 0.15
+      min_vel_y: 0.0
+      max_vel_y: 0.0
+      max_vel_theta: 0.40
+      max_speed_xy: 0.15
+      rotate_to_heading_angular_vel: 0.30
+      max_angular_accel: 0.40
+      acc_lim_x: 0.15
+      decel_lim_x: -0.20
+      acc_lim_y: 0.0
+      decel_lim_y: 0.0
+      acc_lim_theta: 0.40
+      decel_lim_theta: -0.60
+      vx_samples: 8
+      vy_samples: 1
+      vtheta_samples: 16
+      sim_time: 1.2
+smoother_server:
+  ros__parameters:
+    constrained_smoother:
+      # 履带可原地转向，不沿用 Kiwi 的 0.40 m 最小转弯半径。
+      minimum_turning_radius: 0.0
+      w_curve: 0.0
+behavior_server:
+  ros__parameters:
+    max_rotational_vel: 0.40
+    rotational_acc_lim: 0.40
+velocity_smoother:
+  ros__parameters:
+    feedback: OPEN_LOOP
+    max_velocity: [0.15, 0.0, 0.40]
+    min_velocity: [0.0, 0.0, -0.40]
+    max_accel: [0.15, 0.0, 0.40]
+    max_decel: [-0.20, 0.0, -0.60]
+    velocity_timeout: 0.20

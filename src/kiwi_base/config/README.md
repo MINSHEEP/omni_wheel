@@ -1,7 +1,7 @@
 # kiwi_base 参数说明
 
 统一平台按底盘选择一份专属参数：Kiwi 使用 `kiwi_base.yaml`，履带使用 `tracked_pwm.yaml`。
-两份 YAML 各自包含底盘、EKF、模型、键盘和建图门控参数；履带 YAML 还包含 Nav2 差速覆盖值。
+两份 YAML 各自包含底盘、EKF、模型、键盘和建图门控参数；履带 YAML 还包含差速 AMCL、无横移控制器、速度平滑和避障外形等 Nav2 覆盖值。
 
 以下是原 Kiwi 节点和话题；履带改用 `tracked_base_node`，不会发布轮速里程计或 `/joint_states`。
 
@@ -33,6 +33,6 @@ Kiwi 的安装外参维护在 `kiwi_slam/urdf/kiwi.urdf.xacro`，履带占位外
 `kiwi_navigation/config/nav2.yaml`；履带专属避障半径在 `tracked_pwm.yaml`。
 
 履带的 `hardware_calibrated=false`、`enable_motion=false` 保持普通 `/cmd_vel` 锁定；
-`open_loop_test_enabled=true` 时仅在统一入口 `mode:=driver` 用
-`/chassis/open_loop_motor_cmd` 试发 `[左, 右]` 两路原始 rad/s 命令。
+`open_loop_test_enabled=true` 时在统一入口 `mode:=driver`，或传感器已核验后的
+`mode:=mapping` 手动建图中，用 `/chassis/open_loop_motor_cmd` 试发 `[左, 右]` 两路原始 rad/s 命令。
 试车上限、超时和后续标定步骤见工作区根 [README](../../../README.md)。

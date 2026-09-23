@@ -19,7 +19,13 @@
 `robot_state_publisher`、M10P 驱动、EKF、建图门控、SLAM Toolbox 和 Nav2 复用。
 Kiwi 与履带专属参数分别集中在 `src/kiwi_base/config/kiwi_base.yaml` 和
 `src/kiwi_base/config/tracked_pwm.yaml`。雷达、SLAM 和 Nav2 的公共参数继续共用；
-统一入口会从所选底盘 YAML 读取建图门控及差速 Nav2 覆盖值。
+统一入口会从所选底盘 YAML 读取建图门控及 Nav2 覆盖值。履带建图用
+`/scan → RF2O → /chassis/odom/laser` 与 `/chassis/imu/data_raw` 进入 EKF，
+由 EKF 独占发布 `/odometry/filtered` 和 `odom → base_footprint`；不生成轮式里程计。
+履带建图门控要求原始激光里程计、原始 IMU 和融合里程计均新鲜，失去其中一个来源便暂停
+`/scan_slam`。导航单独覆盖 AMCL 差速模型、DWB 横移约束、速度平滑、转向轨迹平滑和外形；
+运动速度及加减速度仍须实车标定后复核。履带手动建图仅需核验传感器并设置
+`mapping_sensors_verified=true`，此时不启动 Nav2；正常速度控制和定位导航仍锁定。
 
 键盘沿用同一节点；Kiwi 直接运行 `ros2 run kiwi_base kiwi_teleop_keyboard`，
 履带运行 `ros2 run kiwi_base kiwi_teleop_keyboard --ros-args --params-file src/kiwi_base/config/tracked_pwm.yaml`。
@@ -40,9 +46,12 @@ Kiwi 与履带专属参数分别集中在 `src/kiwi_base/config/kiwi_base.yaml` 
 
 当前 `hardware_calibrated=false`、`enable_motion=false`：驱动联调模式可以启动串口和 IMU，
 正常 `/cmd_vel` 只发送零命令。已增加独立的 `/chassis/open_loop_motor_cmd` 原始双路
-rad/s 试车入口，统一启动文件仅在 `mode=driver` 允许它生效，初始限制每路 ±10 rad/s，0.20 s 无新消息停车；
-不能据此称上位机的 m/s 已标定。建图和导航仍需完成速度、传感器标定，关闭
-`open_loop_test_enabled`，再开启正常运动。试车命令见根 README。
+rad/s 试车入口，初始限制每路 ±10 rad/s，0.20 s 无新消息停车。
+当前 `mapping_sensors_verified=false`，只能在 `mode=driver` 联调。核验雷达/惯导外参、
+IMU 轴向和 RF2O 后，把该项设为 `true`，即可用遥控或原始命令在 `mode=mapping` 手动建图；
+此时不启动 Nav2，也不称命令为实测 m/s。正常键盘控制和定位导航还须标定
+`command_per_m_s`、关闭 `open_loop_test_enabled` 并设置 `hardware_calibrated=true`、
+`enable_motion=true`。试车命令见根 README。
 
 ## 启动
 
@@ -64,11 +73,17 @@ colcon build --packages-up-to kiwi_navigation rf2o_laser_odometry
 source install/setup.bash
 ```
 
-完成上面的 TODO 和参数验证后：
+核验雷达/惯导外参、IMU 轴向和 RF2O 后，在 `tracked_pwm.yaml` 设置
+`mapping_sensors_verified=true`，即可沿用统一入口手动建图，尚不需要速度换算：
 
 ```bash
-ros2 launch kiwi_navigation platform.launch.py chassis:=tracked_pwm lidar:=m10p imu:=chassis mode:=mapping
-ros2 launch kiwi_navigation platform.launch.py chassis:=tracked_pwm lidar:=m10p imu:=chassis mode:=localization map:=/绝对路径/map.yaml
+ros2 launch kiwi_navigation platform.launch.py chassis:=tracked_pwm mode:=mapping
+```
+
+正常定位导航还需实测速度换算和转向、关闭开环试车并启用正常运动，再使用同一入口：
+
+```bash
+ros2 launch kiwi_navigation platform.launch.py chassis:=tracked_pwm mode:=localization map:=/绝对路径/map.yaml
 ```
 
 外部雷达需发布 `/scan` 且 frame 为 URDF 中对应的 `lidar_link`；用 `lidar:=external_scan` 选择。外部惯导用 `imu:=external external_imu_topic:=/your/imu`，其 frame 必须在 URDF 中有正确静态外参。外部激光/视觉里程计用 `odom:=external external_odom_topic:=/your/odom`，消息须使用 `odom` 和 `base_footprint` frame，且不得额外广播 `odom -> base_footprint`。新增硬件类型只需添加对应驱动封装、URDF 外参和配置选项，不修改导航算法内部话题契约。

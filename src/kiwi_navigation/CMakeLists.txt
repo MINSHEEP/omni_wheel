@@ -17,6 +17,7 @@ install(
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(test_config test/test_config.py)
+  ament_add_pytest_test(test_tracked_nav2_config test/test_tracked_nav2_config.py)
   ament_add_pytest_test(
     test_cross_package_contract
     test/test_cross_package_contract.py)

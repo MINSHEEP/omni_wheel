@@ -56,6 +56,21 @@ def _merge(target: dict, overlay: dict) -> None:
             target[key] = value
 
 
+def _nav2_for_chassis(nav_data: dict, base_config: dict, chassis: str) -> dict:
+    if chassis == "tracked_pwm":
+        # 公共算法参数保留，履带专属控制、差速和外形值由同一底盘 YAML 覆盖。
+        overlay_keys = (
+            "amcl", "controller_server", "smoother_server", "behavior_server",
+            "velocity_smoother", "local_costmap", "global_costmap",
+        )
+        overlay = {key: base_config.get(key) for key in overlay_keys}
+        if not all(isinstance(value, dict) for value in overlay.values()):
+            raise ValueError("履带 YAML 缺少 Nav2 专属参数")
+        _merge(nav_data, overlay)
+        nav_data["amcl"]["ros__parameters"].pop("alpha5", None)
+    return nav_data
+
+
 def _materialize(data: dict, prefix: str) -> str:
     with tempfile.NamedTemporaryFile(
         mode="w",
@@ -129,6 +144,7 @@ def _setup(context):
         .resolve()
     )
     base_config = _load(base_file)
+    mapping_only = False
     if chassis == "kiwi":
         validate_base_parameters(base_file)
     else:
@@ -140,10 +156,11 @@ def _setup(context):
         calibrated = tracked.get("hardware_calibrated") is True
         motion_enabled = tracked.get("enable_motion") is True
         open_loop_test = tracked.get("open_loop_test_enabled") is True
-        if mode != "driver" and open_loop_test:
-            raise ValueError("原始电机试车仅允许 mode=driver；建图导航前关闭 open_loop_test_enabled")
+        mapping_verified = tracked.get("mapping_sensors_verified") is True
         if motion_enabled and not calibrated:
-            raise ValueError("enable_motion=true 需要先完成硬件标定")
+            raise ValueError("enable_motion=true 需要先完成运动命令标定")
+        if motion_enabled and open_loop_test:
+            raise ValueError("正常运动与原始电机试车不能同时开启")
         if calibrated:
             for key in (
                 "track_separation_m",
@@ -158,14 +175,17 @@ def _setup(context):
                     or value <= 0
                 ):
                     raise ValueError(f"履带 {key} 必须是标定后的正数")
-        if mode != "driver" and not calibrated:
+        if mode != "driver" and not mapping_verified:
             raise ValueError(
-                "履带几何/命令/传感器外参仍为 TODO；完成标定并设置 hardware_calibrated=true 后才能导航"
+                "履带雷达/惯导外参与 RF2O 尚未核验；"
+                "完成核验后设置 mapping_sensors_verified=true"
             )
-        if mode != "driver" and not motion_enabled:
-            raise ValueError(
-                "履带 enable_motion=false；完成空载方向验证后才能导航"
-            )
+        mapping_only = mode == "mapping" and not motion_enabled
+        if mode == "localization":
+            if open_loop_test or not calibrated or not motion_enabled:
+                raise ValueError(
+                    "履带导航须关闭开环试车、标定速度换算并启用正常运动"
+                )
         if (
             odom == "external"
             and mode != "driver"
@@ -180,11 +200,19 @@ def _setup(context):
         base_config["ekf_filter_node"]["ros__parameters"][
             "imu0"
         ] = external_imu
+        if chassis == "tracked_pwm":
+            base_config["kiwi_mapping_scan_gate"]["ros__parameters"][
+                "imu_topic"
+            ] = external_imu
         base_file = Path(_materialize(base_config, "platform_base"))
     if odom == "external":
         base_config["ekf_filter_node"]["ros__parameters"]["odom0"] = _config(
             context, "external_odom_topic"
         )
+        if chassis == "tracked_pwm":
+            base_config["kiwi_mapping_scan_gate"]["ros__parameters"][
+                "source_odom_topic"
+            ] = _config(context, "external_odom_topic")
         base_file = Path(_materialize(base_config, "platform_base"))
 
     xacro_file = (
@@ -277,14 +305,7 @@ def _setup(context):
         _config(context, "nav2_params_file")
         or str(nav_share / "config/nav2.yaml")
     )
-    nav_data = _load(nav_file)
-    if chassis == "tracked_pwm":
-        # 履带差速 AMCL 与外形参数来自同一底盘 YAML，公共 Nav2 参数继续复用。
-        overlay_keys = ("amcl", "local_costmap", "global_costmap")
-        overlay = {key: base_config.get(key) for key in overlay_keys}
-        if not all(isinstance(value, dict) for value in overlay.values()):
-            raise ValueError("履带 YAML 缺少 amcl/local_costmap/global_costmap 参数")
-        _merge(nav_data, overlay)
+    nav_data = _nav2_for_chassis(_load(nav_file), base_config, chassis)
     nav_file = Path(_materialize(nav_data, "platform_nav2"))
     bt_params = RewrittenYaml(
         source_file=str(nav_file),
@@ -302,7 +323,9 @@ def _setup(context):
     )
     if mode == "mapping":
         # 两种底盘各自的建图门控值均放在所选底盘 YAML 中。
-        gate_file = _config(context, "mapping_gate_params_file") or str(base_file)
+        gate_file = (
+            _config(context, "mapping_gate_params_file") or str(base_file)
+        )
         actions.extend(
             [
                 Node(
@@ -324,6 +347,9 @@ def _setup(context):
                 ),
             ]
         )
+        if mapping_only:
+            # 手动建图只依赖 RF2O+IMU+SLAM；速度比例未标定时不启动 Nav2。
+            return actions
     else:
         map_file = _config(context, "map")
         if not map_file or not Path(map_file).is_file():

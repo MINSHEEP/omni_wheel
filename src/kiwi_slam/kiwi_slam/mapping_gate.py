@@ -18,7 +18,7 @@ from rclpy.qos import (
     ReliabilityPolicy,
     qos_profile_sensor_data,
 )
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import Imu, LaserScan
 from std_msgs.msg import Bool
 
 
@@ -35,6 +35,8 @@ class MappingGateConfig:
     min_valid_scan_ratio: float
     min_scan_overlap_ratio: float
     max_median_range_delta_m: float
+    require_imu_samples: bool = False
+    require_source_odom: bool = False
 
     def __post_init__(self) -> None:
         positive = (
@@ -59,8 +61,8 @@ class MappingStartupGate:
 
     IMU ready 由底盘实际三个标定器产生，不能用固定等待时间替代。ready 后还
     要求 EKF 连续静止，并确认若干相邻 LaserScan 的共同有效束距离一致。任何
-    运动、断流或异常扫描都会清空本轮证据；门一旦打开则保持打开，避免正常
-    建图运动期间反复断流。
+    运动、断流或异常扫描都会清空本轮证据；门一旦打开则保持打开。履带选项
+    可要求原始 IMU 和激光里程计持续新鲜，任一断流时暂停扫描转发。
     """
 
     def __init__(self, config: MappingGateConfig) -> None:
@@ -72,6 +74,18 @@ class MappingStartupGate:
         self.previous_yaw: float | None = None
         self.previous_ranges: list[float] | None = None
         self.stable_scan_count = 0
+        self.last_imu_time: float | None = None
+        self.last_source_odom_time: float | None = None
+
+    def observe_imu(self, received_at: float, valid: bool) -> None:
+        self.last_imu_time = (
+            received_at if valid and math.isfinite(received_at) else None
+        )
+
+    def observe_source_odom(self, received_at: float, valid: bool) -> None:
+        self.last_source_odom_time = (
+            received_at if valid and math.isfinite(received_at) else None
+        )
 
     def set_imu_ready(self, ready: bool) -> None:
         """更新底盘标定状态；只在状态改变时重建启动证据。"""
@@ -89,9 +103,15 @@ class MappingStartupGate:
         yaw: float,
     ) -> None:
         """输入一帧 EKF 里程计，用速度、yaw 连续性和接收间隔确认静止。"""
-        if self.opened:
-            return
         values = (received_at, velocity_x, velocity_y, angular_z, yaw)
+        if self.opened:
+            # 已开门后仍监测 EKF 输出新鲜度，不再用运动状态重置启动证据。
+            self.last_odom_time = (
+                received_at
+                if all(math.isfinite(value) for value in values)
+                else None
+            )
+            return
         if not self.imu_ready or any(
             not math.isfinite(value) for value in values
         ):
@@ -137,6 +157,9 @@ class MappingStartupGate:
         range_max: float,
     ) -> bool:
         """输入一帧扫描；返回本帧是否应转发给 SLAM。"""
+        if not self._sources_ready(received_at):
+            self._reset_scan_evidence()
+            return False
         if self.opened:
             return True
         if not self._odom_is_ready(received_at):
@@ -206,6 +229,25 @@ class MappingStartupGate:
         if self.stable_scan_count >= self.config.required_stable_scans:
             self.opened = True
         return self.opened
+
+    def _sources_ready(self, now: float) -> bool:
+        def fresh(last: float | None) -> bool:
+            return (
+                last is not None
+                and math.isfinite(now)
+                and 0.0 <= now - last <= self.config.max_message_age_s
+            )
+
+        return (
+            (not self.config.require_imu_samples or fresh(self.last_imu_time))
+            and (
+                not self.config.require_source_odom
+                or (
+                    fresh(self.last_source_odom_time)
+                    and fresh(self.last_odom_time)
+                )
+            )
+        )
 
     def _odom_is_ready(self, now: float) -> bool:
         """确认标定已完成、静止时间达标且 EKF 消息仍新鲜。"""
@@ -283,6 +325,25 @@ class MappingScanGateNode(Node):
         self.require_imu_ready = bool(
             self.declare_parameter("require_imu_ready", True).value
         )
+        self.require_imu_samples = bool(
+            self.declare_parameter("require_imu_samples", False).value
+        )
+        self.require_source_odom = bool(
+            self.declare_parameter("require_source_odom", False).value
+        )
+        self.imu_topic = str(self.declare_parameter("imu_topic", "").value)
+        self.imu_frame = str(self.declare_parameter("imu_frame", "").value)
+        self.source_odom_topic = str(
+            self.declare_parameter("source_odom_topic", "").value
+        )
+        if self.require_imu_samples and (
+            not self.imu_topic or not self.imu_frame
+        ):
+            raise ValueError(
+                "require_imu_samples needs imu_topic and imu_frame"
+            )
+        if self.require_source_odom and not self.source_odom_topic:
+            raise ValueError("require_source_odom needs source_odom_topic")
 
         config = MappingGateConfig(
             stationary_duration_s=self._positive("stationary_duration_s"),
@@ -298,6 +359,8 @@ class MappingScanGateNode(Node):
             max_median_range_delta_m=self._positive(
                 "max_median_range_delta_m"
             ),
+            require_imu_samples=self.require_imu_samples,
+            require_source_odom=self.require_source_odom,
         )
         if self.input_scan_topic == self.output_scan_topic:
             raise ValueError(
@@ -328,6 +391,16 @@ class MappingScanGateNode(Node):
         self.odom_sub = self.create_subscription(
             Odometry, self.odom_topic, self._on_odom, 10
         )
+        self.imu_sub = None
+        if self.require_imu_samples:
+            self.imu_sub = self.create_subscription(
+                Imu, self.imu_topic, self._on_imu, qos_profile_sensor_data
+            )
+        self.source_odom_sub = None
+        if self.require_source_odom:
+            self.source_odom_sub = self.create_subscription(
+                Odometry, self.source_odom_topic, self._on_source_odom, 10
+            )
         self.scan_sub = self.create_subscription(
             LaserScan,
             self.input_scan_topic,
@@ -339,6 +412,8 @@ class MappingScanGateNode(Node):
             f"mapping gate {self.input_scan_topic}->{self.output_scan_topic}; "
             "waiting for stationary EKF and consistent scans"
             + (" after calibrated IMU" if self.require_imu_ready else "")
+            + (" with fresh IMU" if self.require_imu_samples else "")
+            + (" and source odom" if self.require_source_odom else "")
         )
 
     def _required(self, name: str, parameter_type: Parameter.Type) -> object:
@@ -374,6 +449,41 @@ class MappingScanGateNode(Node):
             self.get_logger().info(
                 "base IMU calibration ready; verifying stationary scans "
                 "before mapping"
+            )
+
+    def _on_imu(self, message: Imu) -> None:
+        values = (
+            message.angular_velocity.x, message.angular_velocity.y,
+            message.angular_velocity.z, message.linear_acceleration.x,
+            message.linear_acceleration.y, message.linear_acceleration.z,
+            message.angular_velocity_covariance[8],
+        )
+        valid = (
+            message.header.frame_id == self.imu_frame
+            and all(math.isfinite(value) for value in values)
+            and message.angular_velocity_covariance[8] > 0.0
+        )
+        self.gate.observe_imu(time.monotonic(), valid)
+        if not valid:
+            self._warn_throttled(
+                "imu_sample", "mapping gate received invalid IMU sample"
+            )
+
+    def _on_source_odom(self, message: Odometry) -> None:
+        twist = message.twist.twist
+        valid = (
+            message.header.frame_id == self.odom_frame
+            and message.child_frame_id == self.base_frame
+            and all(math.isfinite(value) for value in (
+                message.pose.pose.position.x, message.pose.pose.position.y,
+                _yaw_from_odometry(message), twist.linear.x,
+                twist.linear.y, twist.angular.z,
+            ))
+        )
+        self.gate.observe_source_odom(time.monotonic(), valid)
+        if not valid:
+            self._warn_throttled(
+                "source_odom", "mapping gate received invalid source odom"
             )
 
     def _on_odom(self, message: Odometry) -> None:
