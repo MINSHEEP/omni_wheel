@@ -9,6 +9,8 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>rosidl_default_generators</buildtool_depend>
   <depend>ament_index_cpp</depend>
+  <exec_depend>kiwi_platform</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
   <depend>rclcpp</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>

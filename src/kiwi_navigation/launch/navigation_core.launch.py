@@ -6,6 +6,8 @@ choose velocity topics without copying or rewriting algorithm configuration.
 
 from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
+from kiwi_platform import load_profile, validate_profile
+from kiwi_platform.launching import validate_map_file
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -15,10 +17,19 @@ from nav2_common.launch import RewrittenYaml
 
 
 def setup(context):
+    map_file = validate_map_file(LaunchConfiguration("map").perform(context))
     navigation = Path(get_package_share_directory("kiwi_navigation"))
-    params = LaunchConfiguration("nav2_params_file").perform(context) or str(
-        navigation / "config/nav2.yaml"
-    )
+    selector = LaunchConfiguration("platform_file").perform(context)
+    overrides = {"nav2": LaunchConfiguration("nav2_params_file").perform(context),
+                 "base": LaunchConfiguration("base_params_file").perform(context),
+                 "lidar": LaunchConfiguration("lidar_params_file").perform(context)}
+    selected = load_profile(selector, {"base": overrides["base"]}, required_keys=("base",))
+    keys = ["base", "lidar", "nav2"]
+    if selected.odometry == "rf2o":
+        keys.append("rf2o")
+    profile = load_profile(selector, overrides, required_keys=tuple(keys))
+    validate_profile(profile, "localization")
+    params = profile.path("nav2")
     raw_topic = LaunchConfiguration("raw_cmd_vel_topic").perform(context)
     output_topic = LaunchConfiguration("cmd_vel_topic").perform(context)
     actions = [
@@ -30,7 +41,7 @@ def setup(context):
                 )
             ),
             launch_arguments={
-                "map": LaunchConfiguration("map").perform(context),
+                "map": map_file,
                 "params_file": params,
                 "use_sim_time": "false",
                 "autostart": "true",
@@ -98,7 +109,10 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("map"),
+            DeclareLaunchArgument("platform_file", default_value=""),
             DeclareLaunchArgument("nav2_params_file", default_value=""),
+            DeclareLaunchArgument("base_params_file", default_value=""),
+            DeclareLaunchArgument("lidar_params_file", default_value=""),
             DeclareLaunchArgument("raw_cmd_vel_topic", default_value="/cmd_vel_nav"),
             DeclareLaunchArgument("cmd_vel_topic", default_value="/cmd_vel"),
             OpaqueFunction(function=setup),

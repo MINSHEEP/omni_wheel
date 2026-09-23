@@ -24,6 +24,7 @@
   <exec_depend>kiwi_navigation</exec_depend>
   <exec_depend>kiwi_slam</exec_depend>
   <exec_depend>kiwi_base</exec_depend>
+  <exec_depend>kiwi_platform</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>launch</exec_depend>
   <test_depend>ament_cmake_pytest</test_depend>

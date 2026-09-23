@@ -239,26 +239,27 @@ def test_runtime_code_does_not_keep_hardware_parameter_defaults():
     assert 'default="/dev/robomaster_c"' not in serial_test
 
 
-def test_keyboard_loads_installed_yaml_when_no_parameter_file_is_given():
+def test_keyboard_wrapper_selects_active_profile_without_kiwi_fallback():
     teleop = (PACKAGE / "src" / "kiwi_teleop_keyboard.cpp").read_text(encoding="utf-8")
+    wrapper = (PACKAGE / "tools" / "kiwi_teleop_keyboard").read_text(encoding="utf-8")
+    assert "load_profile(overrides={\"base\": override}, required_keys=(\"base\",))" in wrapper
+    assert "profile.path(\"base\")" in wrapper
+    assert "arguments_with_default_params" not in teleop
+    assert "缺少 --params-file" in teleop
 
-    assert 'get_package_share_directory("kiwi_base")' in teleop
-    assert "arguments_with_default_params" in teleop
-    assert 'arguments.emplace_back("--ros-args")' in teleop
-    assert 'argument == "--params-file"' in teleop
-    assert '"/config/kiwi_base.yaml"' in teleop
 
+def test_ekf_launch_passes_selected_base_file_to_driver_and_ekf():
+    from launch import LaunchContext
+    from kiwi_platform import load_profile
+    from kiwi_platform.launching import robot_actions
 
-def test_ekf_launch_passes_one_parameter_file_to_both_nodes():
-    launch = (PACKAGE / "launch" / "kiwi_base_ekf.launch.py").read_text(encoding="utf-8")
-    active_lines = [
-        line for line in launch.splitlines() if not line.lstrip().startswith("#")
-    ]
-    active_launch = "\n".join(active_lines)
-    assert 'LaunchConfiguration("params_file")' in launch
-    assert active_launch.count("parameters=[params_file]") == 2
-    assert "ekf_params_file" not in active_launch
-    assert "static_transform_publisher" not in active_launch
+    profile = load_profile()
+    context = LaunchContext()
+    nodes = robot_actions(profile, description=False, lidar=False)
+    driver = next(node for node in nodes if node.node_executable == profile.driver)
+    ekf = next(node for node in nodes if node.node_executable == "ekf_node")
+    assert str(driver._Node__parameters[0].evaluate(context)) == profile.path("base")
+    assert str(ekf._Node__parameters[0].evaluate(context)) == profile.path("base")
 
 
 def test_feedback_debug_message_keeps_the_decoded_0x3b_field_order():

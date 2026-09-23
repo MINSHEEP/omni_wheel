@@ -84,42 +84,18 @@ def test_urdf_has_required_tf_links_and_joint_names():
     assert "wheel_center_distance_m" in text
 
 
-def test_launch_uses_one_base_yaml_for_base_and_ekf():
+def test_launch_routes_base_ekf_lidar_gate_and_slam_through_profile():
     launch = (PACKAGE / "launch" / "kiwi_slam.launch.py").read_text(encoding="utf-8")
+    shared = (PACKAGE.parent / "kiwi_platform" / "kiwi_platform" / "launching.py").read_text(encoding="utf-8")
     for name in ("start_base", "start_ekf", "start_lidar", "start_slam", "start_monitor"):
         assert f'"{name}"' in launch
-    # 雷达只允许经 kiwi_slam 的 M10P 封装启动。
-    assert '"m10p_uart_lidar.launch.py"' in launch
-    assert 'executable="sync_slam_toolbox_node"' in launch
-    assert 'executable="kiwi_mapping_scan_gate"' in launch
-    assert '"mapping_gate.yaml"' in launch
-    assert '"kiwi_robot.launch.py"' in launch
-    assert "ekf_params_file" not in launch
-
-    lidar_launch = (PACKAGE / "launch" / "m10p_uart_lidar.launch.py").read_text(
-        encoding="utf-8"
-    )
-    # 驱动可执行文件创建普通 rclcpp::Node，封装内禁止引入生命周期管理；
-    # 断言针对实际的动作调用与 import，不匹配注释文字。
-    assert 'executable="lslidar_driver_node"' in lidar_launch
-    assert 'name="lslidar_driver_node"' in lidar_launch
-    assert "LifecycleNode(" not in lidar_launch
-    assert "import LifecycleNode" not in lidar_launch
-    assert '"ls_m10p_uart.yaml"' in lidar_launch
-
-    robot_launch = (PACKAGE / "launch" / "kiwi_robot.launch.py").read_text(
-        encoding="utf-8"
-    )
-    assert '" hardware_config:=", base_params' in robot_launch
-    assert 'executable="kiwi_base_node"' in robot_launch
-    assert 'executable="ekf_node"' in robot_launch
-    assert 'parameters=[base_params, {"robot_description": robot_description}]' in robot_launch
-    assert robot_launch.count("parameters=[base_params]") == 2
-    # 硬件节点启动前必须检查同名包来源与统一 YAML，防止旧 overlay 让 EKF
-    # 静默回退到无 odom0/imu0 的默认参数。
-    assert "OpaqueFunction(function=_validate_runtime_contract)" in robot_launch
-    assert "validate_workspace_overlay" in robot_launch
-    assert "validate_base_parameters" in robot_launch
+    assert "load_profile(" in launch
+    assert "robot_actions(profile" in launch
+    assert "mapping_actions(profile" in launch
+    for executable in ("lslidar_driver_node", "rf2o_laser_odometry_node", "kiwi_mapping_scan_gate",
+                       "sync_slam_toolbox_node", "ekf_node"):
+        assert executable in shared
+    assert "static_transform_publisher" not in launch
 
 
 def test_mapping_gate_preserves_raw_scan_and_requires_real_calibration():

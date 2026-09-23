@@ -1,6 +1,6 @@
 # Kiwi ROS 2 移动机器人工作区
 
-新增两电机履带底盘与底盘/雷达/惯导一键选择入口，参见 [可切换底盘平台架构](documents/platform_architecture.md)。本文件下方仍记录原 Kiwi 平台的运行方法。
+同一份 `src/kiwi_platform/config/active_platform.yaml` 控制底盘、建图、定位导航、键盘和 Web 的参数选择。三轮 Kiwi 与两电机履带分别使用自己的参数文件和里程计链路；详细契约见 [平台架构](documents/platform_architecture.md)。
 
 这是 ROS 2 Humble 移动机器人工作区。原 Kiwi 三轮全向底盘的运行链路使用：
 
@@ -16,7 +16,8 @@
 ```text
 ros2_ws/
 ├── src/
-│   ├── kiwi_base/       底盘、运动学、反馈里程计、IMU、键盘
+│   ├── kiwi_platform/   活动底盘开关、底盘档案与统一参数校验
+│   ├── kiwi_base/       底盘、运动学、里程计、IMU、键盘
 │   ├── kiwi_slam/       M10P 配置、SLAM Toolbox、URDF、链路诊断
 │   ├── kiwi_navigation/ AMCL、Nav2、建图/定位导航 launch 和 RViz
 │   ├── kiwi_web/        本地 Web 控制台、地图编辑与任务管理
@@ -52,10 +53,11 @@ ROS 机体坐标遵循 REP-103：`+X` 向前，`+Y` 向左，`+Z` 向上，`+wz`
 ```text
 /scan                    M10P LaserScan
 /cmd_vel                 所有速度源的统一入口
-/chassis/odom/raw        根据滤波后的电机实测速度推算的轮式里程计
-/chassis/imu/data_raw    C 板异步 IMU 遥测（绝对 yaw、角速度、原始加速度）
+/chassis/odom/raw        仅 Kiwi：根据电机反馈推算的轮式里程计
+/chassis/odom/laser      仅履带：RF2O 激光里程计（不发布 TF）
+/chassis/imu/data_raw    C 板异步 IMU 遥测；履带仅使用角速度，姿态暂标为未知
 /chassis/feedback/raw    C 板异步 0x3B 原始字段调试消息
-/joint_states            根据电机实测速度换算的三个轮关节状态
+/joint_states            仅 Kiwi：根据电机实测速度换算的三个轮关节状态
 /odometry/filtered       EKF 输出，Nav2 使用此话题
 /map                     SLAM Toolbox 或 map_server 发布的地图
 ```
@@ -67,9 +69,7 @@ TF 链应为：
 已知图导航： map -> odom (AMCL) -> base_footprint (EKF) -> base_link -> lidar_link
 ```
 
-`kiwi_base.yaml` 是底盘和 EKF 的唯一参数入口。键盘的 `speed_m_s`、`yaw_rad_s` 是手动
-速度，底盘的 `max_*` 是所有 `/cmd_vel` 输入的最终安全上限；两者不是重复配置。
-Nav2 还会在 `kiwi_navigation/config/nav2.yaml` 中对自主导航速度进行单独限制。
+活动底盘档案会指定同一底盘的底盘/EKF、键盘、建图门控、SLAM、Nav2 与 URDF 文件。键盘速度受底盘 `max_*` 限制；Nav2 速度另由所选底盘的 Nav2 YAML 限制。
 
 ## 3. 全新上位机部署
 
@@ -178,7 +178,7 @@ source tools/activate_workspace.sh
 ```
 
 不要在同一终端最后加载含旧 `kiwi_base` 的其他工作区。激活脚本会把当前工作区放到
-overlay 最前面，并校验 `kiwi_base`、`kiwi_slam`、`kiwi_navigation` 的实际来源；这可避免
+overlay 最前面，并校验 `kiwi_platform`、`kiwi_base`、`kiwi_slam`、`kiwi_navigation` 的实际来源；这可避免
 EKF 因误读旧 YAML 而静默回退到没有 `odom0/imu0` 的默认配置。
 
 ## 4. 构建和测试
@@ -196,29 +196,30 @@ source tools/activate_workspace.sh
 将 `kiwi_web` 换成 `kiwi_navigation`。构建后先检查包来源和设备：
 
 ```bash
+ros2 pkg prefix kiwi_platform
 ros2 pkg prefix kiwi_navigation
 ros2 pkg prefix lslidar_driver
 ros2 pkg prefix kiwi_web  # 部署网页时
 ros2 pkg prefix rf2o_laser_odometry  # 仅履带需要
-ros2 run kiwi_slam kiwi_slam_compatibility --require-hardware  # 原 Kiwi 配置检查
+ros2 run kiwi_slam kiwi_slam_compatibility --require-hardware  # 当前活动底盘设备检查
 ```
 
 要单独检查雷达驱动，在一个终端运行 `ros2 launch kiwi_slam m10p_uart_lidar.launch.py`，
 另一个已加载工作区的终端运行 `ros2 topic hz /scan`。底盘联调和建图导航的完整启动命令见
-[可切换底盘平台架构](documents/platform_architecture.md)；履带参数尚未标定时只能使用
-`chassis:=tracked_pwm mode:=driver`；核验雷达、惯导和 RF2O 后，可在速度未标定时手动建图，导航仍锁定。
+[双底盘平台架构](documents/platform_architecture.md)。履带参数尚未标定时，将活动 YAML 改为 `tracked_pwm` 后可启动驱动；核验雷达、惯导和 RF2O 后，可在速度未标定时手动建图，导航仍锁定。
 
-只构建底盘：
+只构建底盘驱动时可执行下列命令，并用 `source install/setup.bash` 加载；这时可启动 `kiwi_base.launch.py` 和键盘，建图/导航及履带 RF2O 仍需上面的完整构建。
 
 ```bash
-colcon build --symlink-install --packages-select kiwi_base
+colcon build --symlink-install --packages-up-to kiwi_base
+source install/setup.bash
 ```
 
 运行测试：
 
 ```bash
 export ROS_LOG_DIR=/tmp/kiwi_ros_logs
-colcon test --packages-select kiwi_base kiwi_slam kiwi_navigation kiwi_web \
+colcon test --packages-select kiwi_platform kiwi_base kiwi_slam kiwi_navigation kiwi_web \
   --event-handlers console_cohesion+ --ctest-args --output-on-failure
 colcon test-result --all
 ```
@@ -233,72 +234,61 @@ ros2 run kiwi_slam kiwi_slam_compatibility --require-hardware
 不带 `--require-hardware` 时，缺少串口只会给出警告，适合在无实车环境检查配置；实车启动前
 应使用带该选项的检查。
 
-### 统一入口：切换底盘、建图与导航
+### 统一选择文件与独立启动入口
 
-`chassis` 选择底盘节点、模型和**一份底盘 YAML**；公共 M10P、SLAM Toolbox 和
-Nav2 参数继续共用。两种底盘的专属运动、EKF、模型、键盘、建图门控及 Nav2 覆盖值分别在：
-
-| 底盘 | `chassis` | 底盘节点 | 底盘 YAML | 默认里程计 |
-| --- | --- | --- | --- | --- |
-| 三轮全向 | `kiwi` | `kiwi_base_node` | `src/kiwi_base/config/kiwi_base.yaml` | 电机反馈轮式里程计 |
-| 两电机履带 | `tracked_pwm` | `tracked_base_node` | `src/kiwi_base/config/tracked_pwm.yaml` | RF2O 激光里程计 |
-
-`robot_state_publisher`、M10P 驱动、EKF、建图门控、SLAM Toolbox、Nav2 和
-`kiwi_teleop_keyboard` 均复用已有节点；只需切换底盘 YAML 和底盘驱动节点。
-**建图和导航使用相同的 `mode` 命令，只改 `chassis`。**履带的 `/scan` 由 RF2O 生成
-`/chassis/odom/laser`，EKF 再融合 `/chassis/imu/data_raw`，输出唯一的
-`/odometry/filtered` 和 `odom → base_footprint`；没有编码器里程计。履带建图门控要求
-原始激光里程计、IMU 和融合里程计持续新鲜，断流时暂停向 SLAM Toolbox 转发扫描。
-履带专属 YAML 还覆盖差速 AMCL、DWB 无横移约束、速度平滑、原地转向平滑器和 0.48 m
-避障半径。导航速度及加减速度只是待标定的保守配置，`hardware_calibrated=false` 时不会启动导航。
-旧 Kiwi 专用启动文件仍可使用，但下面的命令统一由 `platform.launch.py` 选择。
+只改一处活动底盘开关，重启正在运行的 ROS/Web 进程。以下命令以已构建且使用 `--symlink-install` 的工作区为例；普通安装需重新构建 `kiwi_platform` 才能把修改后的 YAML 安装过去。
 
 ```bash
-# 原 Kiwi：驱动联调 / 建图
-ros2 launch kiwi_navigation platform.launch.py chassis:=kiwi mode:=driver
-ros2 launch kiwi_navigation platform.launch.py chassis:=kiwi mode:=mapping
-
-# 履带：当前可用 driver；核验传感器并设置 mapping_sensors_verified=true 后可手动建图。
-ros2 launch kiwi_navigation platform.launch.py chassis:=tracked_pwm mode:=driver
-ros2 launch kiwi_navigation platform.launch.py chassis:=tracked_pwm mode:=mapping
+cd "$HOME/ros2_ws"
+# 两电机履带
+sed -i 's/^chassis:.*/chassis: tracked_pwm/' src/kiwi_platform/config/active_platform.yaml
+# 切回 Kiwi
+sed -i 's/^chassis:.*/chassis: kiwi/' src/kiwi_platform/config/active_platform.yaml
+source tools/activate_workspace.sh
 ```
 
-`mode:=mapping` 启动 SLAM Toolbox；Kiwi 或已完成运动标定的履带还会启动 Nav2。
-履带若只完成传感器核验、尚未标定速度，则可通过遥控或原始电机话题手动建图，
-不会启动 Nav2，也不会把命令当作准确的 m/s。地图稳定后，在另一个已加载工作区的终端保存：
+`kiwi_platform/config/profiles/{kiwi,tracked_pwm}.yaml` 给每个底盘指定对应的完整参数文件。启动入口各自读取活动开关，不能把履带底盘和 Kiwi 导航参数静默混用：
+
+| 链路 | Kiwi | 两电机履带 |
+| --- | --- | --- |
+| 底盘/EKF/键盘 | `kiwi_base/config/kiwi_base.yaml` | `kiwi_base/config/tracked_pwm.yaml` |
+| 建图门控 | `kiwi_slam/config/mapping_gate.yaml` | `kiwi_slam/config/tracked_mapping_gate.yaml` |
+| SLAM Toolbox | `kiwi_slam/config/slam_toolbox.yaml` | `kiwi_slam/config/tracked_slam_toolbox.yaml` |
+| 里程计 | 电机反馈 `/chassis/odom/raw` | `kiwi_slam/config/tracked_rf2o.yaml`，RF2O `/chassis/odom/laser` |
+| Nav2/AMCL/代价地图 | `kiwi_navigation/config/nav2.yaml` | `kiwi_navigation/config/tracked_nav2.yaml` |
+| 结构与外参 | `kiwi_slam/urdf/kiwi.urdf.xacro` | `kiwi_slam/urdf/tracked.urdf.xacro` |
+| 雷达/惯导 | M10P `/scan`，C 板 IMU | M10P `/scan`，C 板 IMU；更换型号需新增驱动及档案 |
+
+底盘、建图、导航分别有独立命令；命令本身对两种底盘相同：
+
+```bash
+# 驱动和 URDF：履带速度未标定时仍可打开串口并读取 IMU。
+ros2 launch kiwi_slam kiwi_robot.launch.py start_ekf:=false start_lidar:=false
+# 底盘 + 里程计 + EKF；履带会额外启动 M10P、RF2O。
+ros2 launch kiwi_base kiwi_base_ekf.launch.py
+# 只建图，不启动 Nav2；履带适合先手动建图。
+ros2 launch kiwi_slam kiwi_slam.launch.py use_rviz:=true
+# 建图并在具备运动标定时启动 Nav2；履带未标定时仅启动建图链路。
+ros2 launch kiwi_navigation mapping_navigation.launch.py use_rviz:=true
+# 已知地图定位导航；履带未标定时拒绝启动。
+ros2 launch kiwi_navigation localization_navigation.launch.py \
+  map:="$HOME/ros2_ws/maps/warehouse.yaml" use_rviz:=true
+```
+
+建图开始前，履带必须先核验雷达与惯导外参、IMU 轴向、RF2O 静止漂移，再把 `tracked_pwm.yaml` 的 `mapping_sensors_verified` 设为 `true`。速度未标定时可用遥控器或 `/chassis/open_loop_motor_cmd` 手动建图，普通 `/cmd_vel` 仍锁定。导航需要实际标定 `command_per_m_s`、设置 `hardware_calibrated=true`、`enable_motion=true`，并关闭 `open_loop_test_enabled`；仅改 Nav2 参数不能解除运动锁。RF2O 只发里程计消息，EKF 独占 `odom → base_footprint`；SLAM Toolbox 或 AMCL 发布 `map → odom`。
+
+同一个键盘节点使用同一个命令，并自动读取活动底盘的参数：
+
+```bash
+ros2 run kiwi_base kiwi_teleop_keyboard
+```
+
+键盘 `w/s` 前后、`q/e` 转向、空格或 `x` 停车。`a/d` 只适用于 Kiwi 横移；履带驱动会拒绝横移并停车。网页控制台也会把履带横移上限设为零。导航时不要同时运行键盘。地图完成后保存：
 
 ```bash
 mkdir -p "$HOME/ros2_ws/maps"
 ros2 run nav2_map_server map_saver_cli -f "$HOME/ros2_ws/maps/warehouse"
 ```
-
-保存成功后先停止建图进程，再用已有地图定位导航；`map` 必须是存在的绝对 YAML 路径：
-
-```bash
-ros2 launch kiwi_navigation platform.launch.py chassis:=kiwi \
-  mode:=localization map:="$HOME/ros2_ws/maps/warehouse.yaml"
-# 履带完成标定后：
-ros2 launch kiwi_navigation platform.launch.py chassis:=tracked_pwm \
-  mode:=localization map:="$HOME/ros2_ws/maps/warehouse.yaml"
-```
-
-**键盘节点只需一份**：它发布 `/cmd_vel`，不直接打开下位机串口。在另一个前台终端运行；
-默认命令读取 Kiwi YAML，履带必须显式指定自己的 YAML：
-
-```bash
-# Kiwi
-ros2 run kiwi_base kiwi_teleop_keyboard
-# 履带
-ros2 run kiwi_base kiwi_teleop_keyboard --ros-args \
-  --params-file "$HOME/ros2_ws/src/kiwi_base/config/tracked_pwm.yaml"
-```
-
-履带键盘用 `w/s` 前后、`q/e` 原地转向、空格或 `x` 停车。`a/d` 会发送横移
-`linear.y`，履带驱动会拒绝并停车；它们仍是 Kiwi 的左右横移键。当前履带
-`hardware_calibrated=false`、`enable_motion=false`，即使键盘已经发布 `/cmd_vel`，
-底盘也只发送零电机命令。核验激光里程计、惯导外参和轴向后，可先手动建图；
-完成速度换算与空载方向验证后，才能按 [履带标定说明](documents/platform_architecture.md) 开启正常运动和导航。
-执行 Nav2 导航目标时不要同时运行键盘；切换模式前先停止旧启动进程。
 
 ### 履带开环试车与速度标定
 
@@ -311,7 +301,7 @@ ros2 run kiwi_base kiwi_teleop_keyboard --ros-args \
 | --- | --- |
 | `hardware_calibrated=false`、`enable_motion=false` | 底盘节点仍启动、打开 USB、发布 IMU；普通 `/cmd_vel` 输出零电机命令 |
 | `enable_motion=true` 但未标定，或标定后 `command_per_m_s` 仍为零 | 底盘节点启动时报错；不能用猜测倍率解锁键盘 |
-| `open_loop_test_enabled=true` | 可在 `mode:=driver` 和传感器核验后的手动建图中使用；与正常运动或定位导航不能同时开启 |
+| `open_loop_test_enabled=true` | 可在驱动联调和传感器核验后的手动建图中使用；与正常运动或定位导航不能同时开启 |
 | `/dev/robomaster_c` 不可读写、被占用或下位机未切到上位机模式 | 串口无法打开，或固件不执行上位机命令 |
 | 命令超过 `cmd_vel_timeout_s=0.20` 秒未刷新 | 上位机持续发送零电机命令；固件还有自己的超时停车逻辑 |
 
@@ -324,7 +314,7 @@ ros2 run kiwi_base kiwi_teleop_keyboard --ros-args \
 在第二个已加载工作区的终端依次短时测试单侧、双侧方向：
 
 ```bash
-ros2 launch kiwi_navigation platform.launch.py chassis:=tracked_pwm mode:=driver
+ros2 launch kiwi_slam kiwi_robot.launch.py start_ekf:=false start_lidar:=false
 # 另一个终端，先测左履带；-r 10 -t 10 表示 10 Hz 连发 1 秒。
 ros2 topic pub -r 10 -t 10 /chassis/open_loop_motor_cmd std_msgs/msg/Float32MultiArray '{data: [5.0, 0.0]}'
 ros2 topic pub -r 10 -t 10 /chassis/open_loop_motor_cmd std_msgs/msg/Float32MultiArray '{data: [0.0, 5.0]}'
@@ -348,7 +338,7 @@ ros2 topic pub -r 10 /chassis/open_loop_motor_cmd std_msgs/msg/Float32MultiArray
 再把同一 YAML 中的 `mapping_sensors_verified` 改为 `true`。正常键盘控制和导航仍要等
 `command_per_m_s` 等参数标定、关闭 `open_loop_test_enabled` 后再开启。
 
-### 网页控制台（当前适用于 Kiwi 底盘）
+### 网页控制台（跟随活动底盘）
 
 `kiwi_web` 的服务和静态页面都在本机运行，不需要 Node.js、CDN 或 rosbridge。
 `rosdep` 会按 `src/kiwi_web/package.xml` 安装 Python 运行依赖。上面的完整构建完成后：
@@ -368,8 +358,7 @@ TCP 8080。网页启动时不会自动启动电机、雷达或导航，需在页
 
 网页默认使用 `ROS_DOMAIN_ID=42`；从命令行检查其话题时，在检查终端先执行
 `export ROS_DOMAIN_ID=42`。网页运行时不要另起底盘、键盘或 Nav2 速度发布者。
-当前 Web 的 `stack.launch.py` 使用原 Kiwi 建图入口，**尚未适配两电机履带底盘**；
-履带底盘请使用 [统一平台启动入口](documents/platform_architecture.md)。
+Web 通过相同活动底盘文件选择底盘、建图和导航参数；履带横移命令被拒绝。Kiwi 的就绪状态检查轮式反馈和 IMU 标定，履带改为检查 RF2O 激光里程计与实时 IMU。切换底盘或修改底盘标定 YAML 后需重启 Web 服务。履带当前速度未标定，Web 遥控的普通 `/cmd_vel` 不会驱动电机，Web 手动遥控保持未就绪；Web 导航也会在启动前被标定关锁拒绝。
 
 需要登录后自动启动网页服务时，在目标上位机构建并加载工作区后执行：
 
@@ -385,7 +374,7 @@ journalctl --user -u kiwi-web.service -f
 
 ## 5. 只启动底盘和 EKF
 
-适合先确认 USB 命令、异步电机/IMU 反馈、轮式里程计和 TF，不启动雷达和 SLAM：
+适合检查底盘和 EKF。Kiwi 使用电机反馈；履带会另外启动 M10P 与 RF2O，以生成激光里程计：
 
 ```bash
 ros2 launch kiwi_base kiwi_base_ekf.launch.py
@@ -394,22 +383,22 @@ ros2 launch kiwi_base kiwi_base_ekf.launch.py
 检查输出：
 
 ```bash
-ros2 topic hz /chassis/odom/raw
+ros2 topic hz /chassis/odom/raw    # 仅 Kiwi
+ros2 topic hz /chassis/odom/laser  # 仅履带
 ros2 topic hz /chassis/imu/data_raw
 ros2 topic hz /odometry/filtered
-ros2 topic echo /joint_states --once
+ros2 topic echo /joint_states --once  # 仅 Kiwi
 ros2 run tf2_ros tf2_echo odom base_footprint
 ```
 
-0x3A 命令没有 ACK，发送链不等待反馈；独立的 0x3B 遥测同时提供滤波后的电机实测速度
-以及绝对 yaw/`gyro_z`。EKF 用后两者修正航向。该链路仍不能从 IMU 单独恢复打滑造成的 x/y 位移误差；
+0x3A 命令没有 ACK，发送链不等待反馈。Kiwi 的 0x3B 遥测提供电机实测速度和惯导数据；履带的 0x3B 电机字段为零，不进入里程计，只有 IMU 角速度参与 EKF。该链路仍不能从 IMU 单独恢复打滑造成的 x/y 位移误差；
 室外激光特征不足时，需要 RTK/GNSS、视觉惯导或其他绝对平移观测才能约束累计漂移。
 
 ## 6. 二维建图流程
 
 ### 6.1 启动建图系统
 
-推荐使用组合启动文件，它会启动底盘、EKF、M10P、SLAM Toolbox 和 Nav2：
+组合启动文件会启动所选底盘、EKF、M10P 和 SLAM Toolbox；Kiwi 或已完成运动标定的履带还会启动 Nav2：
 
 ```bash
 ros2 launch kiwi_navigation mapping_navigation.launch.py use_rviz:=true
@@ -421,14 +410,7 @@ ros2 launch kiwi_navigation mapping_navigation.launch.py use_rviz:=true
 ros2 launch kiwi_slam kiwi_slam.launch.py use_rviz:=true
 ```
 
-默认配置文件为：
-
-```text
-底盘/EKF：src/kiwi_base/config/kiwi_base.yaml
-M10P：    src/kiwi_slam/config/ls_m10p_uart.yaml
-SLAM：    src/kiwi_slam/config/slam_toolbox.yaml
-Nav2：    src/kiwi_navigation/config/nav2.yaml
-```
+实际参数文件由本页上方的活动底盘档案选择；切换后重新启动对应 launch。
 
 ### 6.2 开始移动建图
 
@@ -443,7 +425,7 @@ ros2 run kiwi_base kiwi_teleop_keyboard
 按键：
 
 ```text
-W/S  前进/后退       A/D  左/右横移
+W/S  前进/后退       A/D  左/右横移（仅 Kiwi）
 Q/E  逆时针/顺时针   空格或 X 立即停止
 Ctrl-C              退出并发布零速度
 ```
@@ -502,8 +484,7 @@ ros2 launch kiwi_navigation localization_navigation.launch.py \
   map:=$HOME/ros2_ws/maps/lab.yaml
 ```
 
-该 launch 会启动底盘、EKF、M10P、Nav2 的 AMCL、map_server、costmap、规划器、DWB 全向控制器
-和 RViz；不会启动 SLAM Toolbox。导航时地图来源是 `map` 参数指向的 YAML 文件。
+该 launch 会启动所选底盘、对应里程计与 EKF、M10P、AMCL、地图服务器、Nav2 和 RViz；履带使用差速模型且不允许横移。不会启动 SLAM Toolbox。导航时地图来源是 `map` 参数指向的 YAML 文件。
 
 ### 7.2 在 RViz 中定位和导航
 
@@ -522,7 +503,8 @@ ros2 node list
 ros2 topic list
 ros2 topic info /cmd_vel --verbose
 ros2 topic echo /cmd_vel
-ros2 topic echo /chassis/odom/raw
+ros2 topic echo /chassis/odom/raw    # 仅 Kiwi
+ros2 topic echo /chassis/odom/laser  # 仅履带
 ros2 topic echo /chassis/imu/data_raw
 ros2 topic echo /odometry/filtered
 ros2 topic hz /scan
@@ -544,22 +526,13 @@ ros2 topic echo /diagnostics
 常见故障：
 
 - 没有 `/scan`：检查 `/dev/wheeltec_lidar`、`ls_m10p_uart.yaml` 的 `serial_port` 和雷达供电。
-- 没有 `/odometry/filtered`：检查 0x3B 遥测、底盘 `/chassis/odom/raw` 及 EKF 参数。
+- 没有 `/odometry/filtered`：Kiwi 检查 0x3B 轮速反馈；履带检查 `/scan`、`/chassis/odom/laser` 和 IMU，再检查 EKF 参数。
 - 地图不更新：同时检查 `/scan`、`map -> odom`、`odom -> base_footprint` 和激光安装 TF。
 - 键盘无效：确认键盘节点在前台 TTY 中运行，并且没有 Nav2 同时占用 `/cmd_vel`。
-- 方向错误：ROS 约定是 `vx+` 前进、`vy+` 左移；应检查电机编号/符号和实车前方标定，不要重复旋转 TF。
+- 方向错误：ROS 约定是 `vx+` 前进、`vy+` 左移；履带无 `vy`。检查电机编号/符号和实车前方标定。
 
 ## 9. 主要参数入口
 
-| 功能 | 文件 |
-| --- | --- |
-| 底盘、运动学、反馈里程计、EKF、键盘 | `src/kiwi_base/config/kiwi_base.yaml` |
-| M10P 串口和 `/scan` | `src/kiwi_slam/config/ls_m10p_uart.yaml` |
-| SLAM Toolbox | `src/kiwi_slam/config/slam_toolbox.yaml` |
-| SLAM 诊断 | `src/kiwi_slam/config/monitor.yaml` |
-| Nav2、AMCL、DWB、代价地图 | `src/kiwi_navigation/config/nav2.yaml` |
-| 机器人结构和传感器 TF | `src/kiwi_slam/urdf/kiwi.urdf.xacro` |
-| 地图 | `$HOME/ros2_ws/maps/*.yaml` 和对应 `.pgm` |
+活动开关是 `src/kiwi_platform/config/active_platform.yaml`；每个底盘的文件映射在 `src/kiwi_platform/config/profiles/`。上面的表格列出所有底盘专属参数文件。M10P 串口配置目前共用 `src/kiwi_slam/config/ls_m10p_uart.yaml`；Web 服务配置是 `src/kiwi_web/config/web.yaml`。地图保存在 `$HOME/ros2_ws/maps/`，导航时使用 `map:=绝对路径.yaml`。
 
-修改参数后重新构建相关包并重新 `source install/setup.bash`。地图文件不需要重新构建，直接在
-启动导航时通过 `map:=绝对路径` 选择。
+使用 `--symlink-install` 时修改 YAML 后重启进程即可；普通安装需要重新构建对应包再加载工作区。实车参数仍须按 [平台架构与待标定项](documents/platform_architecture.md) 核验。

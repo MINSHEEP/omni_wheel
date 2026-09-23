@@ -17,7 +17,7 @@ from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus
 from lifecycle_msgs.srv import GetState
 from nav_msgs.msg import OccupancyGrid, Odometry
 from nav2_msgs.action import NavigateToPose
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import Imu, LaserScan
 from std_msgs.msg import Bool
 from tf2_ros import TransformBroadcaster
 
@@ -35,8 +35,9 @@ async def until(predicate, timeout=8):
 
 
 class FixtureRobot(Node):
-    def __init__(self, width=4, height=3, data=None):
+    def __init__(self, width=4, height=3, data=None, tracked=False):
         super().__init__("web_test_robot")
+        self.tracked = tracked
         self.group = ReentrantCallbackGroup()
         self.healthy = True
         self.observed = []
@@ -45,11 +46,17 @@ class FixtureRobot(Node):
         self.grid_width, self.grid_height = width, height
         self.grid_data = data if data is not None else [0, 0, 100, -1] * 3
         self.last_map = 0.0
-        self.feedback_pub = self.create_publisher(Odometry, "/chassis/odom/raw", 1)
+        self.feedback_pub = self.create_publisher(
+            Odometry, "/chassis/odom/laser" if tracked else "/chassis/odom/raw", 1
+        )
         self.odom_pub = self.create_publisher(Odometry, "/odometry/filtered", 1)
         self.scan_pub = self.create_publisher(LaserScan, "/scan", 1)
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
-        self.imu_pub = self.create_publisher(Bool, "/chassis/imu/calibration_ready", latched)
+        self.imu_pub = self.create_publisher(
+            Imu if tracked else Bool,
+            "/chassis/imu/data_raw" if tracked else "/chassis/imu/calibration_ready",
+            1 if tracked else latched,
+        )
         self.gate_pub = self.create_publisher(Bool, "/kiwi_slam/mapping_gate_ready", latched)
         self.map_pub = self.create_publisher(OccupancyGrid, "/map", latched)
         self.nav_pub = self.create_publisher(Twist, "/kiwi_web/nav_cmd_vel", 1)
@@ -89,7 +96,12 @@ class FixtureRobot(Node):
         odom.pose.pose.orientation.w = 1.0
         self.feedback_pub.publish(odom)
         self.odom_pub.publish(odom)
-        self.imu_pub.publish(Bool(data=True))
+        if self.tracked:
+            imu = Imu()
+            imu.header.stamp, imu.header.frame_id = stamp, "chassis_imu_link"
+            self.imu_pub.publish(imu)
+        else:
+            self.imu_pub.publish(Bool(data=True))
         self.gate_pub.publish(Bool(data=True))
         transforms = []
         for child in ("base_footprint", "lidar_link"):
@@ -200,6 +212,42 @@ def test_real_ros_navigation_pause_resume_cancel_and_feedback_loss():
         bridge.publish_velocity((0.3, 0, 0))  # A timer result computed before stop.
         await until(lambda: any(entry[0] > observed_at for entry in robot.observed))
         assert all(entry[1:] == (0, 0, 0) for entry in robot.observed if entry[0] > observed_at)
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        gate.stop(latch=True)
+        executor.shutdown(timeout_sec=3)
+        thread.join(timeout=3)
+        robot.destroy_node()
+        bridge.destroy_node()
+        rclpy.shutdown()
+
+
+def test_tracked_web_readiness_uses_rf2o_and_live_imu():
+    os.environ["ROS_DOMAIN_ID"] = "221"
+    os.environ["ROS_LOCALHOST_ONLY"] = "1"
+    rclpy.init()
+    gate = CommandGate(lateral=0.0, navigation_limits=(0.2, 0.0, 0.4))
+    gate.mode = "remote"
+    bridge = RosBridge(
+        gate, feedback_topic="/chassis/odom/laser",
+        imu_topic="/chassis/imu/data_raw", imu_frame_id="chassis_imu_link",
+        motion_enabled=True,
+    )
+    robot = FixtureRobot(tracked=True)
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(bridge)
+    executor.add_node(robot)
+    thread = threading.Thread(target=executor.spin, daemon=True)
+    thread.start()
+
+    async def exercise():
+        await until(lambda: gate.manual_ready)
+        assert bridge.status()["feedback"] and bridge.status()["imu_ready"]
+        robot.healthy = False
+        await until(lambda: not gate.manual_ready, timeout=2)
+        assert not bridge.status()["feedback"]
 
     try:
         asyncio.run(exercise())

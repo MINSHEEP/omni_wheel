@@ -36,12 +36,12 @@ target_link_libraries(tracked_base_node kiwi_base_core)
 ament_target_dependencies(tracked_base_node rclcpp geometry_msgs sensor_msgs std_msgs)
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 target_link_libraries(kiwi_base_node "${cpp_typesupport_target}")
-add_executable(kiwi_teleop_keyboard src/kiwi_teleop_keyboard.cpp)
-ament_target_dependencies(kiwi_teleop_keyboard ament_index_cpp rclcpp geometry_msgs)
+add_executable(kiwi_teleop_keyboard_node src/kiwi_teleop_keyboard.cpp)
+ament_target_dependencies(kiwi_teleop_keyboard_node ament_index_cpp rclcpp geometry_msgs)
 add_executable(kiwi_odom_test src/kiwi_odom_test.cpp)
 ament_target_dependencies(kiwi_odom_test rclcpp nav_msgs)
 install(
-  TARGETS kiwi_base_node tracked_base_node kiwi_teleop_keyboard kiwi_odom_test kiwi_base_core
+  TARGETS kiwi_base_node tracked_base_node kiwi_teleop_keyboard_node kiwi_odom_test kiwi_base_core
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME})
@@ -55,7 +55,7 @@ install(
   DESTINATION share/${PROJECT_NAME}/launch)
 # 安装命令发送工具；0x3B 工具只做离线协议自检，不与节点争用串口。
 install(
-  PROGRAMS tools/kiwi_serial_test.py tools/kiwi_feedback_receiver.py
+  PROGRAMS tools/kiwi_serial_test.py tools/kiwi_feedback_receiver.py tools/kiwi_teleop_keyboard
   DESTINATION lib/${PROJECT_NAME})
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)

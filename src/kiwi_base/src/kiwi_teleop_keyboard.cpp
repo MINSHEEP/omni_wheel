@@ -4,7 +4,6 @@
  */
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/twist.hpp>
-#include <ament_index_cpp/get_package_share_directory.hpp>
 
 #include <termios.h>
 #include <unistd.h>
@@ -16,9 +15,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
-#include <exception>
 #include <string>
-#include <vector>
 
 namespace
 {
@@ -34,39 +31,6 @@ bool has_params_file(int argc, char ** argv)
   return false;
 }
 
-/** 返回已安装 kiwi_base 包中的统一参数文件路径。 */
-std::string default_params_file()
-{
-  return ament_index_cpp::get_package_share_directory("kiwi_base") +
-         "/config/kiwi_base.yaml";
-}
-
-/** 在已有 ROS 参数段开头注入默认 YAML，让后续 -p 参数继续覆盖它。 */
-std::vector<std::string> arguments_with_default_params(int argc, char ** argv)
-{
-  std::vector<std::string> arguments;
-  arguments.reserve(static_cast<std::size_t>(argc) + 3U);
-  for (int i = 0; i < argc; ++i)
-    arguments.emplace_back(argv[i] == nullptr ? "" : argv[i]);
-
-  const auto ros_args = std::find(arguments.begin() + 1, arguments.end(), "--ros-args");
-  std::size_t insertion_index{};
-  if (ros_args == arguments.end())
-  {
-    arguments.emplace_back("--ros-args");
-    insertion_index = arguments.size();
-  }
-  else
-  {
-    insertion_index =
-        static_cast<std::size_t>(std::distance(arguments.begin(), ros_args)) + 1U;
-  }
-  arguments.insert(
-      arguments.begin() + static_cast<std::ptrdiff_t>(insertion_index), "--params-file");
-  arguments.insert(
-      arguments.begin() + static_cast<std::ptrdiff_t>(insertion_index + 1U), default_params_file());
-  return arguments;
-}
 }  // namespace
 
 /**
@@ -264,29 +228,14 @@ private:
 /** ROS 2 进程入口：运行键盘节点，退出时由析构函数负责安全停车。 */
 int main(int argc, char **argv)
 {
-  // 直接 ros2 run 时自动加载统一 YAML；launch 或命令行显式传参时保持原有优先级。
+  // 官方 kiwi_teleop_keyboard 包装程序先读取活动底盘档案并传入参数文件。
+  // 直接调用底层二进制却没有参数时立即失败，避免悄悄回退到 Kiwi 参数。
   if (!has_params_file(argc, argv))
   {
-    std::vector<std::string> arguments;
-    try
-    {
-      arguments = arguments_with_default_params(argc, argv);
-    }
-    catch (const std::exception & error)
-    {
-      std::fprintf(stderr, "无法定位 kiwi_base 默认参数文件: %s\n", error.what());
-      return 1;
-    }
-    std::vector<char *> argument_pointers;
-    argument_pointers.reserve(arguments.size());
-    for (auto & argument : arguments)
-      argument_pointers.push_back(argument.data());
-    rclcpp::init(static_cast<int>(argument_pointers.size()), argument_pointers.data());
+    std::fprintf(stderr, "缺少 --params-file；请使用 ros2 run kiwi_base kiwi_teleop_keyboard\n");
+    return 2;
   }
-  else
-  {
-    rclcpp::init(argc, argv);
-  }
+  rclcpp::init(argc, argv);
   rclcpp::spin(std::make_shared<KeyboardTeleop>());
   rclcpp::shutdown();
   return 0;

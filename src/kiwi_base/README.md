@@ -1,6 +1,8 @@
 # kiwi_base
 
-`kiwi_base` 是 Kiwi 三轮全向底盘的 ROS 2 Humble 驱动包。C 板通过 USB CDC 接收
+本包包含 Kiwi 三轮全向的 `kiwi_base_node` 和两电机履带的 `tracked_base_node`。`kiwi_base.launch.py`、`kiwi_base_ekf.launch.py` 以及前台 `ros2 run kiwi_base kiwi_teleop_keyboard` 都从 `kiwi_platform/config/active_platform.yaml` 选择相同的底盘 YAML。
+
+以下反馈轮式里程计参数说明专指 Kiwi。`kiwi_base` 是 Kiwi 三轮全向底盘的 ROS 2 Humble 驱动包。C 板通过 USB CDC 接收
 速度命令并异步上报电机/IMU 遥测；本包负责正逆运动学、反馈轮式里程计、轮关节状态和键盘遥操作。
 
 ## 节点和接口
@@ -31,7 +33,7 @@ kiwi_odom_test
 坐标约定为 `+X` 前进、`+Y` 左移、`+Z` 向上、`+wz` 逆时针。键盘 `W/S/A/D/Q/E` 分别对应
 前后、左右横移和逆/顺时针旋转，空格或 `X` 停止。
 
-## 唯一参数文件
+## Kiwi 参数文件
 
 ```text
 config/kiwi_base.yaml
@@ -65,8 +67,8 @@ deadman_timeout_ms             无新按键后的自动停车时间
 ```bash
 cd /home/ym/ros2_ws
 source /opt/ros/humble/setup.bash
-colcon build --symlink-install --packages-select kiwi_base
-source tools/activate_workspace.sh
+colcon build --symlink-install --packages-up-to kiwi_base
+source install/setup.bash
 ```
 
 仅启动底盘：
@@ -75,7 +77,7 @@ source tools/activate_workspace.sh
 ros2 launch kiwi_base kiwi_base.launch.py
 ```
 
-启动底盘和 EKF：
+启动底盘和 EKF（Kiwi 可在仅构建底盘后使用；履带还需构建 `kiwi_slam`、`rf2o_laser_odometry` 和雷达驱动）：
 
 ```bash
 ros2 launch kiwi_base kiwi_base_ekf.launch.py
@@ -88,6 +90,10 @@ ros2 run kiwi_base kiwi_teleop_keyboard
 ```
 
 自主导航运行时不要同时启动键盘，否则两个速度源会竞争 `/cmd_vel`。
+
+## 履带底盘
+
+选择 `tracked_pwm` 后，同一底盘 launch 会启动 `tracked_base_node`，同一键盘命令读取 `config/tracked_pwm.yaml`。履带无编码器，不发布 `/chassis/odom/raw`；`kiwi_base_ekf.launch.py` 会启动 M10P、RF2O 和 EKF。履带不支持 `linear.y`，键盘 `A/D` 会被驱动拒绝并停车；当前 `hardware_calibrated=false`、`enable_motion=false` 时普通 `/cmd_vel` 仍锁定。机身 0.70 × 0.59 m、履带中心距 0.50 m 已记录，其余待测项见[平台架构](../../documents/platform_architecture.md)。
 
 ## 调试
 

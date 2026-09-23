@@ -90,3 +90,18 @@ def test_navigation_keeps_its_own_velocity_limits():
     control.nav_enabled = control.nav_ready = True
     control.navigation([0.3, 0, 0.8])
     assert control.output() == (0.3, 0, 0.8)
+
+
+def test_tracked_zero_lateral_limit_rejects_sideways_motion():
+    control = CommandGate(linear=0.2, lateral=0.0, angular=0.4,
+                          navigation_limits=(0.2, 0.0, 0.4))
+    control.mode = "remote"
+    control.manual_ready = True
+    control.acquire("operator")
+    control.drive("operator", [0.1, 0.0, 0.2], 0, control.challenge())
+    assert control.output() == (0.1, 0.0, 0.2)
+    with pytest.raises(ValueError, match="不支持"):
+        control.drive("operator", [0.0, 0.1, 0.0], 1, control.challenge())
+    control.mode = "navigation"
+    with pytest.raises(ValueError, match="不支持"):
+        control.navigation([0.0, -0.1, 0.0])

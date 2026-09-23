@@ -1,86 +1,54 @@
 #!/usr/bin/env python3
-"""启动 Kiwi 底盘、平面 EKF 和由 Xacro 生成的 RobotModel。"""
-
+"""活动底盘、URDF、里程计和 IMU 的公共硬件链路。"""
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
-from launch.conditions import IfCondition
-from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
-from launch_ros.actions import Node
-from launch_ros.substitutions import FindPackageShare
-
-from kiwi_slam.runtime_contract import (
-    validate_base_parameters,
-    validate_workspace_overlay,
-)
+from launch.substitutions import LaunchConfiguration
+from kiwi_platform import load_profile, validate_profile
+from kiwi_platform.launching import robot_actions
+from kiwi_slam.runtime_contract import validate_workspace_overlay
 
 
-def _validate_runtime_contract(context):
-    """在启动任何硬件节点前阻断旧工作区覆盖和不完整 EKF 参数。"""
-    validate_workspace_overlay(required_packages=("kiwi_base",))
-    validate_base_parameters(LaunchConfiguration("base_params_file").perform(context))
-    return []
+def _value(context, name):
+    return LaunchConfiguration(name).perform(context)
+
+
+def _bool(context, name):
+    value = _value(context, name)
+    if value not in ("true", "false"):
+        raise ValueError(f"{name} 必须是 true 或 false")
+    return value == "true"
+
+
+def _setup(context):
+    validate_workspace_overlay(required_packages=("kiwi_base", "kiwi_platform"))
+    selector = _value(context, "platform_file")
+    overrides = {"base": _value(context, "base_params_file")}
+    selected = load_profile(selector, overrides, required_keys=("base",))
+    start_ekf = _bool(context, "start_ekf")
+    keys = ["base", "urdf"]
+    if selected.odometry == "rf2o" and start_ekf:
+        keys += ["lidar", "rf2o"]
+    profile = load_profile(selector, overrides, required_keys=tuple(keys))
+    validate_profile(profile, "driver")
+    lidar = _value(context, "start_lidar")
+    if lidar not in ("", "true", "false"):
+        raise ValueError("start_lidar 必须是 true 或 false")
+    start_lidar = (profile.odometry == "rf2o") if not lidar else lidar == "true"
+    if start_lidar and "lidar" not in profile.files:
+        profile = load_profile(selector, overrides, required_keys=tuple(keys + ["lidar"]))
+    return robot_actions(
+        profile, base=_bool(context, "start_base"), ekf=start_ekf,
+        description=_bool(context, "start_description"), lidar=start_lidar,
+    )
 
 
 def generate_launch_description():
-    """底盘与 EKF 共用统一 YAML，结构尺寸由 Xacro 从该文件读取。"""
-    package_share = FindPackageShare("kiwi_slam")
-    base_params = LaunchConfiguration("base_params_file")
-    start_base = LaunchConfiguration("start_base")
-    start_ekf = LaunchConfiguration("start_ekf")
-    start_description = LaunchConfiguration("start_description")
-
-    xacro_file = PathJoinSubstitution([package_share, "urdf", "kiwi.urdf.xacro"])
-    robot_description = Command(
-        ["xacro ", xacro_file, " hardware_config:=", base_params]
-    )
-
-    arguments = [
-        DeclareLaunchArgument(
-            "base_params_file",
-            default_value=PathJoinSubstitution(
-                [FindPackageShare("kiwi_base"), "config", "kiwi_base.yaml"]
-            ),
-            description="底盘硬件、话题、测量和结构参数 YAML",
-        ),
-        DeclareLaunchArgument(
-            "start_base", default_value="true", description="是否启动 USB 底盘节点"
-        ),
-        DeclareLaunchArgument(
-            "start_ekf", default_value="true", description="是否启动平面 EKF"
-        ),
-        DeclareLaunchArgument(
-            "start_description", default_value="true", description="是否发布 URDF 和静态 TF"
-        ),
-    ]
-
-    nodes = [
-        Node(
-            package="robot_state_publisher",
-            executable="robot_state_publisher",
-            name="robot_state_publisher",
-            condition=IfCondition(start_description),
-            output="screen",
-            parameters=[base_params, {"robot_description": robot_description}],
-        ),
-        Node(
-            package="kiwi_base",
-            executable="kiwi_base_node",
-            name="kiwi_base_node",
-            condition=IfCondition(start_base),
-            output="screen",
-            parameters=[base_params],
-        ),
-        Node(
-            package="robot_localization",
-            executable="ekf_node",
-            name="ekf_filter_node",
-            condition=IfCondition(start_ekf),
-            output="screen",
-            parameters=[base_params],
-        ),
-    ]
-    # OpaqueFunction 必须排在硬件节点之前：配置错误时不能先打开串口或启动一个
-    # 没有 odom0/imu0 的默认 EKF，再由下游以 TF 超时的形式间接报错。
-    return LaunchDescription(
-        arguments + [OpaqueFunction(function=_validate_runtime_contract)] + nodes
-    )
+    return LaunchDescription([
+        DeclareLaunchArgument("platform_file", default_value=""),
+        DeclareLaunchArgument("base_params_file", default_value=""),
+        DeclareLaunchArgument("start_base", default_value="true"),
+        DeclareLaunchArgument("start_ekf", default_value="true"),
+        DeclareLaunchArgument("start_description", default_value="true"),
+        DeclareLaunchArgument("start_lidar", default_value=""),
+        OpaqueFunction(function=_setup),
+    ])

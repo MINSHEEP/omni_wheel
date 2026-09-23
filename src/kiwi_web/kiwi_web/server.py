@@ -21,6 +21,7 @@ from rclpy.executors import SingleThreadedExecutor
 import yaml
 
 from .control import CommandGate
+from kiwi_platform import load_profile, validate_profile
 from .config import PARAMETER_FILES, resolve_paths
 from .maps import MapStore, finite, pose
 from .ros_bridge import Navigator, RosBridge
@@ -235,7 +236,7 @@ class Console:
             names = self.bridge.get_node_names()
             if not any(
                 node in names
-                for node in ("kiwi_base_node", "slam_toolbox", "controller_server", "amcl")
+                for node in ("kiwi_base_node", "tracked_base_node", "slam_toolbox", "controller_server", "amcl")
             ):
                 return
             if time.monotonic() >= deadline:
@@ -475,14 +476,26 @@ def load_config(args):
     config = yaml.safe_load((share / "config/web.yaml").read_text())
     if args.config:
         config.update(yaml.safe_load(Path(args.config).read_text()) or {})
-    for key in ("host", "port", "maps_dir", "workspace", *PARAMETER_FILES):
+    for key in ("host", "port", "maps_dir", "workspace", "platform_file", *PARAMETER_FILES):
         if getattr(args, key, None) is not None:
             config[key] = getattr(args, key)
     resolve_paths(config)
-    base_file = config.get("base_params_file") or str(
-        Path(get_package_share_directory("kiwi_base")) / "config/kiwi_base.yaml"
+    profile = load_profile(config.get("platform_file", ""),
+                           {"base": config.get("base_params_file", "")})
+    validate_profile(profile, "driver")
+    config["platform_file"] = str(profile.selector)
+    config["active_chassis"] = profile.chassis
+    base_file = config.get("base_params_file") or profile.path("base")
+    base = yaml.safe_load(Path(base_file).read_text())[profile.driver]["ros__parameters"]
+    config["feedback_topic"] = (
+        "/chassis/odom/laser" if profile.odometry == "rf2o" else base["wheel_odom_topic"]
     )
-    base = yaml.safe_load(Path(base_file).read_text())["kiwi_base_node"]["ros__parameters"]
+    config["imu_topic"] = base["imu_topic"] if profile.odometry == "rf2o" else ""
+    config["imu_frame_id"] = base["imu_frame_id"] if profile.odometry == "rf2o" else ""
+    config["motion_enabled"] = (
+        base["enable_motion"] and base["hardware_calibrated"]
+        if profile.odometry == "rf2o" else True
+    )
     limits = []
     for web_key, base_key in (
         ("manual_linear", "max_linear_speed_m_s"),
@@ -492,13 +505,13 @@ def load_config(args):
         value = finite(config[web_key])
         if value <= 0:
             raise ValueError("速度上限必须大于零")
-        limits.append(min(value, finite(base[base_key])))
+        limits.append(min(value, finite(base.get(base_key, 0.0))))
     navigation_limits = tuple(
-        finite(base[key])
+        finite(base.get(key, 0.0))
         for key in ("max_linear_speed_m_s", "max_lateral_speed_m_s", "max_angular_speed_rad_s")
     )
-    if any(value <= 0 for value in navigation_limits):
-        raise ValueError("底盘物理速度上限必须大于零")
+    if navigation_limits[0] <= 0 or navigation_limits[2] <= 0:
+        raise ValueError("底盘前后与旋转速度上限必须大于零")
     return config, limits, navigation_limits, share
 
 
@@ -509,6 +522,7 @@ def main():
     parser.add_argument("--port", type=int)
     parser.add_argument("--maps-dir")
     parser.add_argument("--workspace")
+    parser.add_argument("--platform-file")
     for key in PARAMETER_FILES:
         parser.add_argument("--" + key.replace("_", "-"))
     args, ros_args = parser.parse_known_args()
@@ -530,7 +544,11 @@ def main():
         raise RuntimeError("此 ROS 域已有 Web 控制服务在运行") from error
     rclpy.init(args=ros_args)
     gate = CommandGate(*limits, navigation_limits=navigation_limits)
-    bridge = RosBridge(gate)
+    bridge = RosBridge(
+        gate, feedback_topic=config["feedback_topic"],
+        imu_topic=config["imu_topic"], imu_frame_id=config["imu_frame_id"],
+        motion_enabled=config["motion_enabled"],
+    )
     executor = SingleThreadedExecutor()
     executor.add_node(bridge)
     thread = threading.Thread(target=executor.spin, daemon=True)

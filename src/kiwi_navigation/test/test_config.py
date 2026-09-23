@@ -51,14 +51,14 @@ def test_controller_rotates_first_and_reverse_is_disabled():
         tree = (PACKAGE / "behavior_trees" / name).read_text(encoding="utf-8")
         assert "<BackUp" not in tree
         assert "<Spin" in tree and "ClearEntireCostmap" in tree
-    for launch_name in (
-        "mapping_navigation.launch.py",
-        "localization_navigation.launch.py",
-    ):
-        launch = (PACKAGE / "launch" / launch_name).read_text(encoding="utf-8")
-        assert "RewrittenYaml" in launch
-        assert "navigate_to_pose_no_backup.xml" in launch
-        assert "navigate_through_poses_no_backup.xml" in launch
+    shared_launch = (PACKAGE.parent / "kiwi_platform" / "kiwi_platform" / "launching.py").read_text(encoding="utf-8")
+    assert "RewrittenYaml" in shared_launch
+    assert "navigate_to_pose_no_backup.xml" in shared_launch
+    assert "navigate_through_poses_no_backup.xml" in shared_launch
+    mapping_launch = (PACKAGE / "launch/mapping_navigation.launch.py").read_text(encoding="utf-8")
+    localization_launch = (PACKAGE / "launch/localization_navigation.launch.py").read_text(encoding="utf-8")
+    assert "nav2_parameters(nav_profile)" in mapping_launch
+    assert "nav2_parameters(profile)" in localization_launch
     # 膨胀半径必须覆盖必撞区（大于 robot_radius），否则规划器会贴墙。
     # 驱动已区分前向无回波 Inf 和后方盲区 NaN，因此 Inf 必须参与动态清除。
     for scope in ("local_costmap", "global_costmap"):
@@ -141,22 +141,18 @@ def test_velocity_smoother_is_the_direct_cmd_vel_output():
     assert not (PACKAGE / "config" / "cmd_relay.yaml").exists()
 
 
-def test_launch_modes_use_m10p_without_adapter_or_relay():
-    mapping = (PACKAGE / "launch" / "mapping_navigation.launch.py").read_text(
-        encoding="utf-8"
-    )
-    localization = (PACKAGE / "launch" / "localization_navigation.launch.py").read_text(
-        encoding="utf-8"
-    )
-    assert "condition=IfCondition(start_slam)" in mapping
-    assert 'executable="kiwi_mapping_scan_gate"' in mapping
-    assert '"mapping_gate.yaml"' in mapping
-    assert "slam_toolbox" not in localization
+def test_launch_modes_share_selected_lidar_without_adapter_or_relay():
+    mapping = (PACKAGE / "launch" / "mapping_navigation.launch.py").read_text(encoding="utf-8")
+    localization = (PACKAGE / "launch" / "localization_navigation.launch.py").read_text(encoding="utf-8")
+    shared = (PACKAGE.parent / "kiwi_platform" / "kiwi_platform" / "launching.py").read_text(encoding="utf-8")
+    profile = (PACKAGE.parent / "kiwi_platform" / "config" / "profiles" / "kiwi.yaml").read_text(encoding="utf-8")
+    assert "kiwi_slam.launch.py" in mapping
+    assert "validate_profile(profile, \"mapping\")" in mapping
     assert "localization_launch.py" in localization
+    assert "robot_actions(profile)" in localization
+    assert "lslidar_driver_node" in shared
+    assert "kiwi_slam/config/ls_m10p_uart.yaml" in profile
     for launch in (mapping, localization):
-        # 雷达统一复用 kiwi_slam 的 M10P 封装，保证运行时 /scan 只有一个发布者。
-        assert '"m10p_uart_lidar.launch.py"' in launch
-        assert '"ls_m10p_uart.yaml"' in launch
         assert "kiwi_nav_cmd_relay" not in launch
 
 

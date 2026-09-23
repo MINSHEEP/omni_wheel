@@ -1,189 +1,85 @@
 #!/usr/bin/env python3
-"""启动 M10P、SLAM Toolbox、Kiwi 底盘和 Nav2 导航。"""
-
+"""活动底盘专属建图链路；已标定时同时启动该底盘的 Nav2。"""
+from pathlib import Path
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.conditions import IfCondition
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import IfElseSubstitution, LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from launch_ros.substitutions import FindPackageShare
-from nav2_common.launch import RewrittenYaml
+from kiwi_platform import load_profile, validate_profile
+from kiwi_platform.launching import nav2_include, nav2_parameters
+
+PARAMS = {"base_params_file": "base", "lidar_params_file": "lidar", "slam_params_file": "slam",
+          "mapping_gate_params_file": "gate", "monitor_params_file": "monitor", "nav2_params_file": "nav2"}
+
+
+def _value(context, name):
+    return LaunchConfiguration(name).perform(context)
+
+
+def _bool(context, name):
+    value = _value(context, name)
+    if value not in ("true", "false"):
+        raise ValueError(f"{name} 必须是 true 或 false")
+    return value == "true"
+
+
+def _setup(context):
+    selector = _value(context, "platform_file")
+    overrides = {field: _value(context, argument) for argument, field in PARAMS.items()}
+    selected = load_profile(selector, {"base": overrides["base"]}, required_keys=("base",))
+    keys = ["base", "urdf", "lidar", "gate", "slam", "monitor"]
+    if selected.odometry == "rf2o":
+        keys.append("rf2o")
+    profile = load_profile(selector, {key: value for key, value in overrides.items() if key in keys},
+                           required_keys=tuple(keys))
+    motion = validate_profile(profile, "mapping")
+    if not _bool(context, "start_slam") or not _bool(context, "start_ekf"):
+        raise ValueError("组合建图导航必须启动 SLAM Toolbox 和 EKF；已知图导航请用 localization_navigation.launch.py")
+    slam_share = Path(get_package_share_directory("kiwi_slam"))
+    navigation_share = Path(get_package_share_directory("kiwi_navigation"))
+    slam_arguments = {
+        "platform_file": str(profile.selector),
+        "start_base": _value(context, "start_base"),
+        "start_ekf": _value(context, "start_ekf"),
+        "start_lidar": _value(context, "start_lidar"),
+        "start_slam": _value(context, "start_slam"),
+        "start_monitor": _value(context, "start_monitor"),
+        "use_rviz": "false",
+    }
+    slam_arguments.update({argument: value for argument, field in PARAMS.items()
+                           if field != "nav2" and (value := overrides[field])})
+    actions = [IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(str(slam_share / "launch/kiwi_slam.launch.py")),
+        launch_arguments=slam_arguments.items(),
+    )]
+    # 履带速度未标定时可以由遥控/原始电机命令手动建图，绝不启动 Nav2。
+    if not motion and overrides["nav2"]:
+        raise ValueError("履带未标定时 Nav2 不启动，nav2_params_file 不可使用")
+    if profile.chassis == "kiwi" or motion:
+        nav_profile = load_profile(selector, overrides, required_keys=tuple(keys + ["nav2"]))
+        validate_profile(nav_profile, "localization")
+        actions.append(nav2_include("navigation_launch.py", params=nav2_parameters(nav_profile)))
+    if _bool(context, "use_rviz"):
+        config = _value(context, "rviz_config_file") or str(navigation_share / "config/navigation.rviz")
+        actions.append(Node(package="rviz2", executable="rviz2", output="screen",
+                            arguments=["-d", config], additional_env={
+                                "QT_QPA_PLATFORM": "xcb",
+                                "LIBGL_ALWAYS_SOFTWARE": "1" if _bool(context, "rviz_software_rendering") else "0",
+                            }))
+    return actions
 
 
 def generate_launch_description():
-    """使用 M10P 的标准 /scan 和底盘统一参数文件启动二维建图导航。"""
-    navigation_share = FindPackageShare("kiwi_navigation")
-    slam_share = FindPackageShare("kiwi_slam")
-    nav2_params = LaunchConfiguration("nav2_params_file")
-    lidar_params = LaunchConfiguration("lidar_params_file")
-    slam_params = LaunchConfiguration("slam_params_file")
-    monitor_params = LaunchConfiguration("monitor_params_file")
-    mapping_gate_params = LaunchConfiguration("mapping_gate_params_file")
-    base_params = LaunchConfiguration("base_params_file")
-    rviz_config = LaunchConfiguration("rviz_config_file")
-    start_base = LaunchConfiguration("start_base")
-    start_ekf = LaunchConfiguration("start_ekf")
-    start_lidar = LaunchConfiguration("start_lidar")
-    start_slam = LaunchConfiguration("start_slam")
-    start_monitor = LaunchConfiguration("start_monitor")
-    use_rviz = LaunchConfiguration("use_rviz")
-    rviz_software_rendering = LaunchConfiguration("rviz_software_rendering")
-
-    arguments = [
-        DeclareLaunchArgument(
-            "nav2_params_file",
-            default_value=PathJoinSubstitution([navigation_share, "config", "nav2.yaml"]),
-            description="Nav2、DWB、costmap 和 AMCL 参数 YAML",
-        ),
-        DeclareLaunchArgument(
-            "lidar_params_file",
-            default_value=PathJoinSubstitution(
-                [slam_share, "config", "ls_m10p_uart.yaml"]
-            ),
-            description="镭神 M10P 串口和 LaserScan 参数 YAML",
-        ),
-        DeclareLaunchArgument(
-            "slam_params_file",
-            default_value=PathJoinSubstitution([slam_share, "config", "slam_toolbox.yaml"]),
-            description="SLAM Toolbox 参数 YAML",
-        ),
-        DeclareLaunchArgument(
-            "monitor_params_file",
-            default_value=PathJoinSubstitution([slam_share, "config", "monitor.yaml"]),
-            description="SLAM 链路诊断参数 YAML",
-        ),
-        DeclareLaunchArgument(
-            "mapping_gate_params_file",
-            default_value=PathJoinSubstitution(
-                [slam_share, "config", "mapping_gate.yaml"]
-            ),
-            description="SLAM 首帧标定、静止和扫描一致性门控参数",
-        ),
-        DeclareLaunchArgument(
-            "base_params_file",
-            default_value=PathJoinSubstitution(
-                [FindPackageShare("kiwi_base"), "config", "kiwi_base.yaml"]
-            ),
-            description="底盘和 EKF 共用参数 YAML",
-        ),
-        DeclareLaunchArgument(
-            "rviz_config_file",
-            default_value=PathJoinSubstitution(
-                [navigation_share, "config", "navigation.rviz"]
-            ),
-            description="二维建图导航 RViz 配置",
-        ),
-        DeclareLaunchArgument("start_base", default_value="true"),
-        DeclareLaunchArgument("start_ekf", default_value="true"),
-        DeclareLaunchArgument("start_lidar", default_value="true"),
-        DeclareLaunchArgument("start_slam", default_value="true"),
-        DeclareLaunchArgument("start_monitor", default_value="false"),
-        DeclareLaunchArgument("use_rviz", default_value="true"),
-        DeclareLaunchArgument("rviz_software_rendering", default_value="true"),
-    ]
-
-    robot_stack = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            PathJoinSubstitution([slam_share, "launch", "kiwi_robot.launch.py"])
-        ),
-        launch_arguments={
-            "base_params_file": base_params,
-            "start_base": start_base,
-            "start_ekf": start_ekf,
-            "start_description": "true",
-        }.items(),
-    )
-
-    # 复用 kiwi_slam 的 M10P 封装，避免三个入口各自复制节点定义。
-    lidar = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            PathJoinSubstitution([slam_share, "launch", "m10p_uart_lidar.launch.py"])
-        ),
-        condition=IfCondition(start_lidar),
-        launch_arguments={"params_file": lidar_params}.items(),
-    )
-
-    # SLAM 节点可以提前完成初始化，但只订阅门控后的 /scan_slam。门控要求
-    # 底盘实际标定完成、EKF 连续静止且相邻扫描一致，杜绝坏首帧写入永久地图。
-    mapping_gate = Node(
-        package="kiwi_slam",
-        executable="kiwi_mapping_scan_gate",
-        name="kiwi_mapping_scan_gate",
-        condition=IfCondition(start_slam),
-        output="screen",
-        parameters=[mapping_gate_params],
-    )
-
-    slam = Node(
-        package="slam_toolbox",
-        executable="sync_slam_toolbox_node",
-        name="slam_toolbox",
-        condition=IfCondition(start_slam),
-        output="screen",
-        parameters=[slam_params],
-    )
-
-    monitor = Node(
-        package="kiwi_slam",
-        executable="kiwi_slam_monitor",
-        name="kiwi_slam_monitor",
-        condition=IfCondition(start_monitor),
-        output="screen",
-        parameters=[monitor_params],
-    )
-
-    # 后方无传感器：把 bt_navigator 的行为树重写为无 BackUp 版本（路径按本机
-    # kiwi_navigation share 解析）。移除 behavior_server 的 backup 插件后，默认
-    # 行为树会因等不到 backup action server 而导致 bt_navigator 激活失败。
-    nav2_params_no_backup = RewrittenYaml(
-        source_file=nav2_params,
-        root_key="",
-        param_rewrites={
-            "default_nav_to_pose_bt_xml": PathJoinSubstitution(
-                [navigation_share, "behavior_trees", "navigate_to_pose_no_backup.xml"]
-            ),
-            "default_nav_through_poses_bt_xml": PathJoinSubstitution(
-                [
-                    navigation_share,
-                    "behavior_trees",
-                    "navigate_through_poses_no_backup.xml",
-                ]
-            ),
-        },
-        convert_types=True,
-    )
-
-    navigation = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            PathJoinSubstitution(
-                [FindPackageShare("nav2_bringup"), "launch", "navigation_launch.py"]
-            )
-        ),
-        launch_arguments={
-            "use_sim_time": "false",
-            "autostart": "true",
-            "params_file": nav2_params_no_backup,
-            "use_composition": "False",
-            "use_respawn": "False",
-            "log_level": "info",
-        }.items(),
-    )
-
-    rviz = Node(
-        package="rviz2",
-        executable="rviz2",
-        condition=IfCondition(use_rviz),
-        output="screen",
-        arguments=["-d", rviz_config],
-        additional_env={
-            "QT_QPA_PLATFORM": "xcb",
-            "LIBGL_ALWAYS_SOFTWARE": IfElseSubstitution(
-                rviz_software_rendering, "1", "0"
-            ),
-        },
-    )
-
-    return LaunchDescription(
-        arguments + [robot_stack, lidar, mapping_gate, slam, monitor, navigation, rviz]
-    )
+    return LaunchDescription([
+        DeclareLaunchArgument("platform_file", default_value=""),
+        *[DeclareLaunchArgument(field, default_value="") for field in PARAMS],
+        DeclareLaunchArgument("rviz_config_file", default_value=""),
+        *[DeclareLaunchArgument(field, default_value=value) for field, value in (
+            ("start_base", "true"), ("start_ekf", "true"), ("start_lidar", "true"),
+            ("start_slam", "true"), ("start_monitor", "false"),
+            ("use_rviz", "true"), ("rviz_software_rendering", "true"),
+        )],
+        OpaqueFunction(function=_setup),
+    ])

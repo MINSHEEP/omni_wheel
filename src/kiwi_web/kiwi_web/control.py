@@ -68,7 +68,10 @@ class CommandGate:
             for v in values
         ):
             raise ValueError("速度必须是三个有限数值")
-        ratio = max(1.0, *(abs(v) / limit for v, limit in zip(values, limits or self.limits)))
+        active_limits = limits or self.limits
+        if any(limit == 0 and value != 0 for value, limit in zip(values, active_limits)):
+            raise ValueError("当前底盘不支持该方向的运动")
+        ratio = max(1.0, *(abs(v) / limit for v, limit in zip(values, active_limits) if limit > 0))
         return tuple(v / ratio for v in values)
 
     def release(self, owner=None):

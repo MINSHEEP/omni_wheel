@@ -1,108 +1,16 @@
 # kiwi_navigation
 
-`kiwi_navigation` 集成镭神 M10P、SLAM Toolbox、AMCL 和 Nav2，为 Kiwi 三轮全向底盘提供二维
-建图和已知地图导航。速度链路为：
-
-```text
-Nav2 DWB Omni -> velocity_smoother -> /cmd_vel -> kiwi_base_node
-```
-
-底盘节点会对所有速度源做最后限幅。导航使用 `base_footprint`、`odom` 和 `/odometry/filtered`。
-AMCL 使用 `nav2_amcl::OmniMotionModel`；底盘仍具备全向能力，但当前因后方感知盲区将
-DWB 的 `vy` 设为零，导航采用“先转向、后直行”。恢复横移时必须同步 DWB 与速度平滑器。
-
-## 配置
-
-```text
-config/nav2.yaml           AMCL、map_server、costmap、DWB、速度平滑器
-config/mapping_navigation  当前没有独立文件，使用 launch 默认参数
-config/navigation.rviz     已知地图导航 RViz，Fixed Frame=map
-```
-
-底盘和 EKF 参数不复制到本包，统一读取：
-
-```text
-src/kiwi_base/config/kiwi_base.yaml
-```
-
-## 构建
+建图、定位导航是两个独立入口，都读取 `kiwi_platform/config/active_platform.yaml`。Kiwi 使用 `config/nav2.yaml`（AMCL 全向模型）；两电机履带使用 `config/tracked_nav2.yaml`（AMCL 差速模型、零横移、RF2O + IMU、0.48 m 车体半径）。两个文件均为完整 Nav2 参数，不在启动时从底盘 YAML 动态拼接。底盘、门控、SLAM 和 URDF 由同一活动档案选取。
 
 ```bash
-cd /home/ym/ros2_ws
-source /opt/ros/humble/setup.bash
-colcon build --symlink-install --packages-up-to kiwi_navigation
+cd "$HOME/ros2_ws"
 source tools/activate_workspace.sh
-```
-
-## 在线建图
-
-组合建图导航启动文件会启动底盘、EKF、M10P、SLAM Toolbox、Nav2 和 RViz：
-
-```bash
 ros2 launch kiwi_navigation mapping_navigation.launch.py use_rviz:=true
-```
-
-第二个终端启动键盘：
-
-```bash
-ros2 run kiwi_base kiwi_teleop_keyboard
-```
-
-建图完成后停止机器人，在第三个终端保存地图：
-
-```bash
-mkdir -p /home/ym/ros2_ws/maps
-ros2 run nav2_map_server map_saver_cli \
-  -f /home/ym/ros2_ws/maps/warehouse
-```
-
-保存结果：
-
-```text
-/home/ym/ros2_ws/maps/warehouse.yaml
-/home/ym/ros2_ws/maps/warehouse.pgm
-```
-
-地图目录是工作区根目录的 `maps/`，不会自动提交到任何源码功能包。每次保存一张新地图时
-使用不同的前缀，例如 `lab`、`office`、`warehouse`。
-
-## 已知地图 AMCL 导航
-
-启动导航使用保存地图的 `.yaml` 文件：
-
-```bash
+# 地图保存后停止建图，再定位导航：
 ros2 launch kiwi_navigation localization_navigation.launch.py \
-  map:=/home/ym/ros2_ws/maps/warehouse.yaml \
-  use_rviz:=true
+  map:="$HOME/ros2_ws/maps/warehouse.yaml" use_rviz:=true
 ```
 
-选择其他地图只修改 `map:=`，例如：
+Kiwi 建图入口同时启动 Nav2；履带在速度未标定时只启动建图链路。履带需先完成雷达、IMU 和 RF2O 核验并设置 `mapping_sensors_verified=true`；导航还需要速度换算标定并启用运动。定位导航会在启动任何硬件节点前检查地图文件、完整参数链和关锁。
 
-```bash
-ros2 launch kiwi_navigation localization_navigation.launch.py \
-  map:=/home/ym/ros2_ws/maps/lab.yaml
-```
-
-不要传 `.pgm`，也不要省略 `map`。该 launch 启动 AMCL、map_server 和 Nav2，但不会启动
-SLAM Toolbox，因此不会修改地图。启动后在 RViz：
-
-1. 使用 `2D Pose Estimate` 设置机器人在地图中的初始位置和朝向。
-2. 等待激光与地图重合，必要时重新设置初始位姿。
-3. 使用 `Nav2 Goal` 设置目标点。
-
-自主导航时不要运行键盘节点，避免同时发布 `/cmd_vel`。
-
-## 调试
-
-```bash
-ros2 node list
-ros2 topic info /cmd_vel --verbose
-ros2 topic echo /cmd_vel
-ros2 topic hz /scan
-ros2 topic hz /odometry/filtered
-ros2 run tf2_ros tf2_echo map odom
-ros2 run tf2_ros tf2_echo odom base_footprint
-```
-
-如果没有地图，检查 `map:=` 是否指向存在的 YAML；如果 AMCL 不收敛，重新设置初始位姿并
-确认 `/scan` 的 `frame_id` 为 `lidar_link`。
+Nav2 速度源统一送 `/cmd_vel`；Web 使用 `navigation_core.launch.py`，通过 `/kiwi_web/nav_raw` 和 `/kiwi_web/nav_cmd_vel` 接入网页速度仲裁，同样读取活动底盘档案。导航期间不要同时运行键盘。平台文件与全部参数映射、待标定项见 [平台架构](../../documents/platform_architecture.md)。

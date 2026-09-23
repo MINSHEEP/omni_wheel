@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+"""保持键盘命令不变，同时按唯一活动底盘开关选取参数。"""
+import os
+from pathlib import Path
+import sys
+
+from ament_index_python.packages import get_package_prefix
+from kiwi_platform import load_profile, validate_profile
+
+
+def _explicit_parameter_file(arguments):
+    files = []
+    for index, argument in enumerate(arguments):
+        if argument == "--params-file":
+            if index + 1 >= len(arguments):
+                raise ValueError("--params-file 缺少路径")
+            files.append(arguments[index + 1])
+        elif argument.startswith("--params-file="):
+            files.append(argument.split("=", 1)[1])
+    if len(files) > 1:
+        raise ValueError("键盘只允许一份完整的底盘参数文件")
+    return files[0] if files else ""
+
+
+def main():
+    override = _explicit_parameter_file(sys.argv[1:])
+    profile = load_profile(overrides={"base": override}, required_keys=("base",))
+    validate_profile(profile, "driver")
+    binary = Path(get_package_prefix("kiwi_base")) / "lib/kiwi_base/kiwi_teleop_keyboard_node"
+    arguments = [str(binary), *sys.argv[1:]]
+    if not override:
+        arguments += ["--ros-args", "--params-file", profile.path("base")]
+    os.execv(str(binary), arguments)
+
+
+if __name__ == "__main__":
+    main()

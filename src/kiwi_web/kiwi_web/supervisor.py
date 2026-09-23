@@ -31,6 +31,8 @@ class Supervisor:
             return
         # Use the installed ROS command, never a shell or client-provided executable.
         command = ["ros2", "launch", "kiwi_web", "stack.launch.py", "mode:=" + mode]
+        command.append("platform_file:=" + self.config.get("platform_file", ""))
+        command.append("expected_chassis:=" + self.config.get("active_chassis", ""))
         if map_path:
             command.append("map:=" + str(map_path))
         for key in PARAMETER_FILES:

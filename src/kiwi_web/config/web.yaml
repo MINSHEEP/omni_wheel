@@ -18,6 +18,8 @@ manual_lateral: 0.4
 manual_angular: 0.6
 # Optional absolute or workspace-relative paths. Empty uses each package's
 # installed config; do not copy hardware/algorithm values here.
+# 空值使用 kiwi_platform/config/active_platform.yaml 当前底盘。
+platform_file: ""
 base_params_file: ""
 lidar_params_file: ""
 slam_params_file: ""

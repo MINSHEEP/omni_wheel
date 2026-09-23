@@ -1,0 +1,27 @@
+# 履带建图：RF2O、原始 IMU 与融合里程计必须持续新鲜。
+kiwi_mapping_scan_gate:
+  ros__parameters:
+    use_sim_time: false
+    input_scan_topic: /scan
+    output_scan_topic: /scan_slam
+    odom_topic: /odometry/filtered
+    imu_ready_topic: /chassis/imu/calibration_ready
+    gate_ready_topic: /kiwi_slam/mapping_gate_ready
+    laser_frame: lidar_link
+    odom_frame: odom
+    base_frame: base_footprint
+    require_imu_ready: false
+    require_imu_samples: true
+    imu_topic: /chassis/imu/data_raw
+    imu_frame: chassis_imu_link
+    require_source_odom: true
+    source_odom_topic: /chassis/odom/laser
+    stationary_duration_s: 0.5
+    max_linear_speed_m_s: 0.02
+    max_angular_speed_rad_s: 0.03
+    max_yaw_step_rad: 0.01
+    max_message_age_s: 0.2
+    required_stable_scans: 8
+    min_valid_scan_ratio: 0.1
+    min_scan_overlap_ratio: 0.5
+    max_median_range_delta_m: 0.05

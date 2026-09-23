@@ -33,7 +33,7 @@ def resolve_paths(config):
     config["workspace"] = str(root)
     maps = Path(config.get("maps_dir") or "maps").expanduser()
     config["maps_dir"] = str((maps if maps.is_absolute() else root / maps).resolve())
-    for key in PARAMETER_FILES:
+    for key in (*PARAMETER_FILES, "platform_file"):
         value = config.get(key)
         if value:
             path = Path(value).expanduser()

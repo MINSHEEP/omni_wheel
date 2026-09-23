@@ -16,7 +16,7 @@ from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.srv import ClearEntireCostmap
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import Imu, LaserScan
 from std_msgs.msg import Bool
 from diagnostic_msgs.msg import DiagnosticArray
 from lifecycle_msgs.srv import GetState
@@ -49,9 +49,14 @@ async def ros_future(future, timeout=10):
 
 
 class RosBridge(Node):
-    def __init__(self, gate):
+    def __init__(self, gate, *, feedback_topic="/chassis/odom/raw",
+                 imu_topic="", imu_frame_id="chassis_imu_link", motion_enabled=True):
         super().__init__("kiwi_web_bridge")
         self.gate = gate
+        self.use_raw_imu = bool(imu_topic)
+        self.imu_frame_id = imu_frame_id
+        self.motion_enabled = motion_enabled
+        self.imu_at = 0.0
         self.lock = threading.RLock()
         self.encoding_lock = threading.Lock()
         self.map_message = None
@@ -83,11 +88,14 @@ class RosBridge(Node):
             Odometry, "/odometry/filtered", self._odom, qos_profile_sensor_data
         )
         self.create_subscription(
-            Odometry, "/chassis/odom/raw", self._feedback, qos_profile_sensor_data
+            Odometry, feedback_topic, self._feedback, qos_profile_sensor_data
         )
         self.create_subscription(LaserScan, "/scan", self._scan, qos_profile_sensor_data)
         self.create_subscription(Path, "/plan", self._path, 1)
-        self.create_subscription(Bool, "/chassis/imu/calibration_ready", self._imu, latched)
+        if self.use_raw_imu:
+            self.create_subscription(Imu, imu_topic, self._raw_imu, qos_profile_sensor_data)
+        else:
+            self.create_subscription(Bool, "/chassis/imu/calibration_ready", self._imu, latched)
         self.create_subscription(
             Bool, "/kiwi_slam/mapping_gate_ready", self._mapping_ready, latched
         )
@@ -146,6 +154,14 @@ class RosBridge(Node):
     def _imu(self, message):
         with self.lock:
             self.imu_ready = message.data
+
+    def _raw_imu(self, message):
+        if message.header.frame_id == self.imu_frame_id and self._fresh_stamp(message.header.stamp):
+            with self.lock:
+                self.imu_at = time.monotonic()
+
+    def _imu_healthy(self, now):
+        return now - self.imu_at < 0.5 if self.use_raw_imu else self.imu_ready
 
     def _mapping_ready(self, message):
         with self.lock:
@@ -293,7 +309,8 @@ class RosBridge(Node):
             )
             manual_ready = (
                 healthy
-                and self.imu_ready
+                and self.motion_enabled
+                and self._imu_healthy(now)
                 and (
                     self.gate.mode == "remote"
                     or (self.gate.mode == "mapping" and self.mapping_ready)
@@ -301,8 +318,9 @@ class RosBridge(Node):
             )
             nav_ready = (
                 healthy
+                and self.motion_enabled
                 and self.navigation_active
-                and self.imu_ready
+                and self._imu_healthy(now)
                 and now - self.scan_at < 0.5
                 and self.pose is not None
                 and now - self.pose_at < 0.5
@@ -343,7 +361,7 @@ class RosBridge(Node):
             self.pending_scans.clear()
             self.pose = None
             self.imu_ready = self.mapping_ready = False
-            self.odom_at = self.scan_at = self.feedback_at = self.pose_at = 0.0
+            self.odom_at = self.scan_at = self.feedback_at = self.pose_at = self.imu_at = 0.0
             self.tf.clear()
 
     def clear_motion_fault(self):
@@ -358,7 +376,7 @@ class RosBridge(Node):
                 odom=now - self.odom_at < 0.5,
                 feedback=now - self.feedback_at < 0.5,
                 lidar=now - self.scan_at < 0.5,
-                imu_ready=self.imu_ready,
+                imu_ready=self._imu_healthy(now),
                 mapping_ready=self.mapping_ready,
                 pose=self.pose,
                 speed=self.speed,

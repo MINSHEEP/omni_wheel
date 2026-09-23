@@ -1,0 +1,13 @@
+chassis: kiwi
+driver: kiwi_base_node
+odometry: wheel
+lidar: m10p
+imu: chassis
+files:
+  base: kiwi_base/config/kiwi_base.yaml
+  nav2: kiwi_navigation/config/nav2.yaml
+  slam: kiwi_slam/config/slam_toolbox.yaml
+  gate: kiwi_slam/config/mapping_gate.yaml
+  lidar: kiwi_slam/config/ls_m10p_uart.yaml
+  monitor: kiwi_slam/config/monitor.yaml
+  urdf: kiwi_slam/urdf/kiwi.urdf.xacro

@@ -8,14 +8,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+from kiwi_platform import load_profile
 from ament_index_python.packages import (
     PackageNotFoundError,
     get_package_prefix,
-    get_package_share_directory,
 )
 
 
 REQUIRED_PACKAGES = (
+    "kiwi_platform",
     "kiwi_base",
     "lslidar_driver",
     "lslidar_msgs",
@@ -107,27 +108,22 @@ def run_checks(base_device: str, lidar_port: str, require_hardware: bool) -> lis
 def main(argv: list[str] | None = None) -> int:
     """Print a concise compatibility report and return nonzero on errors."""
     parser = argparse.ArgumentParser(description="Check Kiwi SLAM runtime compatibility")
-    parser.add_argument(
-        "--base-params-file",
-        type=Path,
-        default=Path(get_package_share_directory("kiwi_base")) / "config" / "kiwi_base.yaml",
-    )
-    parser.add_argument(
-        "--lidar-params-file",
-        type=Path,
-        default=Path(get_package_share_directory("kiwi_slam"))
-        / "config"
-        / "ls_m10p_uart.yaml",
-    )
+    parser.add_argument("--base-params-file", type=Path)
+    parser.add_argument("--lidar-params-file", type=Path)
     parser.add_argument("--require-hardware", action="store_true")
     args = parser.parse_args(argv)
 
-    base_device = str(load_parameter(args.base_params_file, "kiwi_base_node", "device"))
+    profile = load_profile()
+    base_file = args.base_params_file or Path(profile.path("base"))
+    lidar_file = args.lidar_params_file or Path(profile.path("lidar"))
+    base_device = str(load_parameter(base_file, profile.driver, "device"))
     # M10P 串口统一读取 lslidar_driver_node.serial_port，避免检查错配置层级。
     lidar_port = str(
-        load_parameter(args.lidar_params_file, "lslidar_driver_node", "serial_port")
+        load_parameter(lidar_file, "lslidar_driver_node", "serial_port")
     )
     checks = run_checks(base_device, lidar_port, args.require_hardware)
+    if profile.odometry == "rf2o":
+        checks.extend(package_checks(("rf2o_laser_odometry",)))
     for check in checks:
         print(f"[{check.level:5}] {check.name}: {check.message}")
     errors = sum(check.level == "ERROR" for check in checks)

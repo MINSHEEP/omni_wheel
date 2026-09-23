@@ -1,11 +1,11 @@
-# Kiwi 本地 Web 控制台
+# 双底盘本地 Web 控制台
 
 设备上运行一个 Python / ROS 2 服务，局域网浏览器访问 `http://设备IP:8080`。
 HTML、JavaScript、CSS、字体回退和品牌图片均在设备本地，无 CDN、Node.js 运行服务、
 rosbridge 或外部云服务依赖。Node.js 仅用于可选的浏览器自动化测试。
 
 界面沿用用户提供的 `/home/hi/MSHEEP/web_frontend`：原始 `robot_ui.css`、品牌图片、
-地图画布的绘制与交互代码，并改为 Kiwi 底盘的 ROS 2 接口。保留建图、修图、导航、遥控、
+地图画布的绘制与交互代码，并接入当前活动底盘的 ROS 2 接口。保留建图、修图、导航、遥控、
 设置页；不展示未接入的相机、热成像、空气质量、三维雷达、地形规划、机器狗姿态和动作。
 
 ## 功能
@@ -16,7 +16,7 @@ rosbridge 或外部云服务依赖。Node.js 仅用于可选的浏览器自动�
 | 修图 | 选择地图、停止运行模式、障碍/可通行/未知画笔、矩形框选、半径调整、撤销/重做、版本校验保存、导出 |
 | 导航 | 加载地图、AMCL 初始位置与朝向、激光和规划路径、单点目标、真实任务反馈、取消、清理代价地图 |
 | 多点路径 | 地图添加目标、数值编辑坐标/朝向、排序/删除、按地图保存路径、顺序执行、暂停/继续/跳过/停止 |
-| 遥控 | W/S 前后、A/D 横移、Q/E 转向、按住屏幕方向键、速度比例、X 松控停车、T/空格软件急停 |
+| 遥控 | W/S 前后、A/D 横移（仅 Kiwi）、Q/E 转向、按住屏幕方向键、速度比例、X 松控停车、T/空格软件急停 |
 | 设置 | 地图导入/导出/删除、CPU/内存/磁盘/连接数、往返时延、ROS 诊断与启动日志 |
 
 地图拖拽确定位置和朝向；右键平移，滚轮缩放。手机支持触摸绘制/选点、普通模式拖动和平移、
@@ -60,12 +60,12 @@ ros2 run kiwi_web kiwi_web_server --host 0.0.0.0 --port 8080 \
 启动服务时不启动硬件。点击“开始建图”“加载此地图”或“启动遥控模式”才启动所需 ROS 节点，
 默认关闭 RViz。模式切换先归零速度、取消 action、退出本服务拥有的进程组，再启动新模式。
 不要同时用原来的导航 launch 或命令行键盘控制同一机器人；检测到旧节点时网页会拒绝重复启动。
-底盘、EKF、M10P、SLAM 参数直接复用已有包，硬件串口和安装外参仍按原项目配置。
+底盘、EKF、M10P、SLAM 与 Nav2 读取 `kiwi_platform/config/active_platform.yaml` 所选档案。切换活动底盘后要重启 Web 服务；履带横移上限为零，未标定速度时普通遥控不驱动电机且导航被关锁拒绝。
 
 第一次建图流程：
 
 1. 打开“建图”，点击“开始建图”。底盘保持静止，等待 IMU 标定与稳定扫描门控就绪。
-2. 开启遥控，在现场确认空间后按住 W/S/A/D/Q/E 移动。松开即停止。
+2. 完成运动标定后开启遥控，在现场确认空间后按住 W/S/Q/E 移动；Kiwi 还支持 A/D 横移。松开即停止。未标定履带可用现场遥控器或原始电机话题手动建图。
 3. 完成后松开控制并停车，填写新地图名并保存。保存不会覆盖已有同名地图。
 4. 需要修图时打开“修图”，选择地图，点击“打开修图”，编辑后“覆盖保存”。
 5. 在“导航”加载地图，选择“设置初始点”，拖拽箭头指定真实位置和朝向。
@@ -77,21 +77,20 @@ ros2 run kiwi_web kiwi_web_server --host 0.0.0.0 --port 8080 \
 
 | 所属包 | 参数文件 | 使用者 / 传递路径 |
 | --- | --- | --- |
-| `kiwi_web` | `config/web.yaml` | HTTP/WS 服务、地图目录、遥控上限、可选参数文件覆盖 |
-| `kiwi_base` | `config/kiwi_base.yaml` | 底盘、EKF、URDF；Web 从同一份文件读取物理限速 |
-| `kiwi_slam` | `config/ls_m10p_uart.yaml` | M10P UART 驱动 |
-| `kiwi_slam` | `config/slam_toolbox.yaml` | SLAM Toolbox |
-| `kiwi_slam` | `config/mapping_gate.yaml` | 建图前 IMU / 扫描门控 |
-| `kiwi_slam` | `config/monitor.yaml` | 链路诊断 |
-| `kiwi_navigation` | `config/nav2.yaml`、`behavior_trees/` | AMCL、地图服务器、规划、控制、平滑器和导航行为树 |
+| `kiwi_platform` | `config/active_platform.yaml`、`config/profiles/*.yaml` | 全局底盘选择及各链路文件映射 |
+| `kiwi_web` | `config/web.yaml` | HTTP/WS 服务、地图目录、遥控上限、可选文件覆盖 |
+| `kiwi_base` | `config/kiwi_base.yaml`、`config/tracked_pwm.yaml` | 所选底盘、EKF、键盘及 Web 物理限速 |
+| `kiwi_slam` | `config/mapping_gate.yaml`、`config/tracked_mapping_gate.yaml` | 所选建图门控 |
+| `kiwi_slam` | `config/slam_toolbox.yaml`、`config/tracked_slam_toolbox.yaml`、`config/tracked_rf2o.yaml` | 建图与履带激光里程计 |
+| `kiwi_navigation` | `config/nav2.yaml`、`config/tracked_nav2.yaml` | 所选 AMCL、控制器、代价地图和导航行为树 |
 
-`web.launch.py → Web 服务 → Supervisor → stack.launch.py` 完整传递
+`web.launch.py → Web 服务 → Supervisor → stack.launch.py` 传递相同的 `platform_file` 与底盘标识，并完整传递
 `base_params_file`、`lidar_params_file`、`slam_params_file`、`mapping_gate_params_file`、
-`monitor_params_file`、`nav2_params_file`。空覆盖值在隔离的 launch 作用域内交给子包默认值，
+`monitor_params_file`、`nav2_params_file`。空覆盖值由活动底盘档案解析，
 不会把空字符串传给 ROS 参数加载器。Nav2 节点编排位于 `kiwi_navigation/navigation_core.launch.py`，
 该入口只负责定位导航，独立于 Web；Web 指定速度输出话题以接入仲裁。原有 RViz 启动入口保留。
 
-参数优先级：命令行 / launch 显式覆盖 > 所选 `config` > 包内 `web.yaml`；
+参数优先级：命令行 / launch 显式覆盖 > 所选 `config` > 活动底盘档案 > 包内 `web.yaml`；
 算法参数不复制进 Web 配置。`base_params_file` 对 Web 物理限速检查、底盘和 EKF 同时生效。
 自主导航仍使用 `kiwi_navigation` 中的速度和加速度配置。
 
@@ -102,7 +101,7 @@ ros2 launch kiwi_web web.launch.py
 
 # 可选：覆盖某一个功能包的配置文件；相对路径从工作空间解析。
 ros2 launch kiwi_web web.launch.py port:=8080 \
-  slam_params_file:=src/kiwi_slam/config/slam_toolbox.yaml
+  slam_params_file:=src/kiwi_slam/config/slam_toolbox.yaml  # Kiwi 示例；履带需用专属文件
 ```
 
 默认允许可信局域网内访问。需要密码时，在配置中设置 `access_token`，或在设备端设置
@@ -132,7 +131,7 @@ journalctl --user -u kiwi-web.service -f
 ## 控制与通信契约
 
 ```text
-Browser --same-origin WS--> CommandGate --/cmd_vel--> kiwi_base_node
+Browser --same-origin WS--> CommandGate --/cmd_vel--> 所选底盘节点
 Nav2 -> velocity_smoother --/kiwi_web/nav_cmd_vel--^
 ROS /map /scan /plan /tf /odometry/filtered -> HTTP PNG + WS state -> Browser
 ```
@@ -142,9 +141,9 @@ ROS /map /scan /plan /tf /odometry/filtered -> HTTP PNG + WS state -> Browser
   防止积压的旧速度在网络恢复后被执行。浏览器超过 350 ms 未收到状态会释放控制权。
 - 同时只有一个浏览器持有手动遥控权。导航模式不接受手动速度。重连、解除软件急停均不自动恢复运动。
 - 软件急停锁定速度输出并取消导航；该功能是 ROS 软件停车，不替代断电或硬件急停。
-- 实测反馈或 EKF 超过 500 ms 未更新时禁止运动；导航还要求激光和定位 TF 新鲜。
+- Kiwi 轮速反馈或履带 RF2O 激光里程计，以及 EKF 超过 500 ms 未更新时禁止运动；履带还要求原始 IMU 样本新鲜。导航还要求激光和定位 TF 新鲜。
   导航中发生此类中断会锁定软件急停并取消任务，恢复数据后需人工解除并重新启动任务。
-  底盘已有的 500 ms `/cmd_vel` 看门狗继续保留，Web 进程异常退出时仍可使底盘归零。
+  底盘 `/cmd_vel` 看门狗继续保留（Kiwi 500 ms、履带 200 ms），Web 进程异常退出时仍可使底盘归零。
 - 每次模式/地图切换都会更换会话版本，其他浏览器在旧地图上产生的导航请求会被拒绝。
 - 非本服务速度发布者会显示冲突并抑制本服务运动。ROS 域内其他程序必须遵守统一控制入口。
 - 状态与激光以 10 Hz 推送，激光最多 720 点、路径最多 1500 点；地图按版本通过 PNG 获取。
@@ -175,7 +174,7 @@ ROS /map /scan /plan /tf /odometry/filtered -> HTTP PNG + WS state -> Browser
 ```bash
 source /opt/ros/humble/setup.bash
 source install/setup.bash
-colcon test --packages-select kiwi_base lslidar_driver kiwi_slam kiwi_navigation kiwi_web \
+colcon test --packages-select kiwi_platform kiwi_base lslidar_driver kiwi_slam kiwi_navigation kiwi_web \
   --event-handlers console_direct+
 colcon test-result --verbose
 ```
@@ -183,7 +182,7 @@ colcon test-result --verbose
 `test_control.py` 覆盖速度限幅、控制权、过期报文、断线/看门狗和软件急停；`test_maps.py`
 覆盖 PGM/ROS 坐标、未知栅格、非零原点朝向、事务版本、非法路径和导入导出；`test_http.py`
 使用真实 HTTP/WebSocket 验证接口、鉴权和多个浏览器；`test_ros_integration.py` 在
-localhost 的 ROS 域 216 中创建测试发布者和真实 ROS action server，不启动硬件。
+localhost 的 ROS 域 216 和 221 中创建测试发布者，验证 Kiwi 与履带的反馈/IMU 就绪链及真实 ROS action server，不启动硬件。
 
 浏览器流程测试（两个终端，测试服务仅绑定 localhost:8081、使用 ROS 域 217）：
 

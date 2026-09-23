@@ -1,178 +1,83 @@
 #!/usr/bin/env python3
-"""启动 Kiwi 底盘、镭神 M10P 雷达、SLAM Toolbox、模型和诊断。"""
-
+"""按活动底盘分别启动驱动、RF2O/轮式 EKF、SLAM 和诊断。"""
+from pathlib import Path
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
-from launch.conditions import IfCondition
-from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import (
-    IfElseSubstitution,
-    LaunchConfiguration,
-    PathJoinSubstitution,
-)
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch_ros.actions import Node
-from launch_ros.substitutions import FindPackageShare
+from launch.substitutions import LaunchConfiguration
+from kiwi_platform import load_profile, validate_profile
+from kiwi_platform.profile import validate_monitor
+from kiwi_platform.launching import robot_actions, mapping_actions
+from kiwi_slam.runtime_contract import validate_workspace_overlay
+
+PARAMS = {"base_params_file": "base", "lidar_params_file": "lidar", "slam_params_file": "slam",
+          "mapping_gate_params_file": "gate", "monitor_params_file": "monitor"}
 
 
-def _monitor_node(context):
-    parameters = [LaunchConfiguration("monitor_params_file").perform(context)]
-    static_map = LaunchConfiguration("monitor_map_is_static").perform(context)
-    if static_map:
-        if static_map not in ("true", "false"):
-            raise ValueError("monitor_map_is_static must be true or false")
-        parameters.append({"map_is_static": static_map == "true"})
-    return [Node(
-        package="kiwi_slam", executable="kiwi_slam_monitor", name="kiwi_slam_monitor",
-        output="screen", parameters=parameters,
-    )]
+def _value(context, name):
+    return LaunchConfiguration(name).perform(context)
+
+
+def _bool(context, name):
+    value = _value(context, name)
+    if value not in ("true", "false"):
+        raise ValueError(f"{name} 必须是 true 或 false")
+    return value == "true"
+
+
+def _setup(context):
+    validate_workspace_overlay(required_packages=("kiwi_base", "kiwi_platform"))
+    selector = _value(context, "platform_file")
+    overrides = {field: _value(context, argument) for argument, field in PARAMS.items()}
+    selected = load_profile(selector, {"base": overrides["base"]}, required_keys=("base",))
+    slam = _bool(context, "start_slam")
+    keys = ["base", "urdf", "lidar", "monitor"]
+    if selected.odometry == "rf2o":
+        keys.append("rf2o")
+    if slam:
+        keys += ["gate", "slam"]
+    profile = load_profile(selector, {key: value for key, value in overrides.items() if key in keys},
+                           required_keys=tuple(keys))
+    validate_profile(profile, "mapping" if slam else "driver")
+    base, ekf, lidar = (_bool(context, field) for field in ("start_base", "start_ekf", "start_lidar"))
+    if slam and not ekf:
+        raise ValueError("建图必须启动所选里程计与 IMU EKF")
+    actions = robot_actions(profile, base=base, ekf=ekf,
+                            description=_bool(context, "start_description"), lidar=lidar)
+    if slam:
+        actions += mapping_actions(profile)
+    if _bool(context, "start_monitor"):
+        validate_monitor(profile)
+        static = _value(context, "monitor_map_is_static")
+        if static not in ("", "true", "false"):
+            raise ValueError("monitor_map_is_static 必须是 true 或 false")
+        parameters = [profile.path("monitor")]
+        if static:
+            parameters.append({"map_is_static": static == "true"})
+        actions.append(Node(package="kiwi_slam", executable="kiwi_slam_monitor",
+                            name="kiwi_slam_monitor", output="screen", parameters=parameters))
+    if _bool(context, "use_rviz"):
+        config = _value(context, "rviz_config_file") or str(Path(get_package_share_directory("kiwi_slam")) / "config/kiwi_slam.rviz")
+        actions.append(Node(package="rviz2", executable="rviz2", output="screen",
+                            arguments=["-d", config], additional_env={
+                                "QT_QPA_PLATFORM": "xcb",
+                                "LIBGL_ALWAYS_SOFTWARE": "1" if _bool(context, "rviz_software_rendering") else "0",
+                            }))
+    return actions
 
 
 def generate_launch_description():
-    """复用公共底盘层，构成可按模块启停的 M10P 二维建图链路。"""
-    package_share = FindPackageShare("kiwi_slam")
-    lidar_params = LaunchConfiguration("lidar_params_file")
-    slam_params = LaunchConfiguration("slam_params_file")
-    base_params = LaunchConfiguration("base_params_file")
-    mapping_gate_params = LaunchConfiguration("mapping_gate_params_file")
-    rviz_config = LaunchConfiguration("rviz_config_file")
-
-    start_base = LaunchConfiguration("start_base")
-    start_ekf = LaunchConfiguration("start_ekf")
-    start_lidar = LaunchConfiguration("start_lidar")
-    start_slam = LaunchConfiguration("start_slam")
-    start_monitor = LaunchConfiguration("start_monitor")
-    start_description = LaunchConfiguration("start_description")
-    use_rviz = LaunchConfiguration("use_rviz")
-    rviz_software_rendering = LaunchConfiguration("rviz_software_rendering")
-
-    arguments = [
-        DeclareLaunchArgument(
-            "monitor_map_is_static", default_value="",
-            description="可选运行模式覆盖；留空使用 monitor.yaml 的 map_is_static",
-        ),
-        DeclareLaunchArgument(
-            "lidar_params_file",
-            default_value=PathJoinSubstitution(
-                [package_share, "config", "ls_m10p_uart.yaml"]
-            ),
-            description="镭神 M10P 串口和 LaserScan 参数 YAML",
-        ),
-        DeclareLaunchArgument(
-            "slam_params_file",
-            default_value=PathJoinSubstitution([package_share, "config", "slam_toolbox.yaml"]),
-            description="SLAM Toolbox 二维建图参数 YAML",
-        ),
-        DeclareLaunchArgument(
-            "monitor_params_file",
-            default_value=PathJoinSubstitution([package_share, "config", "monitor.yaml"]),
-            description="二维链路诊断参数 YAML",
-        ),
-        DeclareLaunchArgument(
-            "mapping_gate_params_file",
-            default_value=PathJoinSubstitution(
-                [package_share, "config", "mapping_gate.yaml"]
-            ),
-            description="SLAM 首帧标定、静止和扫描一致性门控参数",
-        ),
-        DeclareLaunchArgument(
-            "base_params_file",
-            default_value=PathJoinSubstitution(
-                [FindPackageShare("kiwi_base"), "config", "kiwi_base.yaml"]
-            ),
-            description="底盘硬件参数 YAML",
-        ),
-        DeclareLaunchArgument(
-            "rviz_config_file",
-            default_value=PathJoinSubstitution(
-                [package_share, "config", "kiwi_slam.rviz"]
-            ),
-            description="Kiwi M10P 二维建图 RViz 配置",
-        ),
-        DeclareLaunchArgument(
-            "start_base", default_value="true", description="是否启动 USB 底盘节点"
-        ),
-        DeclareLaunchArgument(
-            "start_ekf", default_value="true", description="是否启动反馈里程计平面 EKF"
-        ),
-        DeclareLaunchArgument(
-            "start_lidar", default_value="true", description="是否启动镭神 M10P 驱动"
-        ),
-        DeclareLaunchArgument(
-            "start_slam", default_value="true", description="是否启动 SLAM Toolbox"
-        ),
-        DeclareLaunchArgument(
-            "start_monitor", default_value="true", description="是否启动二维链路诊断节点"
-        ),
-        DeclareLaunchArgument(
-            "start_description", default_value="true", description="是否发布 URDF 和静态 TF"
-        ),
-        DeclareLaunchArgument(
-            "use_rviz", default_value="true", description="是否启动二维建图 RViz"
-        ),
-        # 工控机显卡驱动会触发 RViz Map 的 GLSL sampler 错误，默认只对 RViz 使用软件渲染。
-        DeclareLaunchArgument(
-            "rviz_software_rendering",
-            default_value="true",
-            description="RViz 是否使用软件 OpenGL",
-        ),
-    ]
-
-    # 雷达统一走 kiwi_slam 内的 M10P 封装，保证 /scan 只有一个发布者。
-    lidar = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            PathJoinSubstitution([package_share, "launch", "m10p_uart_lidar.launch.py"])
-        ),
-        condition=IfCondition(start_lidar),
-        launch_arguments={"params_file": lidar_params}.items(),
-    )
-
-    robot_stack = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            PathJoinSubstitution([package_share, "launch", "kiwi_robot.launch.py"])
-        ),
-        launch_arguments={
-            "base_params_file": base_params,
-            "start_base": start_base,
-            "start_ekf": start_ekf,
-            "start_description": start_description,
-        }.items(),
-    )
-
-    # 二维建图层只保留 M10P、SLAM、诊断和 RViz；底盘层由 kiwi_robot.launch.py 管理。
-    nodes = [
-        Node(
-            package="kiwi_slam",
-            executable="kiwi_mapping_scan_gate",
-            name="kiwi_mapping_scan_gate",
-            condition=IfCondition(start_slam),
-            output="screen",
-            parameters=[mapping_gate_params],
-        ),
-        Node(
-            package="slam_toolbox",
-            executable="sync_slam_toolbox_node",
-            name="slam_toolbox",
-            condition=IfCondition(start_slam),
-            output="screen",
-            parameters=[slam_params],
-        ),
-        OpaqueFunction(
-            function=_monitor_node,
-            condition=IfCondition(start_monitor),
-        ),
-        Node(
-            package="rviz2",
-            executable="rviz2",
-            condition=IfCondition(use_rviz),
-            output="screen",
-            arguments=["-d", rviz_config],
-            # 不设置 ROS name，避免 RViz 内部 TF 节点被同一个 __node remap 重命名。
-            additional_env={
-                "QT_QPA_PLATFORM": "xcb",
-                "LIBGL_ALWAYS_SOFTWARE": IfElseSubstitution(
-                    rviz_software_rendering, "1", "0"
-                ),
-            },
-        ),
-    ]
-    return LaunchDescription(arguments + [robot_stack, lidar] + nodes)
+    return LaunchDescription([
+        DeclareLaunchArgument("platform_file", default_value=""),
+        *[DeclareLaunchArgument(field, default_value="") for field in PARAMS],
+        DeclareLaunchArgument("rviz_config_file", default_value=""),
+        DeclareLaunchArgument("monitor_map_is_static", default_value=""),
+        *[DeclareLaunchArgument(field, default_value=value) for field, value in (
+            ("start_base", "true"), ("start_ekf", "true"), ("start_lidar", "true"),
+            ("start_slam", "true"), ("start_monitor", "true"),
+            ("start_description", "true"), ("use_rviz", "true"),
+            ("rviz_software_rendering", "true"),
+        )],
+        OpaqueFunction(function=_setup),
+    ])
