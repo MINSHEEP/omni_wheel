@@ -1,38 +1,12 @@
-# kiwi_base 参数说明
+# 底盘参数目录
 
-统一平台按底盘选择一份专属参数：Kiwi 使用 `kiwi_base.yaml`，履带使用 `tracked_pwm.yaml`。
-两份 YAML 各自包含底盘、EKF、模型、键盘和建图门控参数；履带 YAML 还包含差速 AMCL、无横移控制器、速度平滑和避障外形等 Nav2 覆盖值。
+`kiwi_base` 仍是实际底盘驱动包：`kiwi_base_node` 控制三轮全向底盘，`tracked_base_node` 控制两电机履带。`kiwi_platform` 只负责读取活动选择文件并选取参数，自己不连接下位机，也不替代这两个节点。
 
-以下是原 Kiwi 节点和话题；履带改用 `tracked_base_node`，不会发布轮速里程计或 `/joint_states`。
+| 本目录文件 | 使用条件 | 主要内容 |
+| --- | --- | --- |
+| `kiwi_base.yaml` | `active_platform.yaml` 中 `chassis: kiwi` | Kiwi 驱动、轮式里程计 EKF、机身模型和共用键盘参数 |
+| `tracked_pwm.yaml` | `active_platform.yaml` 中 `chassis: tracked_pwm` | 履带驱动、RF2O + IMU EKF、机身模型和共用键盘参数 |
 
-```text
-kiwi_base_node        底盘硬件、运动学、限幅、反馈里程计、话题和 frame
-ekf_filter_node       电机反馈里程计的 robot_localization 参数
-kiwi_teleop_keyboard  键盘速度与超时
-kiwi_odom_test        滤波里程计调试话题
-kiwi_robot_model      URDF 使用的底盘结构尺寸
-```
+配置读取关系是：`kiwi_platform/config/active_platform.yaml` 选择底盘 → `kiwi_platform/config/profiles/<底盘>.yaml` 指定各功能包文件 → 本目录对应的底盘 YAML 交给 `kiwi_base` 驱动、EKF、键盘和 URDF。两份底盘 YAML 都在运行链中，分别服务不同硬件。
 
-固定运行接口：
-
-```text
-/cmd_vel                 底盘速度输入
-/chassis/odom/raw        滤波后的电机实测速度推算的里程计
-/chassis/imu/data_raw    异步 0x3B IMU 遥测
-/chassis/feedback/raw    异步 0x3B 原始字段调试消息
-/joint_states            电机实测速度换算的三个轮关节状态
-/odometry/filtered       EKF 输出
-```
-
-`0x3A` 命令没有 ACK，节点不等待命令应答；同一串口上的 `0x3B` 遥测按周期非阻塞读取，
-断流不会阻止 TX。电机实测值经低通、死区和减速比换算后驱动里程计；反馈断流期间不使用
-`/cmd_vel` 补算位移，恢复首帧也不会跨越未知时间积分。
-
-Kiwi 的安装外参维护在 `kiwi_slam/urdf/kiwi.urdf.xacro`，履带占位外参维护在
-`tracked_pwm.yaml` 并由 `kiwi_slam/urdf/tracked.urdf.xacro` 使用。公共 Nav2 参数在
-`kiwi_navigation/config/nav2.yaml`；履带专属避障半径在 `tracked_pwm.yaml`。
-
-履带的 `hardware_calibrated=false`、`enable_motion=false` 保持普通 `/cmd_vel` 锁定；
-`open_loop_test_enabled=true` 时在统一入口 `mode:=driver`，或传感器已核验后的
-`mode:=mapping` 手动建图中，用 `/chassis/open_loop_motor_cmd` 试发 `[左, 右]` 两路原始 rad/s 命令。
-试车上限、超时和后续标定步骤见工作区根 [README](../../../README.md)。
+建图门控与 SLAM 参数在 `kiwi_slam/config/`，Nav2 参数在 `kiwi_navigation/config/`，由同一底盘档案同步切换。完整文件表、启动命令与标定关锁见[平台架构](../../../documents/platform_architecture.md)和[工作区 README](../../../README.md)。

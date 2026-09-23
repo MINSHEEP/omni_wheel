@@ -2,6 +2,8 @@
 
 本包包含 Kiwi 三轮全向的 `kiwi_base_node` 和两电机履带的 `tracked_base_node`。`kiwi_base.launch.py`、`kiwi_base_ekf.launch.py` 以及前台 `ros2 run kiwi_base kiwi_teleop_keyboard` 都从 `kiwi_platform/config/active_platform.yaml` 选择相同的底盘 YAML。
 
+`kiwi_platform` 是配置选择器，并不取代本包的驱动；`config/kiwi_base.yaml` 和 `config/tracked_pwm.yaml` 分别是两个底盘正在使用的实际节点参数。
+
 以下反馈轮式里程计参数说明专指 Kiwi。`kiwi_base` 是 Kiwi 三轮全向底盘的 ROS 2 Humble 驱动包。C 板通过 USB CDC 接收
 速度命令并异步上报电机/IMU 遥测；本包负责正逆运动学、反馈轮式里程计、轮关节状态和键盘遥操作。
 
