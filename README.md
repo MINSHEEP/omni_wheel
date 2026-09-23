@@ -19,8 +19,10 @@ ros2_ws/
 │   ├── kiwi_base/       底盘、运动学、反馈里程计、IMU、键盘
 │   ├── kiwi_slam/       M10P 配置、SLAM Toolbox、URDF、链路诊断
 │   ├── kiwi_navigation/ AMCL、Nav2、建图/定位导航 launch 和 RViz
+│   ├── kiwi_web/        本地 Web 控制台、地图编辑与任务管理
 │   ├── lslidar_driver/  M10P UART 驱动
-│   └── lslidar_msgs/    镭神驱动消息接口
+│   ├── lslidar_msgs/    镭神驱动消息接口
+│   └── rf2o_laser_odometry/ 履带平台激光里程计（vcs 导入）
 ├── build/                colcon 构建目录
 ├── install/              colcon 安装目录
 └── maps/                 用户保存的地图（需自行创建）
@@ -91,10 +93,12 @@ sudo apt install -y ros-humble-desktop ros-dev-tools git python3-rosdep python3-
 
 `ros-humble-desktop` 包含 RViz；无图形界面时可改装 `ros-humble-ros-base`，
 但本 README 中 `use_rviz:=true` 的命令需要桌面环境。雷达驱动源码直接使用 PCL、Boost、
-Eigen、`yaml-cpp` 和 `libpcap`，安装其开发包，再由 `rosdep` 补齐 ROS 包依赖：
+Eigen、`yaml-cpp` 和 `libpcap`；`kiwi_web` 需要 `aiohttp`、Pillow 和 `psutil`。
+安装对应系统包，再由 `rosdep` 补齐其余 ROS 包依赖：
 
 ```bash
 sudo apt install -y libpcl-dev libboost-thread-dev libeigen3-dev libyaml-cpp-dev libpcap-dev
+sudo apt install -y python3-aiohttp python3-pil python3-psutil
 source /opt/ros/humble/setup.bash
 ```
 
@@ -191,20 +195,22 @@ EKF 因误读旧 YAML 而静默回退到没有 `odom0/imu0` 的默认配置。
 
 ## 4. 构建和测试
 
-首次或源码变更后，从工作区根目录构建导航链路、M10P 驱动和履带 RF2O：
+首次或源码变更后，从工作区根目录构建导航链路、M10P 驱动、Web 控制台和履带 RF2O：
 
 ```bash
 cd "$HOME/ros2_ws"
 source /opt/ros/humble/setup.bash
-colcon build --symlink-install --packages-up-to kiwi_navigation rf2o_laser_odometry
+colcon build --symlink-install --packages-up-to kiwi_web rf2o_laser_odometry
 source tools/activate_workspace.sh
 ```
 
-不使用履带时可把构建命令末尾的 `rf2o_laser_odometry` 去掉。构建后先检查包来源和设备：
+不使用履带时可把构建命令末尾的 `rf2o_laser_odometry` 去掉；不部署网页时，
+将 `kiwi_web` 换成 `kiwi_navigation`。构建后先检查包来源和设备：
 
 ```bash
 ros2 pkg prefix kiwi_navigation
 ros2 pkg prefix lslidar_driver
+ros2 pkg prefix kiwi_web  # 部署网页时
 ros2 pkg prefix rf2o_laser_odometry  # 仅履带需要
 ros2 run kiwi_slam kiwi_slam_compatibility --require-hardware  # 原 Kiwi 配置检查
 ```
@@ -224,7 +230,7 @@ colcon build --symlink-install --packages-select kiwi_base
 
 ```bash
 export ROS_LOG_DIR=/tmp/kiwi_ros_logs
-colcon test --packages-select kiwi_base kiwi_slam kiwi_navigation \
+colcon test --packages-select kiwi_base kiwi_slam kiwi_navigation kiwi_web \
   --event-handlers console_cohesion+ --ctest-args --output-on-failure
 colcon test-result --all
 ```
@@ -238,6 +244,41 @@ ros2 run kiwi_slam kiwi_slam_compatibility --require-hardware
 
 不带 `--require-hardware` 时，缺少串口只会给出警告，适合在无实车环境检查配置；实车启动前
 应使用带该选项的检查。
+
+### 网页控制台（当前适用于 Kiwi 底盘）
+
+`kiwi_web` 的服务和静态页面都在本机运行，不需要 Node.js、CDN 或 rosbridge。
+`rosdep` 会按 `src/kiwi_web/package.xml` 安装 Python 运行依赖。上面的完整构建完成后：
+
+```bash
+cd "$HOME/ros2_ws"
+source tools/activate_workspace.sh
+mkdir -p maps
+ros2 launch kiwi_web web.launch.py
+```
+
+另一个终端运行 `hostname -I` 查看上位机地址，在同一局域网浏览器打开
+`http://上位机IP:8080`。默认监听 `0.0.0.0:8080`；若启用防火墙，需允许可信局域网访问
+TCP 8080。网页启动时不会自动启动电机、雷达或导航，需在页面选择模式。
+已有地图可把旧工作区 `maps/` 中的 YAML、PGM 及 `.versions/`、`.routes/` 一起迁入新机的
+`$HOME/ros2_ws/maps/`。访问密码和端口在 `src/kiwi_web/config/web.yaml` 配置。
+
+网页默认使用 `ROS_DOMAIN_ID=42`；从命令行检查其话题时，在检查终端先执行
+`export ROS_DOMAIN_ID=42`。网页运行时不要另起底盘、键盘或 Nav2 速度发布者。
+当前 Web 的 `stack.launch.py` 使用原 Kiwi 建图入口，**尚未适配两电机履带底盘**；
+履带底盘请使用 [统一平台启动入口](documents/platform_architecture.md)。
+
+需要登录后自动启动网页服务时，在目标上位机构建并加载工作区后执行：
+
+```bash
+ros2 run kiwi_web kiwi_web_install_service
+systemctl --user daemon-reload
+systemctl --user enable --now kiwi-web.service
+journalctl --user -u kiwi-web.service -f
+```
+
+无人登录也要启动时，需由设备管理员启用该用户的 linger。完整的页面功能、地图管理和
+服务配置见 [kiwi_web 文档](src/kiwi_web/README.md)。
 
 ## 5. 只启动底盘和 EKF
 
