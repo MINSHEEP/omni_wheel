@@ -17,7 +17,9 @@ kiwi_mapping_scan_gate:
     require_source_odom: true
     source_odom_topic: /chassis/odom/laser
     stationary_duration_s: 0.5
-    max_linear_speed_m_s: 0.02
+    # 2026-09-24 静止 bag：EKF 瞬时 |vx| 中位约 0.013、95 分位约 0.044 m/s。
+    # 0.02 会反复清空首帧证据；0.04 回放约 1.8 s 放行，仍低于实测运动速度。
+    max_linear_speed_m_s: 0.04
     max_angular_speed_rad_s: 0.03
     max_yaw_step_rad: 0.01
     max_message_age_s: 0.2

@@ -1,4 +1,4 @@
-# 两电机履带平台。直线倍率已有初测；低速、转向和传感器未核验，正常运动仍锁定。
+# 两电机履带平台。直线倍率和建图传感器已初测；低速、反向和转向未完成驱动标定。
 # motor1=左履带、motor2=右履带、motor3=0；沿用 C 板 0x3A/0x3B 协议。
 tracked_base_node:
   ros__parameters:
@@ -22,8 +22,9 @@ tracked_base_node:
     gyro_z_sign: -1.0
     gyro_z_scale: 1.69
     gyro_z_variance: 0.01
-    # TODO 核验雷达/惯导外参、IMU 轴向、RF2O 静止漂移后才允许手动建图。
-    mapping_sensors_verified: false
+    # 2026-09-24 受控遥控 bag 已核对安装 TF、IMU/RF2O 双向转角与静止漂移；允许手动建图。
+    # 这不代表运动控制标定完成，正常 /cmd_vel 和 Nav2 仍由下面两项锁住。
+    mapping_sensors_verified: true
     hardware_calibrated: false
     enable_motion: false
     # 受限键盘试车使用直线初测倍率；前进/后退约输出 ±4.98，q/e 原地转向输出 -5/+5 或 +5/-5。

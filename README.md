@@ -293,7 +293,7 @@ ros2 launch kiwi_navigation localization_navigation.launch.py \
   map:="$HOME/ros2_ws/maps/warehouse.yaml" use_rviz:=true
 ```
 
-建图开始前，履带必须先核验雷达与惯导外参、IMU 轴向、RF2O 静止漂移，再把 `tracked_pwm.yaml` 的 `mapping_sensors_verified` 设为 `true`。当前仅有两档直线计时，已写入初步 `command_per_m_s`，但低速起步、反向和转向尚未验证，`hardware_calibrated=false`、`enable_motion=false` 继续锁住正常 `/cmd_vel`。受限试车可用现场遥控器或临时键盘模式；原始电机话题可按下文切换。完成剩余核验后才能启用正常运动和导航；仅改 Nav2 参数不能解除运动锁。RF2O 只发里程计消息，EKF 独占 `odom → base_footprint`；SLAM Toolbox 或 AMCL 发布 `map → odom`。
+2026-09-24 的受控遥控录制已核验雷达和惯导外参、平面转角方向及短时 RF2O 静止漂移，履带 `mapping_sensors_verified=true`，允许进入手动建图测试。两档直线计时给出初步 `command_per_m_s`，但低速起步、反向和转向的上位机驱动尚未标定，`hardware_calibrated=false`、`enable_motion=false` 继续锁住正常 `/cmd_vel` 和 Nav2。手动建图可用现场遥控器移动；完成剩余运动标定后才能启用正常运动和导航。RF2O 只发里程计消息，EKF 独占 `odom → base_footprint`；SLAM Toolbox 或 AMCL 发布 `map → odom`。
 
 同一个键盘节点使用同一个命令，并自动读取活动底盘的参数：
 
@@ -314,7 +314,7 @@ ros2 run nav2_map_server map_saver_cli -f "$HOME/ros2_ws/maps/warehouse"
 实测频率、短时漂移、RF2O 修复、复测命令及剩余验证项目见
 [履带标定与链路验证记录](documents/tracked_chain_verification.md)。移动建图和目标导航尚未验收。
 
-机身长 0.70 m、宽 0.59 m、左右履带中心距 0.50 m 已实测。直线计时：命令 `5` 走 1.6 m 平均用 6.85 s，实速约 0.2336 m/s、倍率 21.406；命令 `10` 用 3.37 s，实速约 0.4748 m/s、倍率 21.063。两档均值约 21.234，`tracked_pwm.yaml` 先记 `command_per_m_s=21.2`。这不是电机转速闭环；雷达、IMU 相对 `base_link` 的安装位姿分别记录为 `(0.24,0,0)` m 与 `(0.08,0,0)` m、旋转均为零，仍需用 TF 和实测数据核对。低速死区、反向、转向、IMU 轴向及 RF2O 漂移仍待测。`keyboard_trial_enabled=true` 已恢复，`open_loop_test_enabled=false`；正常运动仍锁定；建图和导航仍被传感器核验关锁阻止。
+机身长 0.70 m、宽 0.59 m、左右履带中心距 0.50 m 已实测。直线计时：命令 `5` 走 1.6 m 平均用 6.85 s，实速约 0.2336 m/s、倍率 21.406；命令 `10` 用 3.37 s，实速约 0.4748 m/s、倍率 21.063。两档均值约 21.234，`tracked_pwm.yaml` 先记 `command_per_m_s=21.2`。这不是电机转速闭环；雷达、IMU 相对 `base_link` 的安装位姿分别为 `(0.24,0,0)` m 与 `(0.08,0,0)` m、旋转均为零，已用 TF 和受控运动数据核对。低速死区、上位机反向起步及转向速度仍待测。`keyboard_trial_enabled=true`、`open_loop_test_enabled=false`；手动建图可试，正常运动与 Nav2 仍锁定。
 
 受限键盘倍率 `keyboard_trial_command_gain=21.2` 已与直线初测系数对齐。低档试车时，前进目标 `0.10` 只给两路约 `+2.12`；实车前进慢、转向有反应、后退不动。遥控器可正常后退和转向，因此键盘试车改用前后目标 `±0.235`，对应两路约 `±4.98`；`q/e` 目标角速度 `±0.95`，左右履带分别为 `-5/+5` 或 `+5/-5`。每路仍受 `keyboard_trial_limit_rad_s=5.0` 限制。负向能否在地面起步、转向实际角速度都要重新实测；固件 `+5/-5` 约对应 PWM `1625/1375 µs`，也可能受电调反向设置影响。正常模式下的 `command_per_m_s=21.2` 与试车倍率是两个独立参数，后续重新标定时需保持一致。`enable_motion=false` 配合 `keyboard_trial_enabled=true` 允许受限键盘试车，正常运动和导航仍锁定。
 
@@ -361,7 +361,7 @@ ros2 topic pub -r 10 -t 10 /chassis/open_loop_motor_cmd std_msgs/msg/Float32Mult
 ros2 topic pub -r 10 -t 10 /chassis/open_loop_motor_cmd std_msgs/msg/Float32MultiArray '{data: [0.0, 5.0]}'
 ```
 
-两档直线数据接近，但只能说明中等速度范围的初步倍率。下一步需测命令低于 `5` 时的起步与停车、反向、左右履带差异和原地转向的实际角速度；履带打滑会使有效转向间距不同于实测几何中心距 0.50 m。核验后再考虑将 `hardware_calibrated`、`enable_motion` 设为 `true` 并关闭两种试车模式。当前 Nav2 直线速度上限 0.15 m/s 按 21.2 倍率只产生约 3.18 的固件命令，低于已测最低档 `5`，可能无法起步。雷达/惯导外参与 RF2O 尚未核验时，保持 `mapping_sensors_verified=false`。
+两档直线数据接近，但只能说明中等速度范围的初步倍率。下一步需测命令低于 `5` 时的起步与停车、上位机反向、左右履带差异和原地转向的实际角速度；履带打滑会使有效转向间距不同于实测几何中心距 0.50 m。核验后再考虑将 `hardware_calibrated`、`enable_motion` 设为 `true` 并关闭两种试车模式。当前 Nav2 直线速度上限 0.15 m/s 按 21.2 倍率只产生约 3.18 的固件命令，低于已测最低档 `5`，可能无法起步。受控录制分析见[履带标定与链路验证记录](documents/tracked_chain_verification.md)。
 
 ### 网页控制台（跟随活动底盘）
 
