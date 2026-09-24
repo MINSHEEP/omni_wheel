@@ -224,7 +224,7 @@ ros2 run kiwi_slam kiwi_slam_compatibility --require-hardware  # 当前活动底
 
 要单独检查雷达驱动，在一个终端运行 `ros2 launch kiwi_slam m10p_uart_lidar.launch.py`，
 另一个已加载工作区的终端运行 `ros2 topic hz /scan`。底盘联调和建图导航的完整启动命令见
-[双底盘平台架构](documents/platform_architecture.md)。履带直线倍率已初步测得，但低速、转向和传感器外参仍未核验；活动 YAML 为 `tracked_pwm` 时可启动驱动并在受限模式试车，建图导航仍保持关锁。
+[双底盘平台架构](documents/platform_architecture.md)。履带直线倍率与雷达、惯导外参已初步核验，低速、反向和转向驱动标定仍待完成；活动 YAML 为 `tracked_pwm` 时可受限试车、用遥控器手动建图，正常运动和 Nav2 仍保持关锁。
 
 只构建底盘驱动时可执行下列命令，并用 `source install/setup.bash` 加载；这时可启动 `kiwi_base.launch.py` 和键盘，建图/导航及履带 RF2O 仍需上面的完整构建。
 
@@ -436,6 +436,14 @@ ros2 launch kiwi_slam kiwi_slam.launch.py use_rviz:=true
 ```
 
 实际参数文件由本页上方的活动底盘档案选择；切换后重新启动对应 launch。
+建图 RViz 的 `Global Options → Fixed Frame` 必须为 `map`。旧版配置曾固定在
+`odom`，SLAM 回环更新 `map → odom` 时会显示成整张地图相对网格移动；已经打开的
+RViz 需手动改为 `map` 或重启 RViz 才会加载新配置。切换固定坐标系只修正显示，
+若同一面墙出现重影、机器人在地图上突然跳位，仍须检查激光匹配与里程计，不能把
+这张图直接用于导航。
+2026-09-24 的履带 bag 离线对照还发现自动回环造成约 2 m 位姿跳变，故仅履带档案
+暂时关闭自动回环，保留逐帧激光匹配；Kiwi 档案仍使用自动回环。履带长距离行驶
+可能继续积累里程计误差，需低速重录并核对墙体重合后再启用回环或用于导航。
 
 ### 6.2 开始移动建图
 

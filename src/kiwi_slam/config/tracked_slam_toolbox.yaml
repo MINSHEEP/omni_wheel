@@ -42,7 +42,9 @@ slam_toolbox:
     link_match_minimum_response_fine: 0.10
     link_scan_maximum_distance: 1.5
 
-    do_loop_closing: true
+    # 2026-09-24 实测 bag 的自动回环在约 414 s 使 map 中机器人一步跳约 2 m；
+    # 同一 bag 关闭回环离线重放无此跳变。完成回环场地核验前先禁用，逐帧匹配仍开启。
+    do_loop_closing: false
     loop_search_maximum_distance: 3.0
     loop_match_minimum_chain_size: 10
     loop_match_maximum_variance_coarse: 3.0

@@ -61,6 +61,16 @@ def test_slam_frames_ranges_and_mode_match_base_and_lidar():
     assert params["minimum_travel_heading"] == 0.20
 
 
+def test_tracked_mapping_disables_unverified_loop_closure_only():
+    tracked = load_parameters("tracked_slam_toolbox.yaml", "slam_toolbox")
+    kiwi = load_parameters("slam_toolbox.yaml", "slam_toolbox")
+    assert tracked["scan_topic"] == kiwi["scan_topic"] == "/scan_slam"
+    assert tracked["map_frame"] == kiwi["map_frame"] == "map"
+    assert tracked["use_scan_matching"] is True
+    assert tracked["do_loop_closing"] is False
+    assert kiwi["do_loop_closing"] is True
+
+
 def test_urdf_has_required_tf_links_and_joint_names():
     root = element_tree.parse(PACKAGE / "urdf" / "kiwi.urdf.xacro").getroot()
     links = {item.attrib["name"] for item in root.findall("link")}
@@ -125,7 +135,7 @@ def test_rviz_and_monitor_expose_map_robot_and_debug_contracts():
     assert "rviz_default_plugins/Map" in classes
     assert "rviz_default_plugins/RobotModel" in classes
     assert "rviz_default_plugins/LaserScan" in classes
-    assert rviz["Visualization Manager"]["Global Options"]["Fixed Frame"] == "odom"
+    assert rviz["Visualization Manager"]["Global Options"]["Fixed Frame"] == "map"
 
     robot_model = next(
         display

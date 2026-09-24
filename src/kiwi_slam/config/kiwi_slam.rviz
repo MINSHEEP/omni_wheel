@@ -97,8 +97,8 @@ Visualization Manager:
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
-    # 以 odom 为固定坐标系；即使 SLAM 尚未产生 map，机器人模型也能显示。
-    Fixed Frame: odom
+    # 建图时固定地图坐标系；回环更新 map→odom 后地图保持在原位。
+    Fixed Frame: map
     Frame Rate: 30
   Name: root
   Tools:
