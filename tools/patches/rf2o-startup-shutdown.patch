@@ -1,0 +1,51 @@
+diff --git a/src/CLaserOdometry2DNode.cpp b/src/CLaserOdometry2DNode.cpp
+index e50b356..628108b 100644
+--- a/src/CLaserOdometry2DNode.cpp
++++ b/src/CLaserOdometry2DNode.cpp
+@@ -33,8 +33,8 @@ bool CLaserOdometry2DNode::setLaserPoseFromTf()
+   }
+   catch (tf2::TransformException &ex)
+   {
+-    RCLCPP_ERROR(get_logger(), "%s",ex.what());
+-    retrieved = false;
++    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "%s", ex.what());
++    return false;  // Wait for a valid mounting transform before initialization.
+   }
+ 
+   //TF:transform -> Eigen::Isometry3d
+@@ -76,7 +76,7 @@ void CLaserOdometry2DNode::process()
+   }
+   else
+   {
+-    RCLCPP_WARN(get_logger(), "Waiting for laser_scans....") ;
++    RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 5000, "Waiting for laser_scans....");
+   }
+ }
+ 
+@@ -102,7 +102,8 @@ void CLaserOdometry2DNode::LaserCallBack(const sensor_msgs::msg::LaserScan::Shar
+     }
+     else
+     {
+-      setLaserPoseFromTf();
++      if (!setLaserPoseFromTf())
++        return;
+       rf2o_ref.init(last_scan, initial_robot_pose.pose.pose);
+       rf2o_ref.first_laser_scan = false;
+     }
+@@ -174,10 +175,15 @@ int main(int argc, char** argv)
+ {
+   rclcpp::init(argc, argv);
+   auto myLaserOdomNode = std::make_shared<rf2o::CLaserOdometry2DNode>() ;
++  rclcpp::executors::SingleThreadedExecutor executor;
++  executor.add_node(myLaserOdomNode);
+   rclcpp::Rate rate(myLaserOdomNode->freq);
+   while (rclcpp::ok()){
+       myLaserOdomNode->process();
+-      rclcpp::spin_some(myLaserOdomNode);
++      // Reuse the executor: shutdown may occur while process() is running.
++      if (!rclcpp::ok())
++        break;
++      executor.spin_some();
+       rate.sleep();
+   }
+   return 0;

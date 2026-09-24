@@ -103,11 +103,17 @@ cd "$HOME/ros2_ws"
 source /opt/ros/humble/setup.bash
 # 仅首次需要履带里程计时执行；已有 src/rf2o_laser_odometry 则跳过。
 vcs import src < tools/platform_dependencies.repos
+bash tools/apply_rf2o_patch.sh
 ```
 
 `vcs import` 从 `tools/platform_dependencies.repos` 获取履带底盘的 RF2O 固定版本，
 需要访问 GitHub；只用 Kiwi 底盘时可跳过此行。项目源码已包含 M10P 的
 `lslidar_driver` 和 `lslidar_msgs`。
+
+履带部署在导入 RF2O 后运行 `bash tools/apply_rf2o_patch.sh`（已有源码也需要执行，
+可重复运行）。补丁让 RF2O 等到雷达安装 TF 可用后再初始化，并修复停止时的
+guard condition 异常；两帧扫描之间的正常等待改用 DEBUG 日志。补丁保存在
+`tools/patches/`，依赖仍使用上述固定版本，应用后需要重新构建。
 
 这台上位机访问 GitHub Raw 时 `rosdep init` 出现 TLS 握手超时。按
 [清华 TUNA 的 GitHub Raw 镜像说明](https://mirrors.tuna.tsinghua.edu.cn/help/github-raw/)
@@ -188,6 +194,7 @@ EKF 因误读旧 YAML 而静默回退到没有 `odom0/imu0` 的默认配置。
 ```bash
 cd "$HOME/ros2_ws"
 source /opt/ros/humble/setup.bash
+bash tools/apply_rf2o_patch.sh  # 履带需要；仅使用 Kiwi 时跳过
 colcon build --symlink-install --packages-up-to kiwi_web rf2o_laser_odometry
 source tools/activate_workspace.sh
 ```
