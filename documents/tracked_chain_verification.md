@@ -23,16 +23,18 @@ command_per_m_s: 21.2
 hardware_calibrated: false
 enable_motion: false
 keyboard_trial_enabled: true
-keyboard_trial_command_gain: 50.0
+keyboard_trial_command_gain: 21.2
 keyboard_trial_limit_rad_s: 5.0
 open_loop_test_enabled: false
 open_loop_test_limit_rad_s: 10.0
 mapping_sensors_verified: false
 ```
 
-当前普通运动仍锁定。受限键盘试车使用倍率 50 和每路上限 5；键盘前进刻度 0.10
-对应固件命令 5，按上述直线计时约为 0.234 m/s，并不表示实际 0.10 m/s。
-21.2 尚未用于正常 `/cmd_vel` 换算。原始电机标定话题已关闭。
+链路测试结束后，键盘试车倍率由原先 50 更新为直线初测值 21.2，每路上限仍为 5。
+前进目标 0.10 对应固件命令 2.12，低于已测最低档 5，低速起步能力与实速仍待验证。
+默认转向目标 0.30 rad/s 对应左右约 -1.59/+1.59，实际角速度仍待标定。
+普通运动仍锁定，原始电机标定话题已关闭；当前由 keyboard_trial_command_gain
+使用该初测倍率，正常模式的 command_per_m_s 尚未启用。
 
 ## 2. 安装外参与实时结果
 
