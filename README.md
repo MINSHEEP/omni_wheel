@@ -218,6 +218,9 @@ ros2 run kiwi_slam kiwi_slam_compatibility --require-hardware  # 当前活动底
 `chmod +x src/kiwi_base/tools/kiwi_teleop_keyboard` 即可恢复。当前构建规则会在构建目录
 生成权限为 `755` 的键盘入口，再由 `ros2 run` 调用；构建后以上面的
 `ros2 pkg executables` 命令确认同时列出 `kiwi_teleop_keyboard` 和 `_node`。
+如果建图启动提示 `kiwi_mapping_scan_gate` 不可执行，旧版工作区先执行
+`chmod +x src/kiwi_slam/scripts/kiwi_mapping_scan_gate src/kiwi_slam/scripts/kiwi_slam_monitor`。
+当前 `kiwi_slam` 和 `kiwi_web` 也从构建目录安装可执行副本，避免复制源码时丢失权限。
 
 要单独检查雷达驱动，在一个终端运行 `ros2 launch kiwi_slam m10p_uart_lidar.launch.py`，
 另一个已加载工作区的终端运行 `ros2 topic hz /scan`。底盘联调和建图导航的完整启动命令见

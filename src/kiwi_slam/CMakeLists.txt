@@ -7,12 +7,16 @@ find_package(ament_cmake_python REQUIRED)
 
 ament_python_install_package(${PROJECT_NAME})
 
-install(
-  PROGRAMS
-    scripts/kiwi_slam_monitor
-    scripts/kiwi_slam_compatibility
-    scripts/kiwi_mapping_scan_gate
-  DESTINATION lib/${PROJECT_NAME})
+# symlink-install 会继承源码的执行位；复制/解压工作区后脚本可能变成 0644。
+set(KIWI_SLAM_PROGRAMS)
+foreach(program kiwi_slam_monitor kiwi_slam_compatibility kiwi_mapping_scan_gate)
+  set(installed_program "${CMAKE_CURRENT_BINARY_DIR}/${program}")
+  configure_file("scripts/${program}" "${installed_program}" COPYONLY)
+  file(CHMOD "${installed_program}" PERMISSIONS
+    OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+  list(APPEND KIWI_SLAM_PROGRAMS "${installed_program}")
+endforeach()
+install(PROGRAMS ${KIWI_SLAM_PROGRAMS} DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 install(

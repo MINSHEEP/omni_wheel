@@ -45,7 +45,13 @@ KIWI_KEYBOARD_ENTRY="${KIWI_WORKSPACE_ROOT}/install/kiwi_base/lib/kiwi_base/kiwi
 if [[ -e "${KIWI_KEYBOARD_ENTRY}" && ! -x "${KIWI_KEYBOARD_ENTRY}" ]]; then
   echo "警告：键盘入口不可执行；请重新构建 kiwi_base，旧版安装可运行 chmod +x ${KIWI_WORKSPACE_ROOT}/src/kiwi_base/tools/kiwi_teleop_keyboard" >&2
 fi
+for KIWI_SCRIPT_NAME in kiwi_mapping_scan_gate kiwi_slam_monitor; do
+  KIWI_SCRIPT_ENTRY="${KIWI_WORKSPACE_ROOT}/install/kiwi_slam/lib/kiwi_slam/${KIWI_SCRIPT_NAME}"
+  if [[ -e "${KIWI_SCRIPT_ENTRY}" && ! -x "${KIWI_SCRIPT_ENTRY}" ]]; then
+    echo "警告：${KIWI_SCRIPT_NAME} 不可执行；请重新构建 kiwi_slam，旧版安装可运行 chmod +x ${KIWI_WORKSPACE_ROOT}/src/kiwi_slam/scripts/${KIWI_SCRIPT_NAME}" >&2
+  fi
+done
 
 export KIWI_WORKSPACE_ROOT
-unset KIWI_INSTALL_SETUP KIWI_PACKAGE_NAME KIWI_PACKAGE_PREFIX KIWI_KEYBOARD_ENTRY
+unset KIWI_INSTALL_SETUP KIWI_PACKAGE_NAME KIWI_PACKAGE_PREFIX KIWI_KEYBOARD_ENTRY KIWI_SCRIPT_NAME KIWI_SCRIPT_ENTRY
 echo "Kiwi 工作区已加载：${KIWI_WORKSPACE_ROOT}"
