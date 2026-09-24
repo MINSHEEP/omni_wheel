@@ -1,4 +1,4 @@
-# 两电机履带平台。TODO 标定后才能把 hardware_calibrated 和 enable_motion 改为 true。
+# 两电机履带平台。直线倍率已有初测；低速、转向和传感器未核验，正常运动仍锁定。
 # motor1=左履带、motor2=右履带、motor3=0；沿用 C 板 0x3A/0x3B 协议。
 tracked_base_node:
   ros__parameters:
@@ -12,8 +12,10 @@ tracked_base_node:
     max_angular_speed_rad_s: 0.80
     # 2026-09-23 实测左右履带中心距 50 cm。
     track_separation_m: 0.50
-    # TODO 标定 1 m/s 对应固件 motor1/motor2 命令数值，包含减速比及 PWM 映射。
-    command_per_m_s: 0.0
+    # 2026-09-24 地面直线初测：1.6 m，命令 5 用 6.85 s -> 21.406；
+    # 命令 10 用 3.37 s -> 21.063；取两档均值 21.2 固件命令值/(m/s)。
+    # 尚未验证低速死区、反向和转向；hardware_calibrated=false 时此倍率不解锁运动。
+    command_per_m_s: 21.2
     # 已核对固件 robot_param_pwm_diff.h: PWM_DIFF_USB_MAX_COMMAND=20 rad/s。
     max_motor_command: 20.0
     # C 板 IMU z 轴符号和倍率沿用原车实测值；更换惯导时重新标定。
@@ -67,7 +69,7 @@ ekf_filter_node:
 
 tracked_robot_model:
   ros__parameters:
-    # 机身长宽、履带中心距已实测；高度、履带尺寸、质量和外参仍为 TODO。
+    # 长宽、履带中心距及下方传感器相对 base_link 位姿已确认；机身高度、履带尺寸和质量仍为 TODO。
     base_length_m: 0.70
     base_width_m: 0.59
     base_height_m: 0.15
@@ -75,9 +77,10 @@ tracked_robot_model:
     track_width_m: 0.10
     track_height_m: 0.10
     mass_kg: 15.0
-    lidar_xyz: [0.20, 0.0, 0.20]
+    # 2026-09-24 确认相对 base_link：雷达前方 24 cm、IMU 前方 8 cm；轴向同原车，z=0。
+    lidar_xyz: [0.24, 0.0, 0.0]
     lidar_rpy: [0.0, 0.0, 0.0]
-    imu_xyz: [0.0, 0.0, 0.0]
+    imu_xyz: [0.08, 0.0, 0.0]
     imu_rpy: [0.0, 0.0, 0.0]
 
 # 复用同一个键盘节点；只发送 /cmd_vel，履带不能横移。

@@ -206,7 +206,7 @@ ros2 run kiwi_slam kiwi_slam_compatibility --require-hardware  # 当前活动底
 
 要单独检查雷达驱动，在一个终端运行 `ros2 launch kiwi_slam m10p_uart_lidar.launch.py`，
 另一个已加载工作区的终端运行 `ros2 topic hz /scan`。底盘联调和建图导航的完整启动命令见
-[双底盘平台架构](documents/platform_architecture.md)。履带参数尚未标定时，将活动 YAML 改为 `tracked_pwm` 后可启动驱动；核验雷达、惯导和 RF2O 后，可在速度未标定时手动建图，导航仍锁定。
+[双底盘平台架构](documents/platform_architecture.md)。履带直线倍率已初步测得，但低速、转向和传感器外参仍未核验；活动 YAML 为 `tracked_pwm` 时可启动驱动并在受限模式试车，建图导航仍保持关锁。
 
 只构建底盘驱动时可执行下列命令，并用 `source install/setup.bash` 加载；这时可启动 `kiwi_base.launch.py` 和键盘，建图/导航及履带 RF2O 仍需上面的完整构建。
 
@@ -262,20 +262,20 @@ source tools/activate_workspace.sh
 底盘、建图、导航分别有独立命令；命令本身对两种底盘相同：
 
 ```bash
-# 驱动和 URDF：履带速度未标定时仍可打开串口并读取 IMU。
+# 驱动和 URDF：履带直线初测倍率已记录，运动关锁仍在，可打开串口读取 IMU。
 ros2 launch kiwi_slam kiwi_robot.launch.py start_ekf:=false start_lidar:=false
 # 底盘 + 里程计 + EKF；履带会额外启动 M10P、RF2O。
 ros2 launch kiwi_base kiwi_base_ekf.launch.py
 # 只建图，不启动 Nav2；履带适合先手动建图。
 ros2 launch kiwi_slam kiwi_slam.launch.py use_rviz:=true
-# 建图并在具备运动标定时启动 Nav2；履带未标定时仅启动建图链路。
+# 建图并在具备运动和传感器核验时启动 Nav2；当前履带仍由核验关锁阻止。
 ros2 launch kiwi_navigation mapping_navigation.launch.py use_rviz:=true
-# 已知地图定位导航；履带未标定时拒绝启动。
+# 已知地图定位导航；履带运动或传感器未核验时拒绝启动。
 ros2 launch kiwi_navigation localization_navigation.launch.py \
   map:="$HOME/ros2_ws/maps/warehouse.yaml" use_rviz:=true
 ```
 
-建图开始前，履带必须先核验雷达与惯导外参、IMU 轴向、RF2O 静止漂移，再把 `tracked_pwm.yaml` 的 `mapping_sensors_verified` 设为 `true`。速度未标定时可用遥控器或临时键盘模式手动建图；原始电机话题可按下文切换启用。临时键盘命令只是电机控制刻度，不代表实际 m/s。导航需要实际标定 `command_per_m_s`、设置 `hardware_calibrated=true`、`enable_motion=true`，并关闭所有试车模式；仅改 Nav2 参数不能解除运动锁。RF2O 只发里程计消息，EKF 独占 `odom → base_footprint`；SLAM Toolbox 或 AMCL 发布 `map → odom`。
+建图开始前，履带必须先核验雷达与惯导外参、IMU 轴向、RF2O 静止漂移，再把 `tracked_pwm.yaml` 的 `mapping_sensors_verified` 设为 `true`。当前仅有两档直线计时，已写入初步 `command_per_m_s`，但低速起步、反向和转向尚未验证，`hardware_calibrated=false`、`enable_motion=false` 继续锁住正常 `/cmd_vel`。受限试车可用现场遥控器或临时键盘模式；原始电机话题可按下文切换。完成剩余核验后才能启用正常运动和导航；仅改 Nav2 参数不能解除运动锁。RF2O 只发里程计消息，EKF 独占 `odom → base_footprint`；SLAM Toolbox 或 AMCL 发布 `map → odom`。
 
 同一个键盘节点使用同一个命令，并自动读取活动底盘的参数：
 
@@ -292,9 +292,9 @@ ros2 run nav2_map_server map_saver_cli -f "$HOME/ros2_ws/maps/warehouse"
 
 ### 履带临时键盘试车与速度标定
 
-机身长 0.70 m、宽 0.59 m、左右履带中心距 0.50 m 已实测；机身高度、雷达/惯导外参及真实速度换算仍待测。`tracked_pwm.yaml` 当前启用 `keyboard_trial_enabled=true`，保持 `hardware_calibrated=false`、`enable_motion=false`、`mapping_sensors_verified=false`。这允许键盘短时开环试车，但建图和导航仍被传感器核验/速度标定关锁限制，Web 手动遥控也保持未就绪。
+机身长 0.70 m、宽 0.59 m、左右履带中心距 0.50 m 已实测。直线计时：命令 `5` 走 1.6 m 平均用 6.85 s，实速约 0.2336 m/s、倍率 21.406；命令 `10` 用 3.37 s，实速约 0.4748 m/s、倍率 21.063。两档均值约 21.234，`tracked_pwm.yaml` 先记 `command_per_m_s=21.2`。这不是电机转速闭环；雷达、IMU 相对 `base_link` 的安装位姿分别记录为 `(0.24,0,0)` m 与 `(0.08,0,0)` m、旋转均为零，仍需用 TF 和实测数据核对。低速死区、反向、转向、IMU 轴向及 RF2O 漂移仍待测。`keyboard_trial_enabled=true` 已恢复，`open_loop_test_enabled=false`；正常运动仍锁定；建图和导航仍被传感器核验关锁阻止。
 
-临时倍率 `keyboard_trial_command_gain=50.0` 只把键盘前进刻度 `0.10` 换成两路各 `+5 rad/s` 的固件命令；`keyboard_trial_limit_rad_s=5.0` 将每路限制在 ±5 rad/s。此时键盘参数名中的 `m_s` **不代表实际 m/s**。固件实测 `+10 rad/s` 对应约 1750 µs，真实车速仍需地面计时标定。
+临时倍率 `keyboard_trial_command_gain=50.0` 只把键盘前进刻度 `0.10` 换成两路各 `+5 rad/s` 的固件命令；`keyboard_trial_limit_rad_s=5.0` 将每路限制在 ±5 rad/s。此时键盘参数名中的 `m_s` **不代表实际 m/s**；只有剩余核验完成并启用正常运动后，`command_per_m_s=21.2` 才参与 `/cmd_vel` 换算。固件命令 `+10` 对应约 1750 µs，并非电机实测角速度。
 
 将更新后的源码同步到上位机后，从工作区根目录重新构建底盘及其配置选择包：
 
@@ -339,7 +339,7 @@ ros2 topic pub -r 10 -t 10 /chassis/open_loop_motor_cmd std_msgs/msg/Float32Mult
 ros2 topic pub -r 10 -t 10 /chassis/open_loop_motor_cmd std_msgs/msg/Float32MultiArray '{data: [0.0, 5.0]}'
 ```
 
-地面标定时，先确认正方向，再持续发送相同的已知电机命令，测量走 1 m 的用时。若发送两路 `10 rad/s` 时实测速度为 `v` m/s，`10/v` 仅是 `command_per_m_s` 的下一次试验起点；需多次测量并核对转向后再标记 `hardware_calibrated=true`。切换到正常运动前关闭 `keyboard_trial_enabled` 和 `open_loop_test_enabled`。雷达/惯导外参与 RF2O 尚未核验时，保持 `mapping_sensors_verified=false`。
+两档直线数据接近，但只能说明中等速度范围的初步倍率。下一步需测命令低于 `5` 时的起步与停车、反向、左右履带差异和原地转向的实际角速度；履带打滑会使有效转向间距不同于实测几何中心距 0.50 m。核验后再考虑将 `hardware_calibrated`、`enable_motion` 设为 `true` 并关闭两种试车模式。当前 Nav2 直线速度上限 0.15 m/s 按 21.2 倍率只产生约 3.18 的固件命令，低于已测最低档 `5`，可能无法起步。雷达/惯导外参与 RF2O 尚未核验时，保持 `mapping_sensors_verified=false`。
 
 ### 网页控制台（跟随活动底盘）
 
@@ -361,7 +361,7 @@ TCP 8080。网页启动时不会自动启动电机、雷达或导航，需在页
 
 网页默认使用 `ROS_DOMAIN_ID=42`；从命令行检查其话题时，在检查终端先执行
 `export ROS_DOMAIN_ID=42`。网页运行时不要另起底盘、键盘或 Nav2 速度发布者。
-Web 通过相同活动底盘文件选择底盘、建图和导航参数；履带横移命令被拒绝。Kiwi 的就绪状态检查轮式反馈和 IMU 标定，履带改为检查 RF2O 激光里程计与实时 IMU。切换底盘或修改底盘标定 YAML 后需重启 Web 服务。履带当前速度未标定，Web 遥控的普通 `/cmd_vel` 不会驱动电机，Web 手动遥控保持未就绪；Web 导航也会在启动前被标定关锁拒绝。
+Web 通过相同活动底盘文件选择底盘、建图和导航参数；履带横移命令被拒绝。Kiwi 的就绪状态检查轮式反馈和 IMU 标定，履带改为检查 RF2O 激光里程计与实时 IMU。切换底盘或修改底盘标定 YAML 后需重启 Web 服务。履带只记录了两档直线初测倍率，正常运动仍锁定；Web 手动遥控保持未就绪，Web 导航也会在启动前被传感器核验关锁拒绝。
 
 需要登录后自动启动网页服务时，在目标上位机构建并加载工作区后执行：
 

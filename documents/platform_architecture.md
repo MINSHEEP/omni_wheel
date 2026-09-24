@@ -26,13 +26,13 @@ source tools/activate_workspace.sh
 ## 启动命令
 
 ```bash
-# 底盘节点与模型，履带当前可用于串口/IMU 和开环试车。
+# 底盘节点与模型，履带当前可用于串口/IMU 和受限试车。
 ros2 launch kiwi_slam kiwi_robot.launch.py start_ekf:=false start_lidar:=false
 # 完整里程计链路；履带自动带 M10P、RF2O、EKF。
 ros2 launch kiwi_base kiwi_base_ekf.launch.py
-# 只建图；履带速度未标定时使用遥控或原始电机话题移动。
+# 只建图；履带传感器核验通过后可用遥控或受限试车移动。
 ros2 launch kiwi_slam kiwi_slam.launch.py
-# 建图 + 可用时的 Nav2。履带速度未标定时不启动 Nav2。
+# 建图 + 可用时的 Nav2。当前履带运动和传感器核验未完成，不启动 Nav2。
 ros2 launch kiwi_navigation mapping_navigation.launch.py
 # 已知地图定位导航；履带标定前拒绝启动。
 ros2 launch kiwi_navigation localization_navigation.launch.py map:="$HOME/ros2_ws/maps/warehouse.yaml"
@@ -48,9 +48,9 @@ ros2 launch kiwi_web web.launch.py
 
 Kiwi：`/chassis/odom/raw + /chassis/imu/data_raw → EKF → /odometry/filtered`。履带：`/scan → RF2O /chassis/odom/laser + /chassis/imu/data_raw → EKF → /odometry/filtered`。RF2O 显式设置 `init_pose_from_topic: ""`，不等待实车不存在的真值位姿话题；`publish_tf=false`，EKF 独占发布 `odom → base_footprint`。SLAM Toolbox 或 AMCL 发布 `map → odom`；URDF 发布机体到雷达、惯导的静态 TF。履带不发布轮式 `/chassis/odom/raw`，固件 0x3B 的全零电机字段不得进入 EKF。
 
-履带机身长 0.70 m、宽 0.59 m、左右履带中心距 0.50 m 已实测，Nav2 先用 0.48 m 外接半径。机身高度、履带宽高、质量、雷达和 IMU 安装位姿、IMU 轴向、RF2O 静止漂移、速度换算 `command_per_m_s` 仍需标定；配置中的临时结构尺寸不是实测值。履带 Nav2 禁止 `vy`，速度平滑开环，AMCL 用差速模型。导航上限只是待实测的保守起点。
+履带机身长 0.70 m、宽 0.59 m、左右履带中心距 0.50 m 已实测，Nav2 先用 0.48 m 外接半径。直线初测倍率已记为 `command_per_m_s=21.2`；雷达与 IMU 相对 `base_link` 分别为 `(0.24,0,0)` m、`(0.08,0,0)` m，安装旋转均为零。机身高度、履带宽高、质量、IMU 动态轴向、RF2O 静止漂移、低速死区、反向和转向仍需核验；配置中的临时结构尺寸不是实测值。履带 Nav2 禁止 `vy`，速度平滑开环，AMCL 用差速模型。导航上限只是待实测的保守起点。
 
-`tracked_pwm.yaml` 默认 `keyboard_trial_enabled=true`、`hardware_calibrated=false`、`enable_motion=false`、`mapping_sensors_verified=false`：临时键盘试车可把 `/cmd_vel` 按试验倍率换成每路不超过 ±5 rad/s 的固件命令，参数名中的 m/s 此时不代表真实车速；Nav2 和 Web 遥控仍未解锁。核验雷达/惯导外参、轴向及 RF2O 后，设 `mapping_sensors_verified=true` 可手动建图。导航还需标定真实 `command_per_m_s`、确认空载方向、关闭 `keyboard_trial_enabled` 与 `open_loop_test_enabled`，再启用 `hardware_calibrated` 和 `enable_motion`。未标定时定位导航和 Web 导航均在启动前拒绝；建图入口不会启动 Nav2。
+`tracked_pwm.yaml` 当前 `command_per_m_s=21.2` 只记录两档地面直线初测；`keyboard_trial_enabled=true`、`hardware_calibrated=false`、`enable_motion=false`、`mapping_sensors_verified=false` 保持受限试车。临时键盘把 `/cmd_vel` 按试验倍率换成每路不超过 ±5 的固件命令，参数名中的 m/s 此时不代表真实车速；Nav2 和 Web 遥控仍未解锁。核验雷达/惯导外参、轴向及 RF2O 后才能手动建图；低速起步、反向与转向实测完成后，关闭两种试车模式并启用正常运动。当前建图和导航入口仍由核验关锁拒绝。
 
 驱动联调时先架空履带，可直接运行 `ros2 launch kiwi_base kiwi_base.launch.py`，另一个终端运行 `ros2 run kiwi_base kiwi_teleop_keyboard`；两端均先加载工作区。若要使用原始命令话题，先将 `keyboard_trial_enabled=false`、`open_loop_test_enabled=true` 并重启驱动。`/chassis/open_loop_motor_cmd` 为 `std_msgs/msg/Float32MultiArray` 的 `[左, 右]` 固件 rad/s 数值，初始每路限制 ±10 rad/s，0.20 s 超时停车。当前固件上位机 `0 / +10 / +20 / -20 rad/s` 约对应 PWM `1500 / 1750 / 2000 / 1000 µs`；地面测 1 m 用时后 `10/v` 仅是下一次试验换算起点。遥控器满摇杆脉宽尚未测量，不能由此推断真实速度。
 

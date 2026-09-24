@@ -95,7 +95,7 @@ ros2 run kiwi_base kiwi_teleop_keyboard
 
 ## 履带底盘
 
-选择 `tracked_pwm` 后，同一底盘 launch 会启动 `tracked_base_node`，同一键盘命令读取 `config/tracked_pwm.yaml`。履带无编码器，不发布 `/chassis/odom/raw`；`kiwi_base_ekf.launch.py` 会启动 M10P、RF2O 和 EKF。履带不支持 `linear.y`，键盘 `A/D` 会被驱动拒绝并停车；当前 `keyboard_trial_enabled=true` 允许临时键盘开环试车，每路最多 ±5 rad/s；`hardware_calibrated=false`、`enable_motion=false` 保持正常运动和 Nav2 锁定，此时键盘的 m/s 参数只作为控制刻度。机身 0.70 × 0.59 m、履带中心距 0.50 m 已记录，其余待测项见[平台架构](../../documents/platform_architecture.md)。
+选择 `tracked_pwm` 后，同一底盘 launch 会启动 `tracked_base_node`，同一键盘命令读取 `config/tracked_pwm.yaml`。履带无编码器，不发布 `/chassis/odom/raw`；`kiwi_base_ekf.launch.py` 会启动 M10P、RF2O 和 EKF。履带不支持 `linear.y`，键盘 `A/D` 会被驱动拒绝并停车；当前 `keyboard_trial_enabled=true` 允许临时键盘开环试车，每路最多 ±5 的固件命令；两档直线初测倍率 `command_per_m_s=21.2` 已记录，但低速、反向和转向未核验，`hardware_calibrated=false`、`enable_motion=false` 保持正常运动和 Nav2 锁定。机身 0.70 × 0.59 m、履带中心距 0.50 m 已记录，其余待测项见[平台架构](../../documents/platform_architecture.md)。
 
 ## 调试
 
