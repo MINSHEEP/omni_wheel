@@ -54,8 +54,14 @@ install(
     launch/kiwi_base_ekf.launch.py
   DESTINATION share/${PROJECT_NAME}/launch)
 # 安装命令发送工具；0x3B 工具只做离线协议自检，不与节点争用串口。
+# symlink-install 直接继承源文件权限；复制/解压源码可能让包装脚本变成 0644。
+# 从构建目录安装明确可执行的副本，确保 ros2 run 始终能发现键盘入口。
+set(KIWI_TELEOP_WRAPPER "${CMAKE_CURRENT_BINARY_DIR}/kiwi_teleop_keyboard")
+configure_file(tools/kiwi_teleop_keyboard "${KIWI_TELEOP_WRAPPER}" COPYONLY)
+file(CHMOD "${KIWI_TELEOP_WRAPPER}" PERMISSIONS
+  OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
 install(
-  PROGRAMS tools/kiwi_serial_test.py tools/kiwi_feedback_receiver.py tools/kiwi_teleop_keyboard
+  PROGRAMS tools/kiwi_serial_test.py tools/kiwi_feedback_receiver.py "${KIWI_TELEOP_WRAPPER}"
   DESTINATION lib/${PROJECT_NAME})
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)

@@ -208,8 +208,16 @@ ros2 pkg prefix kiwi_navigation
 ros2 pkg prefix lslidar_driver
 ros2 pkg prefix kiwi_web  # 部署网页时
 ros2 pkg prefix rf2o_laser_odometry  # 仅履带需要
+ros2 pkg executables kiwi_base | grep kiwi_teleop_keyboard
 ros2 run kiwi_slam kiwi_slam_compatibility --require-hardware  # 当前活动底盘设备检查
 ```
+
+若旧工作区执行 `ros2 run kiwi_base kiwi_teleop_keyboard` 显示 `No executable found`，
+先用 `stat -Lc '%a %n' src/kiwi_base/tools/kiwi_teleop_keyboard` 检查源脚本权限。
+旧版 `--symlink-install` 直接链接源脚本，若复制源码后权限变为 `644`，运行
+`chmod +x src/kiwi_base/tools/kiwi_teleop_keyboard` 即可恢复。当前构建规则会在构建目录
+生成权限为 `755` 的键盘入口，再由 `ros2 run` 调用；构建后以上面的
+`ros2 pkg executables` 命令确认同时列出 `kiwi_teleop_keyboard` 和 `_node`。
 
 要单独检查雷达驱动，在一个终端运行 `ros2 launch kiwi_slam m10p_uart_lidar.launch.py`，
 另一个已加载工作区的终端运行 `ros2 topic hz /scan`。底盘联调和建图导航的完整启动命令见

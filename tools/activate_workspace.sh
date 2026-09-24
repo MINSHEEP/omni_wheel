@@ -41,6 +41,11 @@ for KIWI_PACKAGE_NAME in kiwi_platform kiwi_base kiwi_slam kiwi_navigation; do
   esac
 done
 
+KIWI_KEYBOARD_ENTRY="${KIWI_WORKSPACE_ROOT}/install/kiwi_base/lib/kiwi_base/kiwi_teleop_keyboard"
+if [[ -e "${KIWI_KEYBOARD_ENTRY}" && ! -x "${KIWI_KEYBOARD_ENTRY}" ]]; then
+  echo "警告：键盘入口不可执行；请重新构建 kiwi_base，旧版安装可运行 chmod +x ${KIWI_WORKSPACE_ROOT}/src/kiwi_base/tools/kiwi_teleop_keyboard" >&2
+fi
+
 export KIWI_WORKSPACE_ROOT
-unset KIWI_INSTALL_SETUP KIWI_PACKAGE_NAME KIWI_PACKAGE_PREFIX
+unset KIWI_INSTALL_SETUP KIWI_PACKAGE_NAME KIWI_PACKAGE_PREFIX KIWI_KEYBOARD_ENTRY
 echo "Kiwi 工作区已加载：${KIWI_WORKSPACE_ROOT}"
