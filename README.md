@@ -305,7 +305,7 @@ ros2 run nav2_map_server map_saver_cli -f "$HOME/ros2_ws/maps/warehouse"
 
 机身长 0.70 m、宽 0.59 m、左右履带中心距 0.50 m 已实测。直线计时：命令 `5` 走 1.6 m 平均用 6.85 s，实速约 0.2336 m/s、倍率 21.406；命令 `10` 用 3.37 s，实速约 0.4748 m/s、倍率 21.063。两档均值约 21.234，`tracked_pwm.yaml` 先记 `command_per_m_s=21.2`。这不是电机转速闭环；雷达、IMU 相对 `base_link` 的安装位姿分别记录为 `(0.24,0,0)` m 与 `(0.08,0,0)` m、旋转均为零，仍需用 TF 和实测数据核对。低速死区、反向、转向、IMU 轴向及 RF2O 漂移仍待测。`keyboard_trial_enabled=true` 已恢复，`open_loop_test_enabled=false`；正常运动仍锁定；建图和导航仍被传感器核验关锁阻止。
 
-受限键盘倍率 `keyboard_trial_command_gain=21.2` 已与直线初测系数对齐：前进目标 `0.10` 换成每路 `2.12` 的固件命令；`keyboard_trial_limit_rad_s=5.0` 继续限制每路输出。`2.12` 低于已经测过的最低命令 `5`，能否起步及实际速度仍需验证；键盘默认转向目标 `0.30` rad/s 对应左右约 `-1.59/+1.59`，转向也尚未标定。正常模式下的 `command_per_m_s=21.2` 与试车倍率是两个独立参数，后续重新标定时需保持一致。`enable_motion=false` 配合 `keyboard_trial_enabled=true` 允许受限键盘试车，正常运动和导航仍锁定。固件命令 `+10` 对应约 1750 µs，并非电机实测角速度。
+受限键盘倍率 `keyboard_trial_command_gain=21.2` 已与直线初测系数对齐。低档试车时，前进目标 `0.10` 只给两路约 `+2.12`；实车前进慢、转向有反应、后退不动。遥控器可正常后退和转向，因此键盘试车改用前后目标 `±0.235`，对应两路约 `±4.98`；`q/e` 目标角速度 `±0.95`，左右履带分别为 `-5/+5` 或 `+5/-5`。每路仍受 `keyboard_trial_limit_rad_s=5.0` 限制。负向能否在地面起步、转向实际角速度都要重新实测；固件 `+5/-5` 约对应 PWM `1625/1375 µs`，也可能受电调反向设置影响。正常模式下的 `command_per_m_s=21.2` 与试车倍率是两个独立参数，后续重新标定时需保持一致。`enable_motion=false` 配合 `keyboard_trial_enabled=true` 允许受限键盘试车，正常运动和导航仍锁定。
 
 将更新后的源码同步到上位机后，从工作区根目录重新构建底盘及其配置选择包：
 
@@ -343,7 +343,7 @@ ros2 run kiwi_base kiwi_teleop_keyboard
 | `open_loop_test_enabled=true`、`keyboard_trial_enabled=false` | 原始电机话题可用；与临时键盘及正常运动互斥 |
 | 已实测速度并设 `hardware_calibrated=true`、`enable_motion=true`，关闭两种试车模式 | 才可使用真实标定的 `/cmd_vel`；导航仍要求核验传感器和定位 |
 
-若需要旧的 `/chassis/open_loop_motor_cmd` 双路单侧试车，先停止底盘节点，在同一份 `tracked_pwm.yaml` 中把 `keyboard_trial_enabled` 改为 `false`，把 `open_loop_test_enabled` 改为 `true`，再重启底盘。该话题消息为 `std_msgs/msg/Float32MultiArray` 的 `[左履带, 右履带]` 两个固件 rad/s 数值，当前每路上限 ±10 rad/s；非法/超限命令与断发超过 0.20 秒都会停车。架空履带时的短时命令示例：
+若需要旧的 `/chassis/open_loop_motor_cmd` 双路单侧试车，先停止底盘节点，在同一份 `tracked_pwm.yaml` 中把 `keyboard_trial_enabled` 改为 `false`，把 `open_loop_test_enabled` 改为 `true`，再重启底盘。该话题消息为 `std_msgs/msg/Float32MultiArray` 的 `[左履带, 右履带]` 两个固件 rad/s 数值，当前每路上限 ±10 rad/s；非法/超限命令与断发超过 0.20 秒都会停车。架空履带时的短时单侧检查示例：`[5,0]` 与 `[0,5]` 只有一侧运动，会产生较大转弯半径。原地转向需要两侧相反命令，正常键盘 `q/e` 已如此输出：
 
 ```bash
 ros2 topic pub -r 10 -t 10 /chassis/open_loop_motor_cmd std_msgs/msg/Float32MultiArray '{data: [5.0, 0.0]}'

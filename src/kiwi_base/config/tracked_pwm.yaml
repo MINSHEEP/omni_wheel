@@ -9,7 +9,7 @@ tracked_base_node:
     publish_rate: 50.0
     cmd_vel_timeout_s: 0.20
     max_linear_speed_m_s: 0.30
-    max_angular_speed_rad_s: 0.80
+    max_angular_speed_rad_s: 0.95
     # 2026-09-23 实测左右履带中心距 50 cm。
     track_separation_m: 0.50
     # 2026-09-24 地面直线初测：1.6 m，命令 5 用 6.85 s -> 21.406；
@@ -26,8 +26,8 @@ tracked_base_node:
     mapping_sensors_verified: false
     hardware_calibrated: false
     enable_motion: false
-    # 受限键盘试车使用直线初测倍率：0.10 换成每路 2.12 的固件命令。
-    # 低速/反向/转向仍待核验；目标速度不保证等于实际速度。
+    # 受限键盘试车使用直线初测倍率；前进/后退约输出 ±4.98，q/e 原地转向输出 -5/+5 或 +5/-5。
+    # 遥控器可后退/转向；键盘旧档前进慢、转向有反应、后退不动。负向起步仍待实测。
     keyboard_trial_enabled: true
     keyboard_trial_command_gain: 21.2
     keyboard_trial_limit_rad_s: 5.0
@@ -87,6 +87,6 @@ tracked_robot_model:
 kiwi_teleop_keyboard:
   ros__parameters:
     cmd_vel_topic: /cmd_vel
-    speed_m_s: 0.10
-    yaw_rad_s: 0.30
+    speed_m_s: 0.235
+    yaw_rad_s: 0.95
     deadman_timeout_ms: 200

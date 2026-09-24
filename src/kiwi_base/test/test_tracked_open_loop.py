@@ -41,6 +41,15 @@ def read_frames(master_fd, buffer):
         buffer = buffer[offset + 18:]
 
 
+def contains_motor_command(frames, left, right, tolerance=0.001):
+    return any(
+        abs(frame[0] - left) < tolerance and
+        abs(frame[1] - right) < tolerance and
+        frame[2] == 0.0
+        for frame in frames
+    )
+
+
 def test_raw_motor_commands_are_separate_from_cmd_vel(monkeypatch, tmp_path):
     monkeypatch.setenv("ROS_DOMAIN_ID", str(100 + os.getpid() % 100))
     monkeypatch.setenv("ROS_LOCALHOST_ONLY", "1")
@@ -169,7 +178,7 @@ def test_temporary_keyboard_trial_is_limited_and_stops_on_timeout(monkeypatch, t
 
         buffer = b""
         forward = Twist()
-        forward.linear.x = 0.10
+        forward.linear.x = 0.235
         deadline = time.monotonic() + 2.0
         seen = False
         while not seen:
@@ -177,20 +186,31 @@ def test_temporary_keyboard_trial_is_limited_and_stops_on_timeout(monkeypatch, t
             rclpy.spin_once(node, timeout_sec=0.03)
             frames, buffer = read_frames(master_fd, buffer)
             assert all(max(abs(motor) for motor in frame[:2]) <= 5.0 for frame in frames)
-            seen = (5.0, 5.0, 0.0) in frames
+            seen = contains_motor_command(frames, 4.982, 4.982)
             assert process.poll() is None
             assert time.monotonic() < deadline, "临时键盘前进命令未到达电机"
 
-        turn = Twist()
-        turn.angular.z = 0.30
-        deadline = time.monotonic() + 2.0
-        seen = False
-        while not seen:
-            cmd_pub.publish(turn)
-            rclpy.spin_once(node, timeout_sec=0.03)
-            frames, buffer = read_frames(master_fd, buffer)
-            seen = (-3.75, 3.75, 0.0) in frames
-            assert time.monotonic() < deadline, "临时键盘旋转命令未到达电机"
+        backward = Twist()
+        backward.linear.x = -0.235
+        for command, expected, label in (
+            (backward, (-4.982, -4.982), "后退"),
+            (Twist(), (-5.0, 5.0), "左转"),
+            (Twist(), (5.0, -5.0), "右转"),
+        ):
+            if label == "左转":
+                command.angular.z = 0.95
+            elif label == "右转":
+                command.angular.z = -0.95
+            deadline = time.monotonic() + 2.0
+            seen = False
+            while not seen:
+                cmd_pub.publish(command)
+                rclpy.spin_once(node, timeout_sec=0.03)
+                frames, buffer = read_frames(master_fd, buffer)
+                assert all(max(abs(motor) for motor in frame[:2]) <= 5.0 for frame in frames)
+                seen = contains_motor_command(frames, *expected)
+                assert process.poll() is None
+                assert time.monotonic() < deadline, f"临时键盘{label}命令未到达电机"
 
         lateral = Twist()
         lateral.linear.y = 0.10
@@ -208,7 +228,7 @@ def test_temporary_keyboard_trial_is_limited_and_stops_on_timeout(monkeypatch, t
         while True:
             rclpy.spin_once(node, timeout_sec=0.03)
             frames, buffer = read_frames(master_fd, buffer)
-            if (5.0, 5.0, 0.0) in frames:
+            if contains_motor_command(frames, 4.982, 4.982):
                 break
             assert time.monotonic() < deadline, "超时测试前未收到前进命令"
         time.sleep(0.3)
