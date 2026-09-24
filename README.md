@@ -299,6 +299,10 @@ ros2 run nav2_map_server map_saver_cli -f "$HOME/ros2_ws/maps/warehouse"
 
 ### 履带临时键盘试车与速度标定
 
+2026-09-24 已同步直线初测系数和传感器安装位姿，并完成远程传感器链路观测。
+实测频率、短时漂移、RF2O 修复、复测命令及剩余验证项目见
+[履带标定与链路验证记录](documents/tracked_chain_verification.md)。移动建图和目标导航尚未验收。
+
 机身长 0.70 m、宽 0.59 m、左右履带中心距 0.50 m 已实测。直线计时：命令 `5` 走 1.6 m 平均用 6.85 s，实速约 0.2336 m/s、倍率 21.406；命令 `10` 用 3.37 s，实速约 0.4748 m/s、倍率 21.063。两档均值约 21.234，`tracked_pwm.yaml` 先记 `command_per_m_s=21.2`。这不是电机转速闭环；雷达、IMU 相对 `base_link` 的安装位姿分别记录为 `(0.24,0,0)` m 与 `(0.08,0,0)` m、旋转均为零，仍需用 TF 和实测数据核对。低速死区、反向、转向、IMU 轴向及 RF2O 漂移仍待测。`keyboard_trial_enabled=true` 已恢复，`open_loop_test_enabled=false`；正常运动仍锁定；建图和导航仍被传感器核验关锁阻止。
 
 临时倍率 `keyboard_trial_command_gain=50.0` 只把键盘前进刻度 `0.10` 换成两路各 `+5 rad/s` 的固件命令；`keyboard_trial_limit_rad_s=5.0` 将每路限制在 ±5 rad/s。此时键盘参数名中的 `m_s` **不代表实际 m/s**；只有剩余核验完成并启用正常运动后，`command_per_m_s=21.2` 才参与 `/cmd_vel` 换算。固件命令 `+10` 对应约 1750 µs，并非电机实测角速度。
