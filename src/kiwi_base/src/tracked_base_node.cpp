@@ -46,6 +46,8 @@ public:
     const double rate = declare_parameter<double>("publish_rate", 50.0);
     gyro_z_sign_ = declare_parameter<double>("gyro_z_sign", -1.0);
     gyro_z_scale_ = declare_parameter<double>("gyro_z_scale", 1.69);
+    // 在符号和倍率校正后的 ROS z 轴角速度上扣除静止零偏。
+    gyro_z_bias_rad_s_ = declare_parameter<double>("gyro_z_bias_rad_s", 0.0);
     gyro_z_variance_ = declare_parameter<double>("gyro_z_variance", 0.01);
     const bool calibrated = declare_parameter<bool>("hardware_calibrated", false);
     motion_enabled_ = declare_parameter<bool>("enable_motion", false);
@@ -76,6 +78,7 @@ public:
         !std::isfinite(rate) || rate <= 0.0 ||
         !std::isfinite(gyro_z_scale_) || gyro_z_scale_ <= 0.0 ||
         (gyro_z_sign_ != 1.0 && gyro_z_sign_ != -1.0) ||
+        !std::isfinite(gyro_z_bias_rad_s_) ||
         !std::isfinite(gyro_z_variance_) || gyro_z_variance_ <= 0.0)
       throw std::invalid_argument("invalid tracked base limits or IMU calibration");
     // 临时键盘倍率只把 Twist 换成限幅电机命令，不代表实测 m/s，且不能解锁导航。
@@ -242,7 +245,8 @@ private:
     imu.orientation_covariance[0] = -1.0;
     imu.angular_velocity.x = feedback.gyro[0];
     imu.angular_velocity.y = feedback.gyro[1];
-    imu.angular_velocity.z = feedback.gyro[2] * gyro_z_sign_ * gyro_z_scale_;
+    imu.angular_velocity.z =
+      feedback.gyro[2] * gyro_z_sign_ * gyro_z_scale_ - gyro_z_bias_rad_s_;
     imu.angular_velocity_covariance[0] = 1e3;
     imu.angular_velocity_covariance[4] = 1e3;
     imu.angular_velocity_covariance[8] = gyro_z_variance_;
@@ -286,7 +290,7 @@ private:
 
   std::string device_, cmd_topic_, imu_topic_, imu_frame_, test_topic_;
   double max_linear_{}, max_angular_{}, timeout_{}, test_limit_{};
-  double gyro_z_sign_{}, gyro_z_scale_{}, gyro_z_variance_{};
+  double gyro_z_sign_{}, gyro_z_scale_{}, gyro_z_bias_rad_s_{}, gyro_z_variance_{};
   bool motion_enabled_{false}, trial_enabled_{false}, have_cmd_{false};
   bool test_enabled_{false}, have_test_cmd_{false};
   double vx_{0.0}, wz_{0.0};

@@ -21,6 +21,9 @@ tracked_base_node:
     # C 板 IMU z 轴符号和倍率沿用原车实测值；更换惯导时重新标定。
     gyro_z_sign: -1.0
     gyro_z_scale: 1.69
+    # 2026-09-24 两份 bag 和 2026-09-25 重启后 55 s 静止实测均值约 -0.0035 rad/s。
+    # 只扣除 ROS z 轴角速度的静止均值；更换 IMU 或安装后必须重新静止测量。
+    gyro_z_bias_rad_s: -0.00355
     gyro_z_variance: 0.01
     # 2026-09-24 受控遥控 bag 已核对安装 TF、IMU/RF2O 双向转角与静止漂移；允许手动建图。
     # 这不代表运动控制标定完成，正常 /cmd_vel 和 Nav2 仍由下面两项锁住。
