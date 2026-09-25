@@ -36,7 +36,7 @@ def test_selection_changes_all_parameter_files_and_driver(source_shares, monkeyp
     nodes = robot_actions(tracked)
     names = [action.node_executable for action in nodes]
     assert names == ["robot_state_publisher", "tracked_base_node", "lslidar_driver_node",
-                     "rf2o_laser_odometry_node", "ekf_node"]
+                     "rf2o_laser_odometry_node", "rf2o_covariance_adapter", "ekf_node"]
     nodes = robot_actions(kiwi)
     assert "rf2o_laser_odometry_node" not in [action.node_executable for action in nodes]
 
@@ -121,6 +121,17 @@ def test_rf2o_missing_initialization_is_rejected_even_by_ekf_chain(source_shares
     profile = profiles.load_profile(str(source_shares / "tracked_pwm.yaml"), {"rf2o": str(wrong)})
     with pytest.raises(ValueError, match="原点初始化"):
         profiles.validate_rf2o(profile)
+
+
+def test_rf2o_covariance_adapter_must_feed_ekf(source_shares, tmp_path):
+    selector = str(source_shares / "tracked_pwm.yaml")
+    data = profiles.load_profile(selector).data("rf2o")
+    adapter = data["rf2o_covariance_adapter"]["ros__parameters"]
+    adapter["output_topic"] = "/wrong_odom"
+    wrong = tmp_path / "rf2o_wrong_adapter.yaml"
+    wrong.write_text(yaml.safe_dump(data))
+    with pytest.raises(ValueError, match="协方差适配 -> EKF"):
+        profiles.validate_rf2o(profiles.load_profile(selector, {"rf2o": str(wrong)}))
 
 
 def test_lidar_ranges_and_tracked_lateral_limit_cannot_silently_diverge(source_shares, tmp_path):

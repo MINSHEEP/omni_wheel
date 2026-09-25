@@ -17,7 +17,7 @@ source tools/activate_workspace.sh
 | 底盘/EKF/键盘 | `kiwi_base/config/kiwi_base.yaml` | `kiwi_base/config/tracked_pwm.yaml` |
 | 建图门控 | `kiwi_slam/config/mapping_gate.yaml` | `kiwi_slam/config/tracked_mapping_gate.yaml` |
 | 建图算法 | `kiwi_slam/config/slam_toolbox.yaml` | `kiwi_slam/config/tracked_slam_toolbox.yaml` |
-| 里程计 | 电机反馈 `/chassis/odom/raw` | `kiwi_slam/config/tracked_rf2o.yaml`，`/chassis/odom/laser` |
+| 里程计 | 电机反馈 `/chassis/odom/raw` | `kiwi_slam/config/tracked_rf2o.yaml`，RF2O `/chassis/odom/laser_raw` 经协方差适配后输出 `/chassis/odom/laser` |
 | 定位导航 | `kiwi_navigation/config/nav2.yaml`，AMCL 全向模型 | `kiwi_navigation/config/tracked_nav2.yaml`，AMCL 差速模型 |
 | 机器人模型 | `kiwi_slam/urdf/kiwi.urdf.xacro` | `kiwi_slam/urdf/tracked.urdf.xacro` |
 
@@ -28,7 +28,7 @@ source tools/activate_workspace.sh
 ```bash
 # 底盘节点与模型，履带当前可用于串口/IMU 和受限试车。
 ros2 launch kiwi_slam kiwi_robot.launch.py start_ekf:=false start_lidar:=false
-# 完整里程计链路；履带自动带 M10P、RF2O、EKF。
+# 完整里程计链路；履带自动带 M10P、RF2O、协方差适配器和 EKF。
 ros2 launch kiwi_base kiwi_base_ekf.launch.py
 # 只建图；履带传感器核验通过后可用遥控或受限试车移动。
 ros2 launch kiwi_slam kiwi_slam.launch.py
@@ -46,7 +46,7 @@ ros2 launch kiwi_web web.launch.py
 
 ## 坐标、里程计和关锁
 
-Kiwi：`/chassis/odom/raw + /chassis/imu/data_raw → EKF → /odometry/filtered`。履带：`/scan → RF2O /chassis/odom/laser + /chassis/imu/data_raw → EKF → /odometry/filtered`。RF2O 显式设置 `init_pose_from_topic: ""`，不等待实车不存在的真值位姿话题；`publish_tf=false`，EKF 独占发布 `odom → base_footprint`。SLAM Toolbox 或 AMCL 发布 `map → odom`；URDF 发布机体到雷达、惯导的静态 TF。履带不发布轮式 `/chassis/odom/raw`，固件 0x3B 的全零电机字段不得进入 EKF。
+Kiwi：`/chassis/odom/raw + /chassis/imu/data_raw → EKF → /odometry/filtered`。履带：`/scan → RF2O /chassis/odom/laser_raw → 协方差适配 /chassis/odom/laser + /chassis/imu/data_raw → EKF → /odometry/filtered`。RF2O 上游输出全零协方差，履带专属适配器根据 `tracked_rf2o.yaml` 设置平面位姿和速度的试验性方差；各模式入口统一启动这一链路。RF2O 显式设置 `init_pose_from_topic: ""`，不等待实车不存在的真值位姿话题；`publish_tf=false`，EKF 独占发布 `odom → base_footprint`。SLAM Toolbox 或 AMCL 发布 `map → odom`；URDF 发布机体到雷达、惯导的静态 TF。履带不发布轮式 `/chassis/odom/raw`，固件 0x3B 的全零电机字段不得进入 EKF。
 
 履带机身长 0.70 m、宽 0.59 m、左右履带中心距 0.50 m 已实测，Nav2 先用 0.48 m 外接半径。直线初测倍率已记为 `command_per_m_s=21.2`；雷达与 IMU 相对 `base_link` 分别为 `(0.24,0,0)` m、`(0.08,0,0)` m，安装旋转均为零。受控遥控录制已核对平面 IMU 轴向、RF2O 双向运动和短时静止漂移；机身高度、履带宽高、质量、低速死区、上位机反向和转向控制仍需核验；配置中的临时结构尺寸不是实测值。履带 Nav2 禁止 `vy`，速度平滑开环，AMCL 用差速模型。导航上限只是待实测的保守起点。
 

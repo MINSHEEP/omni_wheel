@@ -1,15 +1,15 @@
 # kiwi_slam
 
-`kiwi_slam.launch.py` 是独立建图入口，读取 `kiwi_platform/config/active_platform.yaml`。Kiwi 启动轮式里程计、C 板 IMU 和 EKF；履带启动 M10P、`tracked_rf2o.yaml` 对应的 RF2O、C 板 IMU 和 EKF。两种底盘分别读取 `slam_toolbox.yaml` / `tracked_slam_toolbox.yaml` 和 `mapping_gate.yaml` / `tracked_mapping_gate.yaml`，并使用各自的 URDF。参数文件列表与切换命令见 [平台架构](../../documents/platform_architecture.md)。
+`kiwi_slam.launch.py` 是独立建图入口，读取 `kiwi_platform/config/active_platform.yaml`。Kiwi 启动轮式里程计、C 板 IMU 和 EKF；履带启动 M10P、`tracked_rf2o.yaml` 对应的 RF2O、协方差适配器、C 板 IMU 和 EKF。两种底盘分别读取 `slam_toolbox.yaml` / `tracked_slam_toolbox.yaml` 和 `mapping_gate.yaml` / `tracked_mapping_gate.yaml`，并使用各自的 URDF。参数文件列表与切换命令见 [平台架构](../../documents/platform_architecture.md)。
 
 ```text
 Kiwi:  电机反馈 /chassis/odom/raw + IMU -> EKF -> /odometry/filtered
-履带: /scan -> RF2O /chassis/odom/laser + IMU -> EKF -> /odometry/filtered
+履带: /scan -> RF2O /chassis/odom/laser_raw -> 协方差适配 /chassis/odom/laser + IMU -> EKF -> /odometry/filtered
 建图: /scan -> 建图门控 /scan_slam -> SLAM Toolbox -> /map
 TF:   SLAM 或 AMCL: map -> odom；EKF: odom -> base_footprint；URDF: 底盘到雷达/IMU
 ```
 
-RF2O 的 `init_pose_from_topic` 设为空以避免等待不存在的真值位姿，`publish_tf=false` 避免与 EKF 重复发布 TF。履带门控持续检查原始 IMU、激光里程计和融合里程计的新鲜度；`mapping_sensors_verified=false` 时在启动前拒绝建图。
+RF2O 的 `init_pose_from_topic` 设为空以避免等待不存在的真值位姿，`publish_tf=false` 避免与 EKF 重复发布 TF。RF2O 上游里程计协方差全为零；履带启动链额外运行 `rf2o_covariance_adapter`，将 `/chassis/odom/laser_raw` 的平面估计和时间戳原样转发到 `/chassis/odom/laser`，并按 `tracked_rf2o.yaml` 设置非零协方差。履带门控持续检查原始 IMU、适配后激光里程计和融合里程计的新鲜度；`mapping_sensors_verified=false` 时在启动前拒绝建图。
 
 ```bash
 cd "$HOME/ros2_ws"

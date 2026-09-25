@@ -54,7 +54,8 @@ ROS 机体坐标遵循 REP-103：`+X` 向前，`+Y` 向左，`+Z` 向上，`+wz`
 /scan                    M10P LaserScan
 /cmd_vel                 所有速度源的统一入口
 /chassis/odom/raw        仅 Kiwi：根据电机反馈推算的轮式里程计
-/chassis/odom/laser      仅履带：RF2O 激光里程计（不发布 TF）
+/chassis/odom/laser_raw  仅履带：RF2O 原始激光里程计（上游协方差为零，不发布 TF）
+/chassis/odom/laser      仅履带：补上协方差后的激光里程计，供 EKF 和建图门控使用
 /chassis/imu/data_raw    C 板异步 IMU 遥测；履带仅使用角速度，姿态暂标为未知
 /chassis/feedback/raw    C 板异步 0x3B 原始字段调试消息
 /joint_states            仅 Kiwi：根据电机实测速度换算的三个轮关节状态
@@ -272,7 +273,7 @@ source tools/activate_workspace.sh
 | 底盘/EKF/键盘 | `kiwi_base/config/kiwi_base.yaml` | `kiwi_base/config/tracked_pwm.yaml` |
 | 建图门控 | `kiwi_slam/config/mapping_gate.yaml` | `kiwi_slam/config/tracked_mapping_gate.yaml` |
 | SLAM Toolbox | `kiwi_slam/config/slam_toolbox.yaml` | `kiwi_slam/config/tracked_slam_toolbox.yaml` |
-| 里程计 | 电机反馈 `/chassis/odom/raw` | `kiwi_slam/config/tracked_rf2o.yaml`，RF2O `/chassis/odom/laser` |
+| 里程计 | 电机反馈 `/chassis/odom/raw` | `kiwi_slam/config/tracked_rf2o.yaml`，RF2O 原始 `/chassis/odom/laser_raw` 经协方差适配后输出 `/chassis/odom/laser` |
 | Nav2/AMCL/代价地图 | `kiwi_navigation/config/nav2.yaml` | `kiwi_navigation/config/tracked_nav2.yaml` |
 | 结构与外参 | `kiwi_slam/urdf/kiwi.urdf.xacro` | `kiwi_slam/urdf/tracked.urdf.xacro` |
 | 雷达/惯导 | M10P `/scan`，C 板 IMU | M10P `/scan`，C 板 IMU；更换型号需新增驱动及档案 |
@@ -282,7 +283,7 @@ source tools/activate_workspace.sh
 ```bash
 # 驱动和 URDF：履带直线初测倍率已记录，运动关锁仍在，可打开串口读取 IMU。
 ros2 launch kiwi_slam kiwi_robot.launch.py start_ekf:=false start_lidar:=false
-# 底盘 + 里程计 + EKF；履带会额外启动 M10P、RF2O。
+# 底盘 + 里程计 + EKF；履带会额外启动 M10P、RF2O 和协方差适配器。
 ros2 launch kiwi_base kiwi_base_ekf.launch.py
 # 只建图，不启动 Nav2；履带适合先手动建图。
 ros2 launch kiwi_slam kiwi_slam.launch.py use_rviz:=true
@@ -293,7 +294,7 @@ ros2 launch kiwi_navigation localization_navigation.launch.py \
   map:="$HOME/ros2_ws/maps/warehouse.yaml" use_rviz:=true
 ```
 
-2026-09-24 的受控遥控录制已核验雷达和惯导外参、平面转角方向及短时 RF2O 静止漂移，履带 `mapping_sensors_verified=true`，允许进入手动建图测试。两档直线计时给出初步 `command_per_m_s`，但低速起步、反向和转向的上位机驱动尚未标定，`hardware_calibrated=false`、`enable_motion=false` 继续锁住正常 `/cmd_vel` 和 Nav2。手动建图可用现场遥控器移动；完成剩余运动标定后才能启用正常运动和导航。RF2O 只发里程计消息，EKF 独占 `odom → base_footprint`；SLAM Toolbox 或 AMCL 发布 `map → odom`。
+2026-09-24 的受控遥控录制已核验雷达和惯导外参、平面转角方向及短时 RF2O 静止漂移，履带 `mapping_sensors_verified=true`，允许进入手动建图测试。两档直线计时给出初步 `command_per_m_s`，但低速起步、反向和转向的上位机驱动尚未标定，`hardware_calibrated=false`、`enable_motion=false` 继续锁住正常 `/cmd_vel` 和 Nav2。手动建图可用现场遥控器移动；完成剩余运动标定后才能启用正常运动和导航。RF2O 不发布 TF，EKF 独占 `odom → base_footprint`；SLAM Toolbox 或 AMCL 发布 `map → odom`。
 
 同一个键盘节点使用同一个命令，并自动读取活动底盘的参数：
 
@@ -444,6 +445,14 @@ RViz 需手动改为 `map` 或重启 RViz 才会加载新配置。切换固定�
 2026-09-24 的履带 bag 离线对照还发现自动回环造成约 2 m 位姿跳变，故仅履带档案
 暂时关闭自动回环，保留逐帧激光匹配；Kiwi 档案仍使用自动回环。履带长距离行驶
 可能继续积累里程计误差，需低速重录并核对墙体重合后再启用回环或用于导航。
+2026-09-25 狭窄通道 bag 的后段约 280–300 秒走了约 8.7 m：RF2O 转角约
+`-5.7°`、IMU 积分约 `-4.6°`，但地图匹配又修正约 `-1.8°`；出通道转向时
+回波有效比例降低。离线对照表明，完全关闭逐帧匹配会形成明显双墙，单纯收窄
+角度搜索或只用 IMU 航向也没有消除偏差。履带 RF2O 原始消息的协方差全为零，
+现在通过 `/chassis/odom/laser_raw → /chassis/odom/laser` 适配器补上
+`tracked_rf2o.yaml` 中的试验性方差；这修正了 EKF 的输入契约，但尚未证明
+长直通道定位可靠。没有编码器或其他独立位移传感器时，IMU 转速只能约束航向，
+不能提供持续可靠的前进距离；这张出现墙线错位的地图不能用于自主导航验收。
 履带 C 板 IMU 在两次开机的静止录制中，z 轴角速度均值均约为
 `-0.0035 rad/s`；`tracked_pwm.yaml` 的 `gyro_z_bias_rad_s=-0.00355`
 在发布前扣除此静止零偏。更换惯导或安装位置后要重新测量。M10P 的静止
@@ -475,6 +484,9 @@ ros2 topic hz /scan
 ros2 topic hz /odometry/filtered
 ros2 topic hz /map
 ros2 run tf2_ros tf2_echo map odom
+# 履带额外检查两段里程计及协方差，/laser 中 pose/twist 的对角项必须为正。
+ros2 topic hz /chassis/odom/laser_raw
+ros2 topic echo /chassis/odom/laser --once
 ```
 
 ### 6.3 保存地图

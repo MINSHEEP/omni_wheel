@@ -150,10 +150,21 @@ def validate_rf2o(profile: Profile) -> None:
     ekf = _node(profile.data("base"), "ekf_filter_node", profile.files["base"])
     lidar = _node(profile.data("lidar"), "lslidar_driver_node", profile.files["lidar"])
     rf2o = _node(profile.data("rf2o"), "rf2o_laser_odometry", profile.files["rf2o"])
+    adapter = _node(profile.data("rf2o"), "rf2o_covariance_adapter", profile.files["rf2o"])
     _equal("RF2O 扫描", rf2o["laser_scan_topic"], lidar["laserscan_topic"], "/scan")
-    _equal("RF2O -> EKF", rf2o["odom_topic"], ekf["odom0"])
+    _equal("RF2O -> 协方差适配", rf2o["odom_topic"], adapter["source_topic"])
+    _equal("协方差适配 -> EKF", adapter["output_topic"], ekf["odom0"])
+    if adapter["source_topic"] == adapter["output_topic"]:
+        raise ValueError("RF2O 协方差输入和输出不能相同")
     _equal("RF2O 机体", rf2o["base_frame_id"], ekf["base_link_frame"])
     _equal("RF2O 里程计", rf2o["odom_frame_id"], ekf["odom_frame"])
+    _equal("协方差适配机体", adapter["base_frame"], ekf["base_link_frame"])
+    _equal("协方差适配里程计", adapter["odom_frame"], ekf["odom_frame"])
+    for key in (
+        "pose_xy_variance", "pose_yaw_variance", "twist_vx_variance",
+        "twist_vy_variance", "twist_wz_variance",
+    ):
+        _positive(f"RF2O {key}", adapter[key])
     _equal("IMU -> EKF", base["imu_topic"], ekf["imu0"])
     _equal("IMU 坐标", base["imu_frame_id"], "chassis_imu_link")
     _equal("RF2O 实车原点初始化", rf2o["init_pose_from_topic"], "")
@@ -230,7 +241,7 @@ def validate_profile(profile: Profile, mode: str = "driver") -> bool:
         if "monitor" in profile.files:
             validate_monitor(profile)
         if profile.odometry == "rf2o":
-            _equal("RF2O -> 门控", gate["source_odom_topic"], rf2o["odom_topic"])
+            _equal("RF2O -> 门控", gate["source_odom_topic"], ekf["odom0"])
             _equal("IMU -> 门控", gate["imu_topic"], base["imu_topic"])
             if not gate["require_source_odom"] or not gate["require_imu_samples"]:
                 raise ValueError("履带建图门控必须检查原始激光里程计和 IMU")

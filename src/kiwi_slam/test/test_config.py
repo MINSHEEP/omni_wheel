@@ -104,7 +104,7 @@ def test_launch_routes_base_ekf_lidar_gate_and_slam_through_profile():
     assert "load_profile(" in launch
     assert "robot_actions(profile" in launch
     assert "mapping_actions(profile" in launch
-    for executable in ("lslidar_driver_node", "rf2o_laser_odometry_node", "kiwi_mapping_scan_gate",
+    for executable in ("lslidar_driver_node", "rf2o_laser_odometry_node", "rf2o_covariance_adapter", "kiwi_mapping_scan_gate",
                        "sync_slam_toolbox_node", "ekf_node"):
         assert executable in shared
     assert "static_transform_publisher" not in launch
