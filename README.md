@@ -192,6 +192,17 @@ EKF 因误读旧 YAML 而静默回退到没有 `odom0/imu0` 的默认配置。
 若旧终端设置过其他域，先执行 `unset ROS_DOMAIN_ID`，再加载脚本。显式覆盖域时，
 先确认没有别的机器人在该域发布 `/tf` 或 `/scan`。
 
+本地开发机和远程上位机使用同一个 Kiwi 域 `42`，才能从本地查看远程 ROS 数据。
+两台机器各执行一次下列命令，新开的 Bash 终端会自动进入该域；脚本会备份原
+`~/.bashrc`，重复运行不会插入重复配置。已经打开的终端仍需重新加载环境。
+
+```bash
+cd "$HOME/ros2_ws"                  # 本地开发机换成自己的工作区路径
+python3 tools/configure_ros_domain.py
+source ~/.bashrc
+echo "$ROS_DOMAIN_ID"                 # 42
+```
+
 ## 4. 构建和测试
 
 依赖安装和 udev 配置完成后，从工作区根目录构建导航、M10P 驱动、Web 控制台和履带 RF2O：
