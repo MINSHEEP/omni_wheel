@@ -26,6 +26,14 @@ fi
 source /opt/ros/humble/setup.bash
 source "${KIWI_INSTALL_SETUP}"
 
+# 与 kiwi_web/config/web.yaml 的默认域一致，隔离局域网内其他机器的 /tf、/scan。
+# 显式设置 ROS_DOMAIN_ID 的用户可连接到自己指定的 ROS 域。
+if [[ -z "${ROS_DOMAIN_ID:-}" ]]; then
+  export ROS_DOMAIN_ID=42
+elif [[ "${ROS_DOMAIN_ID}" != 42 ]]; then
+  echo "提示：当前 ROS_DOMAIN_ID=${ROS_DOMAIN_ID}，Kiwi 默认域为 42；请确认没有接入其他机器的同名 TF。" >&2
+fi
+
 for KIWI_PACKAGE_NAME in kiwi_platform kiwi_base kiwi_slam kiwi_navigation; do
   KIWI_PACKAGE_PREFIX="$(ros2 pkg prefix "${KIWI_PACKAGE_NAME}" 2>/dev/null)" || {
     echo "错误：当前 ament 索引找不到 ${KIWI_PACKAGE_NAME}。" >&2
@@ -54,4 +62,4 @@ done
 
 export KIWI_WORKSPACE_ROOT
 unset KIWI_INSTALL_SETUP KIWI_PACKAGE_NAME KIWI_PACKAGE_PREFIX KIWI_KEYBOARD_ENTRY KIWI_SCRIPT_NAME KIWI_SCRIPT_ENTRY
-echo "Kiwi 工作区已加载：${KIWI_WORKSPACE_ROOT}"
+echo "Kiwi 工作区已加载：${KIWI_WORKSPACE_ROOT}（ROS_DOMAIN_ID=${ROS_DOMAIN_ID}）"

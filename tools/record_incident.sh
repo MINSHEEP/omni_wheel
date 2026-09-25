@@ -86,6 +86,10 @@ if [[ -f "$WORKSPACE_ROOT/install/setup.bash" ]]; then
   source "$WORKSPACE_ROOT/install/setup.bash"
 fi
 set -u
+# 从独立终端直接运行采集脚本时也使用 Kiwi 的默认 ROS 域。
+if [[ -z "${ROS_DOMAIN_ID:-}" ]]; then
+  export ROS_DOMAIN_ID=42
+fi
 command -v ros2 >/dev/null 2>&1 || die "找不到 ros2，请先安装或 source ROS 2 Humble"
 command -v tar >/dev/null 2>&1 || die "找不到 tar"
 command -v df >/dev/null 2>&1 || die "找不到 df（coreutils）"

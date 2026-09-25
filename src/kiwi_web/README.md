@@ -40,7 +40,9 @@ ros2 launch kiwi_web web.launch.py
 浏览器开放 DDS 或额外 WebSocket 端口。IPv4/IPv6 地址跟随当前页面，不使用固定远端地址。
 
 默认使用独立 `ROS_DOMAIN_ID=42`，避免同一局域网其他 ROS 项目的同名话题影响底盘。
-服务启动的硬件、SLAM、Nav2 节点自动继承此域。命令行调试时先 `export ROS_DOMAIN_ID=42`。
+服务启动的硬件、SLAM、Nav2 节点自动继承此域。命令行调试时先运行
+`source tools/activate_workspace.sh`（完整工作区），只构建 Web 时先执行
+`export ROS_DOMAIN_ID=42`；录包和 RViz 终端也要在同一个域。
 可在 `web.yaml` 修改 `ros_domain_id`；如果启动前显式导出了 `ROS_DOMAIN_ID`，环境变量优先。
 
 直接运行并覆盖端口/地图目录：

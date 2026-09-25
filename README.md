@@ -187,6 +187,10 @@ source tools/activate_workspace.sh
 不要在同一终端最后加载含旧 `kiwi_base` 的其他工作区。激活脚本会把当前工作区放到
 overlay 最前面，并校验 `kiwi_platform`、`kiwi_base`、`kiwi_slam`、`kiwi_navigation` 的实际来源；这可避免
 EKF 因误读旧 YAML 而静默回退到没有 `odom0/imu0` 的默认配置。
+脚本在未显式设置 `ROS_DOMAIN_ID` 时使用 `42`，与 Web 服务一致；启动底盘、建图、
+键盘、RViz 或录包的每个终端都要加载。另一台电脑上的 RViz 也必须使用同一个域。
+若旧终端设置过其他域，先执行 `unset ROS_DOMAIN_ID`，再加载脚本。显式覆盖域时，
+先确认没有别的机器人在该域发布 `/tf` 或 `/scan`。
 
 ## 4. 构建和测试
 
@@ -227,10 +231,11 @@ ros2 run kiwi_slam kiwi_slam_compatibility --require-hardware  # 当前活动底
 另一个已加载工作区的终端运行 `ros2 topic hz /scan`。底盘联调和建图导航的完整启动命令见
 [双底盘平台架构](documents/platform_architecture.md)。履带直线倍率与雷达、惯导外参已初步核验，低速、反向和转向驱动标定仍待完成；活动 YAML 为 `tracked_pwm` 时可受限试车、用遥控器手动建图，正常运动和 Nav2 仍保持关锁。
 
-只构建底盘驱动时可执行下列命令，并用 `source install/setup.bash` 加载；这时可启动 `kiwi_base.launch.py` 和键盘，建图/导航及履带 RF2O 仍需上面的完整构建。
+只构建底盘驱动时可执行下列命令；这时可启动 `kiwi_base.launch.py` 和键盘，建图/导航及履带 RF2O 仍需上面的完整构建。
 
 ```bash
 colcon build --symlink-install --packages-up-to kiwi_base
+export ROS_DOMAIN_ID=42
 source install/setup.bash
 ```
 
@@ -334,6 +339,7 @@ colcon build --symlink-install --packages-up-to kiwi_base
 # 终端 1：只启动当前所选底盘节点，不需要先启动雷达、RF2O 或 EKF。
 cd "$HOME/ros2_ws"
 source /opt/ros/humble/setup.bash
+export ROS_DOMAIN_ID=42
 source install/setup.bash
 ros2 launch kiwi_base kiwi_base.launch.py
 ```
@@ -342,6 +348,7 @@ ros2 launch kiwi_base kiwi_base.launch.py
 # 终端 2：必须是能接收按键的前台终端。
 cd "$HOME/ros2_ws"
 source /opt/ros/humble/setup.bash
+export ROS_DOMAIN_ID=42
 source install/setup.bash
 ros2 run kiwi_base kiwi_teleop_keyboard
 ```
@@ -382,8 +389,8 @@ TCP 8080。网页启动时不会自动启动电机、雷达或导航，需在页
 已有地图可把旧工作区 `maps/` 中的 YAML、PGM 及 `.versions/`、`.routes/` 一起迁入新机的
 `$HOME/ros2_ws/maps/`。访问密码和端口在 `src/kiwi_web/config/web.yaml` 配置。
 
-网页默认使用 `ROS_DOMAIN_ID=42`；从命令行检查其话题时，在检查终端先执行
-`export ROS_DOMAIN_ID=42`。网页运行时不要另起底盘、键盘或 Nav2 速度发布者。
+网页默认使用 `ROS_DOMAIN_ID=42`；命令行执行 `source tools/activate_workspace.sh`
+后也会进入该域。网页运行时不要另起底盘、键盘或 Nav2 速度发布者。
 Web 通过相同活动底盘文件选择底盘、建图和导航参数；履带横移命令被拒绝。Kiwi 的就绪状态检查轮式反馈和 IMU 标定，履带改为检查 RF2O 激光里程计与实时 IMU。切换底盘或修改底盘标定 YAML 后需重启 Web 服务。履带只记录了两档直线初测倍率，正常运动仍锁定；Web 手动遥控保持未就绪，Web 导航也会在启动前被传感器核验关锁拒绝。
 
 需要登录后自动启动网页服务时，在目标上位机构建并加载工作区后执行：
@@ -581,8 +588,46 @@ ros2 topic echo /diagnostics
 - 键盘无效：确认键盘节点在前台 TTY 中运行，并且没有 Nav2 同时占用 `/cmd_vel`。
 - 方向错误：ROS 约定是 `vx+` 前进、`vy+` 左移；履带无 `vy`。检查电机编号/符号和实车前方标定。
 
+### 静止时点云自行旋转：先检查 ROS 域
+
+2026-09-25 的履带静止 bag 中，履带 EKF 的 `odom → base_footprint` 仅转约
+`0.26°`，但同一 ROS 域内另一台机器的 `/quad_odom_node` 还发布了
+`odom → base_link`，约一分钟内转了 `64°`。这让 `base_link` 同时有动态和静态父节点，
+RViz/SLAM 使用的雷达 TF 会串台。切换域后要停止旧域中的 Kiwi 建图进程，重新启动
+底盘、建图和 RViz；已录下的放射状错误地图不能用于导航。
+
+```bash
+# 每个 Kiwi 终端分别执行；这里的 42 与 Web 默认域相同。
+cd "$HOME/ros2_ws"
+unset ROS_DOMAIN_ID
+source tools/activate_workspace.sh
+echo "$ROS_DOMAIN_ID"                 # 应为 42
+ros2 node list                       # 不应出现 /quad_* 节点
+ros2 topic info /tf --verbose        # 不应有 /quad_odom_node 发布者
+```
+
+独立域中的所有上位机终端须一致；单独执行 `source install/setup.bash` 不会选择域。
+若切换域后命令行仍显示旧节点，可在该终端执行 `ros2 daemon stop` 后再查询。
+
 ## 9. 主要参数入口
 
 活动开关是 `src/kiwi_platform/config/active_platform.yaml`；每个底盘的文件映射在 `src/kiwi_platform/config/profiles/`。上面的表格列出所有底盘专属参数文件。M10P 串口配置目前共用 `src/kiwi_slam/config/ls_m10p_uart.yaml`；Web 服务配置是 `src/kiwi_web/config/web.yaml`。地图保存在 `$HOME/ros2_ws/maps/`，导航时使用 `map:=绝对路径.yaml`。
 
 使用 `--symlink-install` 时修改 YAML 后重启进程即可；普通安装需要重新构建对应包再加载工作区。实车参数仍须按 [平台架构与待标定项](documents/platform_architecture.md) 核验。
+
+履带建图录包命令（录包终端同样先选择 Kiwi 域）：
+
+```bash
+cd ~/ros2_ws
+source tools/activate_workspace.sh
+mkdir -p bags
+bag_dir="$HOME/ros2_ws/bags/tracked_mapping_$(date +%Y%m%d_%H%M%S)"
+echo "$bag_dir"
+
+ros2 bag record -o "$bag_dir" \
+  /scan /scan_slam \
+  /chassis/imu/data_raw \
+  /chassis/odom/laser_raw /chassis/odom/laser /odometry/filtered \
+  /tf /tf_static /map \
+  /kiwi_slam/mapping_gate_ready
+```
