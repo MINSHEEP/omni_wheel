@@ -23,3 +23,17 @@ rf2o_covariance_adapter:
     twist_vx_variance: 0.04
     twist_vy_variance: 0.01
     twist_wz_variance: 0.04
+    # 静止两秒内扫描、IMU 和 RF2O 位移同时稳定时，固定发布位姿；运动后连续续接。
+    # 2026-09-25 静止 bag 实测：原始扫描 2 s 中位差约 6 mm，
+    # RF2O 129 s 漂移 11.7 cm/2.8°，此约束仅用于履带。
+    stationary_filter_enabled: true
+    scan_topic: /scan
+    imu_topic: /chassis/imu/data_raw
+    stationary_window_s: 2.0
+    stationary_max_scan_median_delta_m: 0.012
+    stationary_min_scan_overlap_ratio: 0.75
+    stationary_min_valid_scan_ratio: 0.2
+    stationary_max_translation_m: 0.02
+    stationary_max_yaw_rad: 0.01
+    stationary_max_gyro_rms_rad_s: 0.012
+    stationary_max_sensor_age_s: 0.25

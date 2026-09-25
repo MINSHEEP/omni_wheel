@@ -165,6 +165,20 @@ def validate_rf2o(profile: Profile) -> None:
         "twist_vy_variance", "twist_wz_variance",
     ):
         _positive(f"RF2O {key}", adapter[key])
+    if adapter["stationary_filter_enabled"] is not True:
+        raise ValueError("履带 RF2O 必须启用静止零漂约束")
+    _equal("RF2O 静止检测扫描", adapter["scan_topic"], lidar["laserscan_topic"])
+    _equal("RF2O 静止检测 IMU", adapter["imu_topic"], base["imu_topic"])
+    for key in (
+        "stationary_window_s", "stationary_max_scan_median_delta_m",
+        "stationary_max_translation_m", "stationary_max_yaw_rad",
+        "stationary_max_gyro_rms_rad_s", "stationary_max_sensor_age_s",
+    ):
+        _positive(f"RF2O {key}", adapter[key])
+    for key in ("stationary_min_scan_overlap_ratio", "stationary_min_valid_scan_ratio"):
+        value = adapter[key]
+        if isinstance(value, bool) or not isinstance(value, (float, int)) or not 0.0 < value <= 1.0:
+            raise ValueError(f"RF2O {key} 必须在 (0, 1] 范围内")
     _equal("IMU -> EKF", base["imu_topic"], ekf["imu0"])
     _equal("IMU 坐标", base["imu_frame_id"], "chassis_imu_link")
     _equal("RF2O 实车原点初始化", rf2o["init_pose_from_topic"], "")

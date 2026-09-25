@@ -9,7 +9,9 @@ Kiwi:  电机反馈 /chassis/odom/raw + IMU -> EKF -> /odometry/filtered
 TF:   SLAM 或 AMCL: map -> odom；EKF: odom -> base_footprint；URDF: 底盘到雷达/IMU
 ```
 
-RF2O 的 `init_pose_from_topic` 设为空以避免等待不存在的真值位姿，`publish_tf=false` 避免与 EKF 重复发布 TF。RF2O 上游里程计协方差全为零；履带启动链额外运行 `rf2o_covariance_adapter`，将 `/chassis/odom/laser_raw` 的平面估计和时间戳原样转发到 `/chassis/odom/laser`，并按 `tracked_rf2o.yaml` 设置非零协方差。履带门控持续检查原始 IMU、适配后激光里程计和融合里程计的新鲜度；`mapping_sensors_verified=false` 时在启动前拒绝建图。
+RF2O 的 `init_pose_from_topic` 设为空以避免等待不存在的真值位姿，`publish_tf=false` 避免与 EKF 重复发布 TF。RF2O 上游里程计协方差全为零；履带启动链额外运行 `rf2o_covariance_adapter`，将 `/chassis/odom/laser_raw` 的平面估计转换到 `/chassis/odom/laser`，并按 `tracked_rf2o.yaml` 设置非零协方差。履带门控持续检查原始 IMU、适配后激光里程计和融合里程计的新鲜度；`mapping_sensors_verified=false` 时在启动前拒绝建图。
+
+2026-09-25 域 42 的 129 秒静止 bag 显示：原始扫描两秒间中位差约 6 mm、地图栅格完全不变，RF2O 却漂移约 11.7 cm、2.8°，EKF 随之漂移。履带适配器现在只在连续两秒的扫描、原始 IMU 与 RF2O 位移同时满足静止阈值时固定输出位姿和零速度；运动恢复时通过平面位姿偏移连续续接，不把静止期间累积的 RF2O 伪位移一次释放。Kiwi 轮式里程计不经过此适配器。该约束不能补偿真实运动中的激光里程计误差，也不能代替狭窄通道的运动测试。
 
 ```bash
 cd "$HOME/ros2_ws"
