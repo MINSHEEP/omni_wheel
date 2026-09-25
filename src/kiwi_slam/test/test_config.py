@@ -61,12 +61,14 @@ def test_slam_frames_ranges_and_mode_match_base_and_lidar():
     assert params["minimum_travel_heading"] == 0.20
 
 
-def test_tracked_mapping_disables_unverified_loop_closure_only():
+def test_tracked_mapping_handles_tf_latency_and_unverified_loop_closure():
     tracked = load_parameters("tracked_slam_toolbox.yaml", "slam_toolbox")
     kiwi = load_parameters("slam_toolbox.yaml", "slam_toolbox")
     assert tracked["scan_topic"] == kiwi["scan_topic"] == "/scan_slam"
     assert tracked["map_frame"] == kiwi["map_frame"] == "map"
     assert tracked["use_scan_matching"] is True
+    # 实测 TF 等待 p95=0.134 s，扫描周期=0.083 s；默认单帧队列容不下等待期间的扫描。
+    assert tracked["scan_queue_size"] >= 4
     assert tracked["do_loop_closing"] is False
     assert kiwi["do_loop_closing"] is True
 

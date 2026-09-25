@@ -28,6 +28,10 @@ slam_toolbox:
     max_laser_range: 12.0
     minimum_time_interval: 0.05
     transform_timeout: 0.20
+    # 实测 /scan_slam 为 12 Hz，而 EKF 的 odom→base TF 覆盖扫描时间戳
+    # 通常晚约 0.10 s、95 分位晚约 0.13 s；默认 1 帧队列会持续丢扫描，
+    # 导致 map→odom 停留在旧时间戳。允许等待足够多的扫描帧。
+    scan_queue_size: 10
     tf_buffer_duration: 30.0
     stack_size_to_use: 40000000
     enable_interactive_mode: true

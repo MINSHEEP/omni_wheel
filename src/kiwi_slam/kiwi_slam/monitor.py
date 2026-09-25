@@ -217,12 +217,23 @@ class KiwiSlamMonitor(Node):
             try:
                 transform = self.tf_buffer.lookup_transform(target, source, Time())
                 translation = transform.transform.translation
+                stamp = transform.header.stamp
+                stamp_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
+                age_sec = (
+                    (self.get_clock().now().nanoseconds - stamp_ns) / 1_000_000_000
+                    if stamp_ns else 0.0
+                )
+                # 只有 URDF 的 base→laser 可使用零时间戳；里程计与地图变换必须持续更新。
+                stale = name != "base_to_laser_tf" and (
+                    stamp_ns == 0 or age_sec > self.timeout_sec
+                )
                 statuses.append(
                     self._status(
                         name,
-                        DiagnosticStatus.OK,
-                        "transform available",
+                        DiagnosticStatus.ERROR if stale else DiagnosticStatus.OK,
+                        "transform stale" if stale else "transform available",
                         transform=f"{target}<-{source}",
+                        age_sec=f"{age_sec:.3f}",
                         xyz=(
                             f"{translation.x:.3f},{translation.y:.3f},"
                             f"{translation.z:.3f}"
