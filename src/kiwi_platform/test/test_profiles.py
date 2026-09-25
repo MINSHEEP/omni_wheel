@@ -31,14 +31,52 @@ def test_selection_changes_all_parameter_files_and_driver(source_shares, monkeyp
     for key in ("base", "nav2", "slam", "gate", "urdf"):
         assert kiwi.path(key) != tracked.path(key)
     assert profiles.validate_profile(kiwi, "mapping")
-    assert not profiles.validate_profile(tracked, "driver")
-    assert profiles.validate_profile(tracked, "mapping") is False
+    assert profiles.validate_profile(tracked, "driver")
+    assert profiles.validate_profile(tracked, "mapping")
+    assert profiles.validate_profile(tracked, "localization")
     nodes = robot_actions(tracked)
     names = [action.node_executable for action in nodes]
     assert names == ["robot_state_publisher", "tracked_base_node", "lslidar_driver_node",
-                     "rf2o_laser_odometry_node", "rf2o_covariance_adapter", "ekf_node"]
+                     "rf2o_laser_odometry_node", "rf2o_covariance_adapter", "tracked_imu_acceleration", "ekf_node"]
     nodes = robot_actions(kiwi)
     assert "rf2o_laser_odometry_node" not in [action.node_executable for action in nodes]
+
+
+def test_custom_install_base_keeps_workspace_consistency_check(source_shares, monkeypatch, tmp_path):
+    install_base = tmp_path / "navigation-validation-prefix"
+    monkeypatch.setattr(profiles, "get_package_prefix",
+                        lambda package: str(install_base / package))
+    selector = str(source_shares / "tracked_pwm.yaml")
+    assert profiles.load_profile(selector).chassis == "tracked_pwm"
+
+    def mixed_prefix(package):
+        base = tmp_path / "other-prefix" if package == "kiwi_navigation" else install_base
+        return str(base / package)
+
+    monkeypatch.setattr(profiles, "get_package_prefix", mixed_prefix)
+    with pytest.raises(ValueError, match="不同工作区"):
+        profiles.load_profile(selector)
+
+
+@pytest.mark.parametrize("failure", ["duplicate_gravity", "duplicate_yaw", "bad_rotation", "wrong_lever"])
+def test_acceleration_contract_rejects_invalid_fusion_before_launch(source_shares, tmp_path, failure):
+    profile = profiles.load_profile(str(source_shares / "tracked_pwm.yaml"))
+    base = profile.data("base")
+    ekf = base["ekf_filter_node"]["ros__parameters"]
+    accel = base["tracked_imu_acceleration"]["ros__parameters"]
+    if failure == "duplicate_gravity":
+        ekf["imu1_remove_gravitational_acceleration"] = True
+    elif failure == "duplicate_yaw":
+        ekf["imu1_config"][11] = True
+    elif failure == "bad_rotation":
+        accel["accel_rotation"][0] = 10.0
+    else:
+        accel["imu_lever_xy"] = [0.24, 0.0]
+    path = tmp_path / "bad_accel.yaml"
+    path.write_text(yaml.safe_dump(base))
+    altered = profiles.load_profile(str(source_shares / "tracked_pwm.yaml"), {"base": str(path)})
+    with pytest.raises(ValueError, match="加速度"):
+        profiles.validate_profile(altered, "mapping")
 
 
 def test_tracked_mapping_waits_for_sensor_verification_but_not_speed(source_shares, tmp_path):
@@ -46,7 +84,7 @@ def test_tracked_mapping_waits_for_sensor_verification_but_not_speed(source_shar
     base = original.data("base")
     motor = base["tracked_base_node"]["ros__parameters"]
     assert motor["mapping_sensors_verified"] is True
-    assert not motor["hardware_calibrated"] and not motor["enable_motion"]
+    assert motor["hardware_calibrated"] and motor["enable_motion"]
     motor["mapping_sensors_verified"] = False
     unverified = tmp_path / "tracked_unverified.yaml"
     unverified.write_text(yaml.safe_dump(base))
@@ -54,6 +92,8 @@ def test_tracked_mapping_waits_for_sensor_verification_but_not_speed(source_shar
     with pytest.raises(ValueError, match="尚未核验"):
         profiles.validate_profile(blocked, "mapping")
     motor["mapping_sensors_verified"] = True
+    motor["hardware_calibrated"] = False
+    motor["enable_motion"] = False
     override = tmp_path / "tracked_verified.yaml"
     override.write_text(yaml.safe_dump(base))
     tracked = profiles.load_profile(str(source_shares / "tracked_pwm.yaml"), {"base": str(override)})
@@ -160,9 +200,12 @@ def test_keyboard_trial_cannot_unlock_tracked_navigation(source_shares, tmp_path
     selector = str(source_shares / "tracked_pwm.yaml")
     base = profiles.load_profile(selector).data("base")
     motor = base["tracked_base_node"]["ros__parameters"]
-    assert motor["keyboard_trial_enabled"] is True
-    assert motor["hardware_calibrated"] is False
-    assert profiles.validate_profile(profiles.load_profile(selector), "driver") is False
+    assert motor["keyboard_trial_enabled"] is False
+    assert motor["hardware_calibrated"] is True
+    assert profiles.validate_profile(profiles.load_profile(selector), "driver") is True
+    motor["hardware_calibrated"] = False
+    motor["enable_motion"] = False
+    motor["keyboard_trial_enabled"] = True
     motor["mapping_sensors_verified"] = True
     verified = tmp_path / "trial.yaml"
     verified.write_text(yaml.safe_dump(base))

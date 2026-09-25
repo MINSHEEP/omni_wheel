@@ -1,0 +1,5 @@
+#!/usr/bin/env python3
+from kiwi_slam.calibrate_planar_imu import main
+
+if __name__ == "__main__":
+    main()

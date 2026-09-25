@@ -65,7 +65,10 @@ def test_independent_mapping_selects_tracked_parameters_and_omits_nav2_until_cal
     selector.write_text("chassis: tracked_pwm\n")
     original = load_profile(str(selector))
     base = original.data("base")
-    base["tracked_base_node"]["ros__parameters"]["mapping_sensors_verified"] = True
+    base["tracked_base_node"]["ros__parameters"].update(
+        mapping_sensors_verified=True, hardware_calibrated=False,
+        enable_motion=False, keyboard_trial_enabled=True,
+    )
     override = tmp_path / "verified.yaml"
     override.write_text(yaml.safe_dump(base))
     slam = load_launch("kiwi_slam", "kiwi_slam.launch.py")
@@ -116,23 +119,21 @@ def test_calibrated_tracked_localization_uses_own_nav2_and_rf2o(tmp_path):
     selector.write_text("chassis: tracked_pwm\n")
     profile = load_profile(str(selector))
     base = profile.data("base")
-    base["tracked_base_node"]["ros__parameters"].update(
-        mapping_sensors_verified=True, hardware_calibrated=True,
-        enable_motion=True, open_loop_test_enabled=False,
-                 keyboard_trial_enabled=False, command_per_m_s=10.0,
-    )
-    calibrated = tmp_path / "calibrated.yaml"
-    calibrated.write_text(yaml.safe_dump(base))
+    assert base["tracked_base_node"]["ros__parameters"]["command_per_m_s"] == 21.2
+    assert validate_profile(profile, "localization")
+    mapping = load_launch("kiwi_navigation", "mapping_navigation.launch.py")
+    assert len(mapping._setup(context_for(mapping, platform_file=str(selector),
+                                          use_rviz="false"))) == 2
     map_file = tmp_path / "map.yaml"
     map_file.write_text("image: map.pgm\nresolution: 0.05\norigin: [0,0,0]\n")
     (tmp_path / "map.pgm").write_bytes(b"P5\n1 1\n255\n\xff")
     launch = load_launch("kiwi_navigation", "localization_navigation.launch.py")
-    context = context_for(launch, platform_file=str(selector), base_params_file=str(calibrated),
+    context = context_for(launch, platform_file=str(selector),
                           map=str(map_file), use_rviz="false")
     actions = launch._setup(context)
     nodes = [action.node_executable for action in actions if hasattr(action, "node_executable")]
     assert nodes == ["robot_state_publisher", "tracked_base_node", "lslidar_driver_node",
-                     "rf2o_laser_odometry_node", "rf2o_covariance_adapter", "ekf_node"]
+                     "rf2o_laser_odometry_node", "rf2o_covariance_adapter", "tracked_imu_acceleration", "ekf_node"]
     includes = [action for action in actions if action.__class__.__name__ == "IncludeLaunchDescription"]
     assert len(includes) == 2
     localization = dict(includes[0]._IncludeLaunchDescription__launch_arguments)

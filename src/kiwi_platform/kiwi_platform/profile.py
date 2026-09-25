@@ -85,7 +85,7 @@ def load_profile(selector_file: str = "", overrides: dict | None = None,
     # 防止旧工作区同名包覆盖其中一环，导致底盘与 Nav2 读取不同版本的文件。
     def install_root(package: str) -> Path:
         prefix = Path(get_package_prefix(package)).resolve()
-        return prefix.parent if prefix.name == package and prefix.parent.name == "install" else prefix
+        return prefix.parent if prefix.name == package else prefix
 
     expected_root = install_root("kiwi_platform")
     files = {}
@@ -181,6 +181,44 @@ def validate_rf2o(profile: Profile) -> None:
             raise ValueError(f"RF2O {key} 必须在 (0, 1] 范围内")
     _equal("IMU -> EKF", base["imu_topic"], ekf["imu0"])
     _equal("IMU 坐标", base["imu_frame_id"], "chassis_imu_link")
+    acceleration = _node(profile.data("base"), "tracked_imu_acceleration", profile.files["base"])
+    _equal("加速度原始输入", acceleration["source_topic"], base["imu_topic"])
+    _equal("加速度原始坐标", acceleration["source_frame"], base["imu_frame_id"])
+    _equal("加速度 -> EKF", acceleration["output_topic"], ekf["imu1"])
+    _equal("加速度输出坐标", acceleration["output_frame"], ekf["base_link_frame"])
+    if acceleration["output_topic"] == acceleration["source_topic"]:
+        raise ValueError("校正加速度不能覆盖原始 IMU 话题")
+    if ekf["imu1_config"] != [False] * 12 + [True, True, False]:
+        raise ValueError("加速度 IMU 仅可融合 ax/ay，禁止重复融合 yaw 或姿态")
+    if ekf["imu1_remove_gravitational_acceleration"] is not False:
+        raise ValueError("加速度已经去重力，EKF 不得重复去重力")
+    if not isinstance(acceleration["enabled"], bool):
+        raise ValueError("加速度 enabled 必须为布尔值")
+    model = _node(profile.data("base"), "tracked_robot_model", profile.files["base"])
+    _equal("加速度杆臂", acceleration["imu_lever_xy"], model["imu_xyz"][:2])
+    _equal("平面加速度模型旋转", model["imu_rpy"], [0.0, 0.0, 0.0])
+    for key, length in (("accel_rotation", 9), ("rest_acceleration", 3),
+                        ("acceleration_variance", 3), ("imu_lever_xy", 2)):
+        values = acceleration[key]
+        if not isinstance(values, list) or len(values) != length or any(
+                isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+                for v in values):
+            raise ValueError(f"加速度 {key} 必须为 {length} 个有限数值")
+    rotation = [acceleration["accel_rotation"][i:i + 3] for i in (0, 3, 6)]
+    for i in range(3):
+        for j in range(3):
+            if abs(sum(a * b for a, b in zip(rotation[i], rotation[j])) - (i == j)) > 1e-5:
+                raise ValueError("加速度旋转矩阵必须正交")
+    cross = [rotation[0][1] * rotation[1][2] - rotation[0][2] * rotation[1][1],
+             rotation[0][2] * rotation[1][0] - rotation[0][0] * rotation[1][2],
+             rotation[0][0] * rotation[1][1] - rotation[0][1] * rotation[1][0]]
+    if abs(sum(a * b for a, b in zip(cross, rotation[2])) - 1.0) > 1e-5:
+        raise ValueError("加速度旋转矩阵不得镜像")
+    gravity = [sum(a * b for a, b in zip(row, acceleration["rest_acceleration"])) for row in rotation]
+    if math.hypot(*gravity[:2]) > 0.1 or not 8 < gravity[2] < 11:
+        raise ValueError("加速度旋转矩阵与静止重力方向不一致")
+    for variance in acceleration["acceleration_variance"]:
+        _positive("加速度方差", variance)
     _equal("RF2O 实车原点初始化", rf2o["init_pose_from_topic"], "")
     if rf2o["publish_tf"] is not False:
         raise ValueError("履带 RF2O 必须关闭 TF，由 EKF 独占发布")

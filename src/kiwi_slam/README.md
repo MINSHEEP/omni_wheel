@@ -1,5 +1,7 @@
 # kiwi_slam
 
+履带现增加 `tracked_imu_acceleration`：在上位机校正三轴加速度并扣除固定平放时的重力/偏置，补偿 IMU 前置 8 cm 的转向加速度后，供 EKF 融合 ax/ay；原有 yaw 转换保持不变。它仅适用于平面惯性辅助，不保证无特征长走廊的长期精度。[标定脚本、适用范围、回放结果与漂移录制命令](../../documents/tracked_inertial_validation.md)。
+
 `kiwi_slam.launch.py` 是独立建图入口，读取 `kiwi_platform/config/active_platform.yaml`。Kiwi 启动轮式里程计、C 板 IMU 和 EKF；履带启动 M10P、`tracked_rf2o.yaml` 对应的 RF2O、协方差适配器、C 板 IMU 和 EKF。两种底盘分别读取 `slam_toolbox.yaml` / `tracked_slam_toolbox.yaml` 和 `mapping_gate.yaml` / `tracked_mapping_gate.yaml`，并使用各自的 URDF。参数文件列表与切换命令见 [平台架构](../../documents/platform_architecture.md)。
 
 ```text

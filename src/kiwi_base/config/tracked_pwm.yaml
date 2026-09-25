@@ -1,4 +1,4 @@
-# 两电机履带平台。直线倍率和建图传感器已初测；低速、反向和转向未完成驱动标定。
+# 两电机履带平台。直线速度换算使用 2026-09-24 地面实测及用户确认的标定值。
 # motor1=左履带、motor2=右履带、motor3=0；沿用 C 板 0x3A/0x3B 协议。
 tracked_base_node:
   ros__parameters:
@@ -14,7 +14,7 @@ tracked_base_node:
     track_separation_m: 0.50
     # 2026-09-24 地面直线初测：1.6 m，命令 5 用 6.85 s -> 21.406；
     # 命令 10 用 3.37 s -> 21.063；取两档均值 21.2 固件命令值/(m/s)。
-    # 尚未验证低速死区、反向和转向；hardware_calibrated=false 时此倍率不解锁运动。
+    # 低速起步、反向和转向仍需在首次导航时观察；标定倍率由用户确认为 21.2。
     command_per_m_s: 21.2
     # 已核对固件 robot_param_pwm_diff.h: PWM_DIFF_USB_MAX_COMMAND=20 rad/s。
     max_motor_command: 20.0
@@ -26,16 +26,15 @@ tracked_base_node:
     gyro_z_bias_rad_s: -0.00355
     gyro_z_variance: 0.01
     # 2026-09-24 受控遥控 bag 已核对安装 TF、IMU/RF2O 双向转角与静止漂移；允许手动建图。
-    # 这不代表运动控制标定完成，正常 /cmd_vel 和 Nav2 仍由下面两项锁住。
+    # 传感器链路与运动标定分别由各自开关表示。
     mapping_sensors_verified: true
-    hardware_calibrated: false
-    enable_motion: false
-    # 受限键盘试车使用直线初测倍率；前进/后退约输出 ±4.98，q/e 原地转向输出 -5/+5 或 +5/-5。
-    # 遥控器可后退/转向；键盘旧档前进慢、转向有反应、后退不动。负向起步仍待实测。
-    keyboard_trial_enabled: true
+    hardware_calibrated: true
+    enable_motion: true
+    # 常规运动启用时关闭临时键盘试车；以下倍率和限幅仅供再次切回试车模式时使用。
+    keyboard_trial_enabled: false
     keyboard_trial_command_gain: 21.2
     keyboard_trial_limit_rad_s: 5.0
-    # 原始电机话题与键盘试车互斥；需要原始试车时将上面开关设 false、此处设 true。
+    # 重新使用原始电机话题前，须同时关闭正常运动和键盘试车，再将此项设为 true。
     open_loop_test_enabled: false
     open_loop_test_topic: /chassis/open_loop_motor_cmd
     open_loop_test_limit_rad_s: 10.0
@@ -70,6 +69,33 @@ ekf_filter_node:
       false, false, false
     ]
     imu0_queue_size: 20
+    # yaw 保持原有驱动转换；第二路仅融合已去重力、已补偿 8 cm 杆臂的平面加速度。
+    imu1: /chassis/imu/acceleration
+    imu1_config: [
+      false, false, false,
+      false, false, false,
+      false, false, false,
+      false, false, false,
+      true, true, false
+    ]
+    imu1_queue_size: 20
+    imu1_remove_gravitational_acceleration: false
+
+tracked_imu_acceleration:
+  ros__parameters:
+    # 2026-09-25 静止合量 + 09-24 直线启停方向标定；仅适用于固定平放。
+    # 17 个直线窗口相关性 0.957；未拟合比例系数，尚待独立实车地图精度验收。
+    enabled: true
+    source_topic: /chassis/imu/data_raw
+    source_frame: chassis_imu_link
+    output_topic: /chassis/imu/acceleration
+    output_frame: base_footprint
+    accel_rotation: [-0.6000943129, -0.0021309532, 0.7999264183,
+                      0.0001200478, 0.9999962006, 0.0027539847,
+                     -0.7999292476, 0.0017486800, -0.6000917771]
+    rest_acceleration: [-7.8902080586, 0.0172483369, -5.9190847056]
+    acceleration_variance: [0.04, 0.04, 0.04]
+    imu_lever_xy: [0.08, 0.0]
 
 tracked_robot_model:
   ros__parameters:

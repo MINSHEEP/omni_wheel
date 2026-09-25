@@ -9,7 +9,7 @@ ament_python_install_package(${PROJECT_NAME})
 
 # symlink-install 会继承源码的执行位；复制/解压工作区后脚本可能变成 0644。
 set(KIWI_SLAM_PROGRAMS)
-foreach(program kiwi_slam_monitor kiwi_slam_compatibility kiwi_mapping_scan_gate rf2o_covariance_adapter)
+foreach(program kiwi_slam_monitor kiwi_slam_compatibility kiwi_mapping_scan_gate rf2o_covariance_adapter tracked_imu_acceleration calibrate_planar_imu)
   set(installed_program "${CMAKE_CURRENT_BINARY_DIR}/${program}")
   configure_file("scripts/${program}" "${installed_program}" COPYONLY)
   file(CHMOD "${installed_program}" PERMISSIONS
@@ -37,6 +37,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_runtime_contract test/test_runtime_contract.py)
   ament_add_pytest_test(test_mapping_gate test/test_mapping_gate.py)
   ament_add_pytest_test(test_odom_covariance test/test_odom_covariance.py)
+  ament_add_pytest_test(test_planar_imu test/test_planar_imu.py)
 endif()
 
 ament_package()

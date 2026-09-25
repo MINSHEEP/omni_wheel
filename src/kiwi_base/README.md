@@ -95,7 +95,7 @@ ros2 run kiwi_base kiwi_teleop_keyboard
 
 ## 履带底盘
 
-选择 `tracked_pwm` 后，同一底盘 launch 会启动 `tracked_base_node`，同一键盘命令读取 `config/tracked_pwm.yaml`。履带无编码器，不发布 `/chassis/odom/raw`；`kiwi_base_ekf.launch.py` 会启动 M10P、RF2O 和 EKF。履带不支持 `linear.y`，键盘 `A/D` 会被驱动拒绝并停车；当前 `keyboard_trial_enabled=true` 允许临时键盘开环试车，`keyboard_trial_command_gain=21.2` 使用直线初测倍率，每路最多 ±5 的固件命令；两档直线初测倍率 `command_per_m_s=21.2` 已记录，但低速、反向和转向未核验，`hardware_calibrated=false`、`enable_motion=false` 保持正常运动和 Nav2 锁定。机身 0.70 × 0.59 m、履带中心距 0.50 m 已记录，其余待测项见[平台架构](../../documents/platform_architecture.md)。
+选择 `tracked_pwm` 后，同一底盘 launch 会启动 `tracked_base_node`，同一键盘命令读取 `config/tracked_pwm.yaml`。履带无编码器，不发布 `/chassis/odom/raw`；`kiwi_base_ekf.launch.py` 会启动 M10P、RF2O 和 EKF。履带不支持 `linear.y`，键盘 `A/D` 会被驱动拒绝并停车。用户确认的速度换算 `command_per_m_s=21.2` 已用于正常运动，`hardware_calibrated=true`、`enable_motion=true`，临时键盘试车和原始电机试车均关闭。首次实车导航仍需观察低速起步、反向和原地转向，机身 0.70 × 0.59 m、履带中心距 0.50 m 已记录，其余待测项见[平台架构](../../documents/platform_architecture.md)。
 
 履带驱动在 `gyro_z_sign`、`gyro_z_scale` 后，从发布的 ROS z 轴角速度中扣除
 `gyro_z_bias_rad_s`。当前值 `-0.00355 rad/s` 来自静止 bag；它只消除静止

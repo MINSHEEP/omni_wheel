@@ -73,6 +73,11 @@ def robot_actions(profile, *, base=True, ekf=True, description=True, lidar=True)
                 name="rf2o_covariance_adapter", output="screen",
                 parameters=[profile.path("rf2o")],
             ))
+            actions.append(Node(
+                package="kiwi_slam", executable="tracked_imu_acceleration",
+                name="tracked_imu_acceleration", output="screen",
+                parameters=[profile.path("base")],
+            ))
         actions.append(Node(
             package="robot_localization", executable="ekf_node", name="ekf_filter_node",
             output="screen", parameters=[profile.path("base")],
