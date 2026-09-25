@@ -15,7 +15,7 @@ from kiwi_slam.odom_covariance import (
 def stationary_filter():
     return StationaryOdomFilter(StationaryFilterConfig(
         window_s=2.0,
-        max_scan_median_delta_m=0.012,
+        max_scan_median_delta_m=0.011,
         min_scan_overlap_ratio=0.75,
         min_valid_scan_ratio=0.2,
         max_translation_m=0.02,
@@ -25,13 +25,16 @@ def stationary_filter():
     ))
 
 
-def sample(filter_, time_s, raw_x, raw_y, raw_yaw, scan_shift=0.0, gyro=0.003):
+def sample(filter_, time_s, raw_x, raw_y, raw_yaw, scan_shift=0.0, gyro=0.003,
+           scan_partial_shift=0.0):
     scan = LaserScan()
     scan.range_min = 0.2
     scan.range_max = 12.0
     scan.angle_min = -1.0
     scan.angle_increment = 0.01
-    scan.ranges = [4.0 + scan_shift + (index % 5) * 0.01 for index in range(200)]
+    scan.ranges = [4.0 + scan_shift + (index % 5) * 0.01
+                   + (scan_partial_shift if index < 40 else 0.0)
+                   for index in range(200)]
     imu = Imu()
     imu.angular_velocity.z = gyro
     message = Odometry()
@@ -107,3 +110,19 @@ def test_imu_rotation_vetoes_stationary_hold():
         output, held = sample(filter_, index * 0.1, 0.0, 0.0, 0.0,
                               gyro=0.04)
     assert not held
+
+
+def test_stationary_rf2o_jump_and_partial_scan_noise_do_not_release_hold():
+    filter_ = stationary_filter()
+    for index in range(31):
+        output, held = sample(filter_, index * 0.1, 0.0, 0.0, 0.0)
+    assert held
+    for index in range(31, 61):
+        output, held = sample(filter_, index * 0.1, 0.25, -0.12, 0.03)
+        assert held
+        assert abs(output.pose.pose.position.x) < 0.001
+        assert abs(output.pose.pose.position.y) < 0.001
+    for index in range(61, 91):
+        output, held = sample(filter_, index * 0.1, 0.25, -0.12, 0.03,
+                              scan_partial_shift=0.1)
+        assert held

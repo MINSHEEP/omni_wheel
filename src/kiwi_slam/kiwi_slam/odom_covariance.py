@@ -49,10 +49,12 @@ class StationaryFilterConfig:
 
 
 class StationaryOdomFilter:
-    """Hold RF2O pose only with two seconds of matching scans, IMU and odom.
+    """Hold RF2O pose after two seconds of matching scans, IMU and odom.
 
     The correction is an SE(2) offset. Updating it while held prevents the
     accumulated raw RF2O drift from reappearing as a jump when motion resumes.
+    Once held, RF2O's own displacement cannot end the hold: stationary tests
+    show that RF2O can jump more than 20 cm while scans and IMU remain still.
     """
 
     def __init__(self, config: StationaryFilterConfig) -> None:
@@ -150,8 +152,10 @@ class StationaryOdomFilter:
             self.scan_stable and self.last_scan_time is not None
             and 0.0 <= now - self.last_scan_time <= self.config.max_sensor_age_s
             and now - self.poses[0][0] >= self.config.window_s
-            and displacement <= self.config.max_translation_m
-            and yaw_change <= self.config.max_yaw_rad and imu_ready
+            and (self.held_pose is not None or (
+                displacement <= self.config.max_translation_m
+                and yaw_change <= self.config.max_yaw_rad))
+            and imu_ready
         )
         if stationary:
             if self.held_pose is None:
@@ -221,7 +225,7 @@ class OdometryCovarianceAdapter(Node):
             self.stationary_filter = StationaryOdomFilter(StationaryFilterConfig(
                 window_s=float(self.declare_parameter("stationary_window_s", 2.0).value),
                 max_scan_median_delta_m=float(self.declare_parameter(
-                    "stationary_max_scan_median_delta_m", 0.012).value),
+                    "stationary_max_scan_median_delta_m", 0.011).value),
                 min_scan_overlap_ratio=float(self.declare_parameter(
                     "stationary_min_scan_overlap_ratio", 0.75).value),
                 min_valid_scan_ratio=float(self.declare_parameter(

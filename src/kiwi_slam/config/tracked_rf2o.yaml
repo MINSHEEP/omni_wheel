@@ -30,7 +30,7 @@ rf2o_covariance_adapter:
     scan_topic: /scan
     imu_topic: /chassis/imu/data_raw
     stationary_window_s: 2.0
-    stationary_max_scan_median_delta_m: 0.012
+    stationary_max_scan_median_delta_m: 0.011
     stationary_min_scan_overlap_ratio: 0.75
     stationary_min_valid_scan_ratio: 0.2
     stationary_max_translation_m: 0.02
