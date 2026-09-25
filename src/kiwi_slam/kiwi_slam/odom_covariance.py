@@ -276,7 +276,7 @@ class OdometryCovarianceAdapter(Node):
             message, stationary = self.stationary_filter.correct(message, time.monotonic())
             if stationary != self.was_stationary:
                 self.get_logger().info(
-                    "RF2O stationary hold %s", "active" if stationary else "released")
+                    f"RF2O stationary hold {'active' if stationary else 'released'}")
                 self.was_stationary = stationary
         self.publisher.publish(set_covariance(message, **self.variances))
 
