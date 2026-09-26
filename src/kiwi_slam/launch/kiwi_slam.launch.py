@@ -53,6 +53,13 @@ def _setup(context):
         if static not in ("", "true", "false"):
             raise ValueError("monitor_map_is_static 必须是 true 或 false")
         parameters = [profile.path("monitor")]
+        if slam and profile.odometry == "rf2o" and static != "true":
+            guard = profile.data("base")["tracked_estimation_guard"]["ros__parameters"]
+            gate = profile.data("gate")["kiwi_mapping_scan_gate"]["ros__parameters"]
+            parameters.append({"mapping_gate_ready_topic": gate["gate_ready_topic"],
+                               "estimation_state_topic": guard["state_topic"],
+                               "inertial_valid_topic": profile.data("base")["tracked_inertial_odometry"]["ros__parameters"]["valid_topic"],
+                               "inertial_reason_topic": profile.data("base")["tracked_inertial_odometry"]["ros__parameters"]["reason_topic"]})
         if static:
             parameters.append({"map_is_static": static == "true"})
         actions.append(Node(package="kiwi_slam", executable="kiwi_slam_monitor",
@@ -77,7 +84,7 @@ def generate_launch_description():
             ("start_base", "true"), ("start_ekf", "true"), ("start_lidar", "true"),
             ("start_slam", "true"), ("start_monitor", "true"),
             ("start_description", "true"), ("use_rviz", "true"),
-            ("rviz_software_rendering", "true"),
+            ("rviz_software_rendering", "false"),
         )],
         OpaqueFunction(function=_setup),
     ])

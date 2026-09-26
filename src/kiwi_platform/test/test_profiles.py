@@ -37,9 +37,11 @@ def test_selection_changes_all_parameter_files_and_driver(source_shares, monkeyp
     nodes = robot_actions(tracked)
     names = [action.node_executable for action in nodes]
     assert names == ["robot_state_publisher", "tracked_base_node", "lslidar_driver_node",
-                     "rf2o_laser_odometry_node", "rf2o_covariance_adapter", "tracked_imu_acceleration", "ekf_node"]
+                     "rf2o_laser_odometry_node", "rf2o_covariance_adapter", "tracked_imu_acceleration", "tracked_inertial_odometry", "tracked_estimation_guard", "ekf_node"]
     nodes = robot_actions(kiwi)
     assert "rf2o_laser_odometry_node" not in [action.node_executable for action in nodes]
+    assert "tracked_estimation_guard" not in [action.node_executable for action in nodes]
+    assert kiwi.data("base")["ekf_filter_node"]["ros__parameters"]["publish_tf"] is True
 
 
 def test_custom_install_base_keeps_workspace_consistency_check(source_shares, monkeypatch, tmp_path):
@@ -218,3 +220,73 @@ def test_keyboard_trial_cannot_unlock_tracked_navigation(source_shares, tmp_path
     both.write_text(yaml.safe_dump(base))
     with pytest.raises(ValueError, match="临时键盘试车不能"):
         profiles.validate_profile(profiles.load_profile(selector, {"base": str(both)}))
+
+
+@pytest.mark.parametrize("failure", ["duplicate_tf", "public_loop", "wrong_imu_ready"])
+def test_guard_contract_rejects_bypasses(source_shares, tmp_path, failure):
+    profile = profiles.load_profile(str(source_shares / "tracked_pwm.yaml"))
+    base = profile.data("base")
+    guard = base["tracked_estimation_guard"]["ros__parameters"]
+    if failure == "duplicate_tf":
+        base["ekf_filter_node"]["ros__parameters"]["publish_tf"] = True
+    elif failure == "public_loop":
+        guard["input_topic"] = guard["output_topic"]
+    else:
+        guard["imu_ready_topic"] = "/chassis/imu/calibration_ready"
+    path = tmp_path / "bad_guard.yaml"
+    path.write_text(yaml.safe_dump(base))
+    altered = profiles.load_profile(str(source_shares / "tracked_pwm.yaml"), {"base": str(path)})
+    with pytest.raises(ValueError):
+        profiles.validate_profile(altered, "mapping")
+
+
+@pytest.mark.parametrize('failure', ['feedback', 'timeout', 'covariance', 'mapping_state'])
+def test_inertial_contract_rejects_inconsistent_pipeline(source_shares, tmp_path, failure):
+    original = profiles.load_profile(str(source_shares/'tracked_pwm.yaml'))
+    base = original.data('base')
+    if failure == 'feedback':
+        base['tracked_inertial_odometry']['ros__parameters']['anchor_topic'] = '/odometry/filtered'
+    elif failure == 'timeout':
+        base['tracked_inertial_odometry']['ros__parameters']['max_coast_s'] = 60.0
+    elif failure == 'covariance':
+        base['tracked_estimation_guard']['ros__parameters']['max_inertial_xy_variance'] = .04
+    else:
+        base['tracked_estimation_guard']['ros__parameters']['state_topic'] = '/wrong_state'
+    path = tmp_path/'bad_inertial.yaml'
+    path.write_text(yaml.safe_dump(base))
+    altered = profiles.load_profile(str(source_shares/'tracked_pwm.yaml'), {'base': str(path)})
+    with pytest.raises(ValueError):
+        profiles.validate_profile(altered, 'mapping')
+
+
+@pytest.mark.parametrize('failure', ['partial_pose', 'partial_topic', 'growth_budget'])
+def test_partial_laser_contract_cannot_become_full_position_anchor(source_shares,tmp_path,failure):
+    original=profiles.load_profile(str(source_shares/'tracked_pwm.yaml'))
+    base=original.data('base')
+    if failure=='partial_pose':
+        base['ekf_filter_node']['ros__parameters']['odom2_config'][0]=True
+    elif failure=='partial_topic':
+        base['tracked_inertial_odometry']['ros__parameters']['partial_topic']='/chassis/odom/laser'
+    else:
+        base['tracked_estimation_guard']['ros__parameters']['max_inertial_xy_growth_variance']=10.
+    path=tmp_path/'bad_partial.yaml';path.write_text(yaml.safe_dump(base))
+    altered=profiles.load_profile(str(source_shares/'tracked_pwm.yaml'),{'base':str(path)})
+    with pytest.raises(ValueError):
+        profiles.validate_profile(altered,'mapping')
+
+
+@pytest.mark.parametrize('failure', ['raw_acceleration', 'disabled', 'invalid_timing'])
+def test_tracked_zero_velocity_veto_uses_calibrated_acceleration(source_shares, tmp_path, failure):
+    selector = str(source_shares / 'tracked_pwm.yaml')
+    data = profiles.load_profile(selector).data('rf2o')
+    adapter = data['rf2o_covariance_adapter']['ros__parameters']
+    if failure == 'raw_acceleration':
+        adapter['acceleration_topic'] = '/chassis/imu/data_raw'
+    elif failure == 'disabled':
+        adapter['zero_velocity_acceleration_veto_enabled'] = False
+    else:
+        adapter['zero_velocity_acceleration_duration_s'] = .4
+    path = tmp_path / 'bad_zero_velocity_veto.yaml'
+    path.write_text(yaml.safe_dump(data))
+    with pytest.raises(ValueError, match='零速度'):
+        profiles.validate_profile(profiles.load_profile(selector, {'rf2o': str(path)}), 'mapping')

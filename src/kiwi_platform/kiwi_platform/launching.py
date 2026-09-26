@@ -78,9 +78,23 @@ def robot_actions(profile, *, base=True, ekf=True, description=True, lidar=True)
                 name="tracked_imu_acceleration", output="screen",
                 parameters=[profile.path("base")],
             ))
+            actions.append(Node(
+                package="kiwi_slam", executable="tracked_inertial_odometry",
+                name="tracked_inertial_odometry", output="screen",
+                parameters=[profile.path("base")],
+            ))
+        remappings = []
+        if profile.odometry == "rf2o":
+            guard = profile.data("base")["tracked_estimation_guard"]["ros__parameters"]
+            remappings = [("odometry/filtered", guard["input_topic"]),
+                          ("toggle", guard["toggle_service"]),
+                          ("set_pose", guard["set_pose_service"])]
+            actions.append(Node(package="kiwi_slam", executable="tracked_estimation_guard",
+                                name="tracked_estimation_guard", output="screen",
+                                parameters=[profile.path("base")]))
         actions.append(Node(
             package="robot_localization", executable="ekf_node", name="ekf_filter_node",
-            output="screen", parameters=[profile.path("base")],
+            output="screen", parameters=[profile.path("base")], remappings=remappings,
         ))
     return actions
 
@@ -94,6 +108,13 @@ def mapping_actions(profile, *, monitor=False, monitor_map_is_static=None):
     ]
     if monitor:
         parameters = [profile.path("monitor")]
+        if profile.odometry == "rf2o" and monitor_map_is_static is not True:
+            guard = profile.data("base")["tracked_estimation_guard"]["ros__parameters"]
+            gate = profile.data("gate")["kiwi_mapping_scan_gate"]["ros__parameters"]
+            parameters.append({"mapping_gate_ready_topic": gate["gate_ready_topic"],
+                               "estimation_state_topic": guard["state_topic"],
+                               "inertial_valid_topic": profile.data("base")["tracked_inertial_odometry"]["ros__parameters"]["valid_topic"],
+                               "inertial_reason_topic": profile.data("base")["tracked_inertial_odometry"]["ros__parameters"]["reason_topic"]})
         if monitor_map_is_static is not None:
             parameters.append({"map_is_static": monitor_map_is_static})
         actions.append(Node(package="kiwi_slam", executable="kiwi_slam_monitor",

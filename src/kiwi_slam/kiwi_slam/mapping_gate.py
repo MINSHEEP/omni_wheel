@@ -19,7 +19,7 @@ from rclpy.qos import (
     qos_profile_sensor_data,
 )
 from sensor_msgs.msg import Imu, LaserScan
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 
 
 @dataclass(frozen=True)
@@ -89,9 +89,11 @@ class MappingStartupGate:
 
     def set_imu_ready(self, ready: bool) -> None:
         """更新底盘标定状态；只在状态改变时重建启动证据。"""
-        if ready == self.imu_ready or self.opened:
+        if ready == self.imu_ready:
             return
         self.imu_ready = ready
+        if not ready:
+            self.opened = False
         self._reset_evidence()
 
     def observe_odometry(
@@ -157,7 +159,7 @@ class MappingStartupGate:
         range_max: float,
     ) -> bool:
         """输入一帧扫描；返回本帧是否应转发给 SLAM。"""
-        if not self._sources_ready(received_at):
+        if not self.imu_ready or not self._sources_ready(received_at):
             self._reset_scan_evidence()
             return False
         if self.opened:
@@ -325,6 +327,10 @@ class MappingScanGateNode(Node):
         self.require_imu_ready = bool(
             self.declare_parameter("require_imu_ready", True).value
         )
+        self.require_laser_quality = bool(self.declare_parameter("require_laser_quality", False).value)
+        self.require_estimation_ready = bool(self.declare_parameter("require_estimation_ready", False).value)
+        if self.require_estimation_ready and not self.require_laser_quality:
+            raise ValueError("estimation readiness requires laser quality gating")
         self.require_imu_samples = bool(
             self.declare_parameter("require_imu_samples", False).value
         )
@@ -377,6 +383,8 @@ class MappingScanGateNode(Node):
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
+        heartbeat_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE,
+                                   durability=DurabilityPolicy.VOLATILE)
         self.scan_pub = self.create_publisher(
             LaserScan, self.output_scan_topic, qos_profile_sensor_data
         )
@@ -385,8 +393,11 @@ class MappingScanGateNode(Node):
         )
         self.ready_sub = None
         if self.require_imu_ready:
+            # 全向底盘只在校准状态变化时发消息，必须保留其晚加入可读的状态语义。
+            # 履带质量门控检查持续心跳的新鲜度，因此只接收新消息。
             self.ready_sub = self.create_subscription(
-                Bool, self.imu_ready_topic, self._on_imu_ready, state_qos
+                Bool, self.imu_ready_topic, self._on_imu_ready,
+                heartbeat_qos if self.require_laser_quality else state_qos
             )
         self.odom_sub = self.create_subscription(
             Odometry, self.odom_topic, self._on_odom, 10
@@ -407,6 +418,24 @@ class MappingScanGateNode(Node):
             self._on_scan,
             qos_profile_sensor_data,
         )
+        self.estimation_state = None
+        self.estimation_state_time = None
+        self.estimation_ready = False
+        self.estimation_time = None
+        if self.require_estimation_ready:
+            self.estimation_sub = self.create_subscription(
+                Bool, self.declare_parameter("estimation_ready_topic", "/chassis/estimation/valid").value,
+                self._on_estimation, heartbeat_qos)
+            self.estimation_state_sub = self.create_subscription(
+                String, self.declare_parameter("estimation_state_topic", "/chassis/estimation/state").value,
+                self._on_estimation_state, heartbeat_qos)
+        self.quality_ready = False
+        self.quality_time = None
+        self.imu_ready_time = None
+        self.last_forwarded = None
+        if self.require_laser_quality:
+            self.quality_sub = self.create_subscription(Bool, self.declare_parameter("laser_quality_topic", "/chassis/odom/laser_ready").value, self._on_quality, heartbeat_qos)
+            self.health_timer = self.create_timer(.1, self._health)
         self.ready_pub.publish(Bool(data=False))
         self.get_logger().info(
             f"mapping gate {self.input_scan_topic}->{self.output_scan_topic}; "
@@ -442,7 +471,37 @@ class MappingScanGateNode(Node):
             raise ValueError(f"{name} must be in (0, 1]")
         return value
 
+    def _on_quality(self, message):
+        self.quality_ready = bool(message.data)
+        self.quality_time = time.monotonic()
+        self._health()
+
+    def _health(self):
+        now = time.monotonic()
+        healthy = self.quality_ready and self.quality_time is not None and now-self.quality_time < .3
+        imu = self.imu_ready_time is not None and now-self.imu_ready_time < .5 and self.gate.imu_ready
+        estimation = (not self.require_estimation_ready or
+                      (self.estimation_ready and self.estimation_time is not None and now-self.estimation_time < .3
+                       and self.estimation_state == 'VALID' and self.estimation_state_time is not None
+                       and now-self.estimation_state_time < .3))
+        if not healthy or not imu or not estimation or not self.gate.opened or not self.gate._sources_ready(now):
+            self.ready_pub.publish(Bool(data=False))
+        return healthy and imu and estimation
+
+    def _on_estimation_state(self, message):
+        self.estimation_state = message.data
+        self.estimation_state_time = time.monotonic()
+        if self.estimation_state != 'VALID':
+            self.ready_pub.publish(Bool(data=False))
+
+    def _on_estimation(self, message):
+        self.estimation_ready = bool(message.data)
+        self.estimation_time = time.monotonic()
+        if not self.estimation_ready:
+            self.ready_pub.publish(Bool(data=False))
+
     def _on_imu_ready(self, message: Bool) -> None:
+        self.imu_ready_time = time.monotonic()
         was_ready = self.gate.imu_ready
         self.gate.set_imu_ready(bool(message.data))
         if self.gate.imu_ready and not was_ready:
@@ -508,6 +567,8 @@ class MappingScanGateNode(Node):
         )
 
     def _on_scan(self, message: LaserScan) -> None:
+        if self.require_laser_quality and not self._health():
+            return
         if message.header.frame_id != self.laser_frame:
             self.gate.observe_scan(time.monotonic(), (), 0.0, 0.0)
             self._warn_throttled(
@@ -527,7 +588,11 @@ class MappingScanGateNode(Node):
             self.get_logger().info(
                 f"mapping scan gate opened after {stable_count} stable scans"
             )
+        if self.require_laser_quality and not should_publish:
+            self.ready_pub.publish(Bool(data=False))
         if should_publish:
+            if self.require_laser_quality:
+                self.ready_pub.publish(Bool(data=True))
             # 原消息原样转发，保留 frame、采样时间戳及 sensor-data QoS 语义。
             self.scan_pub.publish(message)
 

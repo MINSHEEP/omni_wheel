@@ -14,6 +14,7 @@ from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
+from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
 
@@ -44,6 +45,18 @@ class KiwiSlamMonitor(Node):
         self.map_timeout_sec = float(self._required("map_timeout_sec", Parameter.Type.DOUBLE))
         # A static map_server publishes once; preserve dynamic SLAM checks by default.
         self.map_is_static = self.declare_parameter("map_is_static", False).value
+        # 只由履带建图入口启用；全向底盘和静态地图不依赖这些状态话题。
+        self.mapping_gate_ready_topic = str(
+            self.declare_parameter("mapping_gate_ready_topic", "").value
+        )
+        self.estimation_state_topic = str(
+            self.declare_parameter("estimation_state_topic", "").value
+        )
+        self.inertial_valid_topic = str(self.declare_parameter("inertial_valid_topic", "").value)
+        self.inertial_reason_topic = str(self.declare_parameter("inertial_reason_topic", "").value)
+        self.inertial_valid = None
+        self.inertial_received = 0.0
+        self.inertial_reason = "waiting_inertial_status"
         self.min_valid_ratio = float(
             self._required("min_valid_scan_ratio", Parameter.Type.DOUBLE)
         )
@@ -56,6 +69,12 @@ class KiwiSlamMonitor(Node):
         self.scan_received = 0.0
         self.odom_received = 0.0
         self.map_received = 0.0
+        self.map_stamp_ns: int | None = None
+        self.map_stamp_changed_at = 0.0
+        self.mapping_gate_ready: bool | None = None
+        self.mapping_gate_received = 0.0
+        self.estimation_state: str | None = None
+        self.estimation_state_received = 0.0
         self.scan_times: deque[float] = deque(maxlen=30)
         self.odom_times: deque[float] = deque(maxlen=30)
         self.map_times: deque[float] = deque(maxlen=30)
@@ -76,6 +95,21 @@ class KiwiSlamMonitor(Node):
         self.map_sub = self.create_subscription(
             OccupancyGrid, self.map_topic, self._on_map, map_qos
         )
+        self.state_subs = []
+        if self.mapping_gate_ready_topic:
+            self.state_subs.append(self.create_subscription(
+                Bool, self.mapping_gate_ready_topic, self._on_mapping_gate, map_qos
+            ))
+        if self.estimation_state_topic:
+            self.state_subs.append(self.create_subscription(
+                String, self.estimation_state_topic, self._on_estimation_state, map_qos
+            ))
+        if self.inertial_valid_topic:
+            self.state_subs.append(self.create_subscription(
+                Bool, self.inertial_valid_topic, self._on_inertial_valid, map_qos))
+        if self.inertial_reason_topic:
+            self.state_subs.append(self.create_subscription(
+                String, self.inertial_reason_topic, self._on_inertial_reason, map_qos))
         self.diagnostic_pub = self.create_publisher(
             DiagnosticArray, "/kiwi_slam/diagnostics", 10
         )
@@ -108,11 +142,64 @@ class KiwiSlamMonitor(Node):
         self.odom_times.append(now)
 
     def _on_map(self, message: OccupancyGrid) -> None:
-        """保存最新栅格地图和接收时间，用于判断 SLAM 是否已处理首帧雷达。"""
+        """分别记录地图重发和时间戳更新，避免把周期重发的旧地图视为进展。"""
         now = time.monotonic()
+        stamp_ns = message.header.stamp.sec * 1_000_000_000 + message.header.stamp.nanosec
+        if stamp_ns != self.map_stamp_ns:
+            self.map_stamp_ns = stamp_ns
+            self.map_stamp_changed_at = now
         self.last_map = message
         self.map_received = now
         self.map_times.append(now)
+
+    def _on_mapping_gate(self, message: Bool) -> None:
+        self.mapping_gate_ready = bool(message.data)
+        self.mapping_gate_received = time.monotonic()
+
+    def _on_estimation_state(self, message: String) -> None:
+        self.estimation_state = message.data
+        self.estimation_state_received = time.monotonic()
+
+    def _on_inertial_valid(self, message: Bool) -> None:
+        self.inertial_valid = bool(message.data)
+        self.inertial_received = time.monotonic()
+
+    def _on_inertial_reason(self, message: String) -> None:
+        self.inertial_reason = message.data
+
+    def _inertial_status(self) -> list[DiagnosticStatus]:
+        if not self.inertial_valid_topic:
+            return []
+        age = time.monotonic()-self.inertial_received
+        usable = self.inertial_valid is True and age <= self.timeout_sec
+        return [self._status("inertial_fallback", DiagnosticStatus.OK if usable else DiagnosticStatus.WARN,
+            "bounded inertial fallback available" if usable else "inertial fallback unavailable",
+            reason=self.inertial_reason, age_sec=f"{age:.3f}")]
+
+    def _mapping_progress(self, now: float, unchanged_sec: float) -> tuple[int, str]:
+        """静止时允许旧关键帧，但不让健康接收时间掩盖上游停更。"""
+        if self.estimation_state_topic:
+            if self.estimation_state is None:
+                return DiagnosticStatus.WARN, "waiting for estimation state"
+            if now - self.estimation_state_received > self.timeout_sec:
+                return DiagnosticStatus.ERROR, "estimation state timeout"
+            if self.estimation_state not in ("VALID", "INERTIAL"):
+                return DiagnosticStatus.ERROR, f"mapping paused: estimation {self.estimation_state}"
+            if self.estimation_state == "INERTIAL":
+                return DiagnosticStatus.WARN, "mapping paused: inertial prediction only"
+        if self.mapping_gate_ready_topic:
+            if self.mapping_gate_ready is None:
+                return DiagnosticStatus.WARN, "waiting for mapping gate"
+            if now - self.mapping_gate_received > self.timeout_sec:
+                return DiagnosticStatus.ERROR, "mapping gate state timeout"
+            if not self.mapping_gate_ready:
+                return DiagnosticStatus.WARN, "mapping paused: gate not ready"
+        if unchanged_sec > self.map_timeout_sec and (
+            self.last_odom is None or now - self.odom_received > self.timeout_sec
+        ):
+            return DiagnosticStatus.ERROR, "map stale: upstream odometry unavailable"
+        # SLAM Toolbox 可能在静止时重发最后一帧；旧 stamp 本身不是定位故障。
+        return DiagnosticStatus.OK, "map valid"
 
     def _stream_status(self) -> list[DiagnosticStatus]:
         """Validate message freshness, scan content, frames, and quaternion length."""
@@ -181,6 +268,9 @@ class KiwiSlamMonitor(Node):
         else:
             grid = self.last_map
             age = now - self.map_received
+            stamp_ns = grid.header.stamp.sec * 1_000_000_000 + grid.header.stamp.nanosec
+            header_age = (self.get_clock().now().nanoseconds - stamp_ns) / 1_000_000_000
+            unchanged = now - self.map_stamp_changed_at
             level = DiagnosticStatus.OK
             message = "map valid"
             if grid.header.frame_id != self.map_frame:
@@ -189,6 +279,8 @@ class KiwiSlamMonitor(Node):
                 level, message = DiagnosticStatus.ERROR, "empty map"
             elif not self.map_is_static and age > self.map_timeout_sec:
                 level, message = DiagnosticStatus.WARN, "map update timeout"
+            elif not self.map_is_static:
+                level, message = self._mapping_progress(now, unchanged)
             statuses.append(
                 self._status(
                     "map",
@@ -196,6 +288,10 @@ class KiwiSlamMonitor(Node):
                     message,
                     frame=grid.header.frame_id,
                     age_sec=f"{age:.3f}",
+                    header_age_sec=f"{header_age:.3f}",
+                    stamp_unchanged_sec=f"{unchanged:.3f}",
+                    mapping_gate_ready=self.mapping_gate_ready,
+                    estimation_state=self.estimation_state,
                     rate_hz=f"{sample_rate_hz(self.map_times):.2f}",
                     size=f"{grid.info.width}x{grid.info.height}",
                     resolution=f"{grid.info.resolution:.3f}",
@@ -266,7 +362,7 @@ class KiwiSlamMonitor(Node):
         """Build the complete diagnostic message used by timer and service."""
         message = DiagnosticArray()
         message.header.stamp = self.get_clock().now().to_msg()
-        message.status = self._stream_status() + self._tf_status()
+        message.status = self._stream_status() + self._tf_status() + self._inertial_status()
         return message
 
     def _publish_diagnostics(self) -> None:

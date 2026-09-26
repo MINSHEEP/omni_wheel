@@ -79,7 +79,7 @@ def generate_launch_description():
         *[DeclareLaunchArgument(field, default_value=value) for field, value in (
             ("start_base", "true"), ("start_ekf", "true"), ("start_lidar", "true"),
             ("start_slam", "true"), ("start_monitor", "false"),
-            ("use_rviz", "true"), ("rviz_software_rendering", "true"),
+            ("use_rviz", "true"), ("rviz_software_rendering", "false"),
         )],
         OpaqueFunction(function=_setup),
     ])

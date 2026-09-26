@@ -1,4 +1,4 @@
-# 履带无编码器：RF2O 只发激光里程计消息；TF 由 EKF 独占发布。
+# 履带无编码器：RF2O 与 EKF 不直接发 TF；由估计保护节点核验后独占发布。
 rf2o_laser_odometry:
   ros__parameters:
     laser_scan_topic: /scan
@@ -26,7 +26,43 @@ rf2o_covariance_adapter:
     # 静止两秒内扫描、IMU 和 RF2O 位移同时稳定时，固定发布位姿；运动后连续续接。
     # 2026-09-25 静止 bag 实测：原始扫描 2 s 中位差约 6 mm，
     # RF2O 129 s 漂移 11.7 cm/2.8°，此约束仅用于履带。
+    # quality_enabled 启用背景匹配；下方 legacy 中位差仅供关闭新算法时复核旧版本。
     stationary_filter_enabled: true
+    quality_enabled: true
+    # 退化时仅保留局部强方向速度约束；不刷新完整位姿或建图准备状态。
+    partial_observation_enabled: true
+    partial_output_topic: /chassis/odom/laser_partial
+    partial_ready_topic: /chassis/odom/laser_partial_ready
+    partial_min_overlap: 0.8
+    partial_max_residual_m: 0.02
+    partial_confirmation_s: 0.2
+    partial_max_gap_s: 0.3
+    scan_frame: lidar_link
+    imu_frame: chassis_imu_link
+    zero_velocity_topic: /chassis/odom/stationary
+    # 已校准加速度只否决ZUPT，不能单独确认平移；短窗统计保留实际协方差。
+    zero_velocity_acceleration_veto_enabled: true
+    acceleration_topic: /chassis/imu/acceleration
+    zero_velocity_acceleration_window_s: 0.2
+    zero_velocity_acceleration_duration_s: 0.1
+    zero_velocity_acceleration_holdoff_s: 0.3
+    minimum_information_ratio: 0.015
+    recovery_max_gap_s: 2.0
+    recovery_duration_s: 0.2
+    recovery_reference_max_gap_s: 10.0
+    inertial_recovery_enabled: true
+    inertial_topic: /chassis/odom/inertial
+    inertial_valid_topic: /chassis/inertial/valid
+    inertial_max_age_s: 0.15
+    inertial_max_xy_variance: 4.0
+    inertial_max_yaw_variance: 0.15
+    inertial_max_xy_growth_variance: 0.09
+    inertial_max_yaw_growth_variance: 0.05
+    lidar_xy: [0.24, 0.0]
+    imu_ready_topic: /chassis/imu/data_ready
+    stationary_topic: /chassis/odom/calibration_stationary
+    quality_topic: /chassis/odom/laser_ready
+    validated_scan_topic: /scan_validated
     scan_topic: /scan
     imu_topic: /chassis/imu/data_raw
     stationary_window_s: 2.0

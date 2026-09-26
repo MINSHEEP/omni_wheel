@@ -45,7 +45,8 @@ ekf_filter_node:
     frequency: 30.0
     sensor_timeout: 0.20
     two_d_mode: true
-    publish_tf: true
+    # 唯一公共 TF 由 tracked_estimation_guard 在估计有效时转发。
+    publish_tf: false
     map_frame: map
     odom_frame: odom
     base_link_frame: base_footprint
@@ -55,12 +56,23 @@ ekf_filter_node:
     odom0_config: [
       true, true, false,
       false, false, true,
-      true, true, false,
+      false, false, false,
       false, false, false,
       false, false, false
     ]
     odom0_queue_size: 10
-    imu0: /chassis/imu/data_raw
+    # 仅在背景确认停车时产生的零速度约束；运动/退化时该话题停止更新。
+    odom1: /chassis/odom/stationary
+    odom1_config: [false, false, false, false, false, false,
+                   true, true, false, false, false, false, false, false, false]
+    odom1_queue_size: 5
+    # 全方向激光位姿不可用时，仅接收可信方向的相邻扫描速度，弱方向给大协方差。
+    # 与完整laser观测互斥，不把同源INS再次计入EKF，也不刷新完整位姿锚点。
+    odom2: /chassis/odom/laser_partial
+    odom2_config: [false, false, false, false, false, false,
+                   true, true, false, false, false, true, false, false, false]
+    odom2_queue_size: 5
+    imu0: /chassis/imu/gyro
     imu0_config: [
       false, false, false,
       false, false, false,
@@ -69,6 +81,8 @@ ekf_filter_node:
       false, false, false
     ]
     imu0_queue_size: 20
+    # 同一激光来源的位姿和速度不重复提供独立信息；保留位姿，速度由惯性模型预测。
+    print_diagnostics: true
     # yaw 保持原有驱动转换；第二路仅融合已去重力、已补偿 8 cm 杆臂的平面加速度。
     imu1: /chassis/imu/acceleration
     imu1_config: [
@@ -86,6 +100,15 @@ tracked_imu_acceleration:
     # 2026-09-25 静止合量 + 09-24 直线启停方向标定；仅适用于固定平放。
     # 17 个直线窗口相关性 0.957；未拟合比例系数，尚待独立实车地图精度验收。
     enabled: true
+    startup_calibration_enabled: true
+    startup_duration_s: 10.0
+    recovery_duration_s: 0.3
+    max_interruption_s: 2.0
+    data_ready_topic: /chassis/imu/data_ready
+    gyro_variance_floor: 0.001
+    gyro_output_topic: /chassis/imu/gyro
+    ready_topic: /chassis/imu/calibration_ready
+    stationary_topic: /chassis/odom/calibration_stationary
     source_topic: /chassis/imu/data_raw
     source_frame: chassis_imu_link
     output_topic: /chassis/imu/acceleration
@@ -120,3 +143,79 @@ kiwi_teleop_keyboard:
     speed_m_s: 0.235
     yaw_rad_s: 0.95
     deadman_timeout_ms: 200
+
+# 激光短时失效时由独立 INS 续接公共里程计/TF；惯导超时后才暂停无约束预测。
+tracked_estimation_guard:
+  ros__parameters:
+    input_topic: /chassis/odometry/filtered_unchecked
+    output_topic: /odometry/filtered
+    laser_topic: /chassis/odom/laser
+    gyro_topic: /chassis/imu/gyro
+    imu_ready_topic: /chassis/imu/data_ready
+    laser_ready_topic: /chassis/odom/laser_ready
+    valid_topic: /chassis/estimation/valid
+    state_topic: /chassis/estimation/state
+    toggle_service: /chassis/ekf/toggle
+    set_pose_service: /chassis/ekf/set_pose
+    odom_frame: odom
+    base_frame: base_footprint
+    max_prediction_s: 0.2
+    max_measurement_age_s: 0.35
+    recovery_duration_s: 0.3
+    # 延迟传播的保守模型误差预算；不是实测加速度标定或执行器指令。
+    prediction_acceleration_bound_m_s2: 1.5
+    prediction_yaw_acceleration_bound_rad_s2: 2.0
+    max_position_error_m: 0.25
+    max_yaw_error_rad: 0.15
+    inertial_enabled: true
+    inertial_topic: /chassis/odom/inertial
+    inertial_valid_topic: /chassis/inertial/valid
+    max_inertial_duration_s: 2.0
+    max_inertial_xy_variance: 4.0
+    max_inertial_xy_growth_variance: 0.09
+    max_inertial_yaw_growth_variance: 0.05
+    handoff_correction_speed_m_s: 0.05
+    handoff_correction_yaw_rate_rad_s: 0.10
+    max_inertial_yaw_variance: 0.15
+
+# 独立短时平面惯性推算：从可信激光锚定位置/速度，积分校准后的 ax/ay/wz。
+# 不发布 TF，不反向融合到 EKF；以下为保护上限而非实车精度承诺。
+tracked_inertial_odometry:
+  ros__parameters:
+    odom_frame: odom
+    base_frame: base_footprint
+    gyro_topic: /chassis/imu/gyro
+    acceleration_topic: /chassis/imu/acceleration
+    anchor_topic: /chassis/odom/laser
+    partial_topic: /chassis/odom/laser_partial
+    partial_ready_topic: /chassis/odom/laser_partial_ready
+    partial_max_velocity_variance: 0.25
+    partial_velocity_innovation_limit_m_s: 0.3
+    laser_ready_topic: /chassis/odom/laser_ready
+    imu_ready_topic: /chassis/imu/data_ready
+    output_topic: /chassis/odom/inertial
+    valid_topic: /chassis/inertial/valid
+    state_topic: /chassis/inertial/state
+    reason_topic: /chassis/inertial/reason
+    max_coast_s: 2.0
+    max_imu_gap_s: 0.20
+    max_measurement_age_s: 0.35
+    gyro_sync_tolerance_s: 0.05
+    anchor_window_s: 0.45
+    anchor_min_span_s: 0.25
+    anchor_min_samples: 4
+    anchor_max_gap_s: 0.25
+    anchor_fit_residual_m: 0.02
+    max_speed_m_s: 0.8
+    max_yaw_rate_rad_s: 1.8
+    max_acceleration_m_s2: 1.5
+    velocity_variance_floor: 0.01
+    acceleration_bias_std: 0.05
+    gyro_bias_std: 0.01
+    # 正常预算4m²；继承的全局锚点方差高于预算时保留原值，严格限制新增误差。
+    max_position_variance: 4.0
+    # 额外xy方差最多0.09m²（额外1sigma最多0.30m），同时受2秒限制。
+    max_position_growth_variance: 0.09
+    max_velocity_variance: 0.5
+    max_yaw_variance: 0.15
+    max_yaw_growth_variance: 0.05

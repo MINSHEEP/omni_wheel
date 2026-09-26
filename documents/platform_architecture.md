@@ -46,7 +46,7 @@ ros2 launch kiwi_web web.launch.py
 
 ## 坐标、里程计和关锁
 
-Kiwi：`/chassis/odom/raw + /chassis/imu/data_raw → EKF → /odometry/filtered`。履带：`/scan → RF2O /chassis/odom/laser_raw → 协方差适配 /chassis/odom/laser + /chassis/imu/data_raw → EKF → /odometry/filtered`。RF2O 上游输出全零协方差，履带专属适配器根据 `tracked_rf2o.yaml` 设置平面位姿和速度的试验性方差；各模式入口统一启动这一链路。RF2O 显式设置 `init_pose_from_topic: ""`，不等待实车不存在的真值位姿话题；`publish_tf=false`，EKF 独占发布 `odom → base_footprint`。SLAM Toolbox 或 AMCL 发布 `map → odom`；URDF 发布机体到雷达、惯导的静态 TF。履带不发布轮式 `/chassis/odom/raw`，固件 0x3B 的全零电机字段不得进入 EKF。
+Kiwi：`/chassis/odom/raw + /chassis/imu/data_raw → EKF → /odometry/filtered`。履带：`/scan → RF2O /chassis/odom/laser_raw → 协方差适配 /chassis/odom/laser + /chassis/imu/data_raw → EKF → /odometry/filtered`。RF2O 上游输出全零协方差，履带专属适配器根据 `tracked_rf2o.yaml` 设置平面位姿和速度的试验性方差；各模式入口统一启动这一链路。RF2O 显式设置 `init_pose_from_topic: ""`，不等待实车不存在的真值位姿话题；`publish_tf=false`。Kiwi 的 EKF 独占发布 `odom → base_footprint`；履带 EKF 也关闭直接 TF，其内部 `/chassis/odometry/filtered_unchecked` 经 `tracked_estimation_guard` 核验后才发布公共 `/odometry/filtered` 和唯一动态 TF。SLAM Toolbox 或 AMCL 发布 `map → odom`；URDF 发布机体到雷达、惯导的静态 TF。履带不发布轮式 `/chassis/odom/raw`，固件 0x3B 的全零电机字段不得进入 EKF。
 
 履带机身长 0.70 m、宽 0.59 m、左右履带中心距 0.50 m 已实测，Nav2 先用 0.48 m 外接半径。用户确认的直线速度换算值为 `command_per_m_s=21.2`；雷达与 IMU 相对 `base_link` 分别为 `(0.24,0,0)` m、`(0.08,0,0)` m，安装旋转均为零。受控遥控录制已核对平面 IMU 轴向、RF2O 双向运动和短时静止漂移；机身高度、履带宽高、质量及正常命令下的低速起步、反向和转向效果仍需在首次导航时观察；配置中的临时结构尺寸不是实测值。履带 Nav2 禁止 `vy`，速度平滑开环，AMCL 用差速模型。导航上限是首次导航的保守起点。
 

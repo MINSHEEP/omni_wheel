@@ -142,7 +142,11 @@ class AccelerationProcessor:
 def main(args=None):
     import rclpy
     from rclpy.node import Node
-    from rclpy.qos import qos_profile_sensor_data
+    from rclpy.qos import qos_profile_sensor_data, QoSProfile, DurabilityPolicy
+    from std_msgs.msg import Bool
+    from .imu_startup import StartupCalibration
+    import time
+    import json
     from sensor_msgs.msg import Imu
 
     class PlanarImuNode(Node):
@@ -161,22 +165,91 @@ def main(args=None):
             output = param("output_topic", "/chassis/imu/acceleration")
             if source == output or not all((source, output, self.source_frame, self.output_frame)):
                 raise ValueError("IMU 话题/坐标配置无效")
+            self.startup = StartupCalibration(float(param("startup_duration_s", 30.0)),
+                recovery_s=float(param("recovery_duration_s", .3)),
+                max_interruption_s=float(param("max_interruption_s", 2.)))
+            self.startup_enabled = bool(param("startup_calibration_enabled", True))
+            self.stationary_at = None
+            self.stationary = False
+            self.last_received = None
+            self.ready_announced = False
+            self.started_at = time.monotonic()
+            state_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+            self.ready_pub = self.create_publisher(Bool, param("ready_topic", "/chassis/imu/calibration_ready"), state_qos)
+            self.data_ready_pub = self.create_publisher(Bool, param("data_ready_topic", "/chassis/imu/data_ready"), state_qos)
+            self.stationary_sub = self.create_subscription(Bool, param("stationary_topic", "/chassis/odom/calibration_stationary"), self.on_stationary, state_qos)
+            gyro_topic = param("gyro_output_topic", "/chassis/imu/gyro")
+            if len({source, output, gyro_topic}) != 3:
+                raise ValueError("raw/gyro/acceleration topics must be distinct")
+            self.gyro_pub = self.create_publisher(Imu, gyro_topic, qos_profile_sensor_data)
+            self.gyro_variance_floor = float(param("gyro_variance_floor", 0.001))
+            if not math.isfinite(self.gyro_variance_floor) or self.gyro_variance_floor <= 0:
+                raise ValueError("invalid gyro variance floor")
+            self.timer = self.create_timer(.2, self.publish_ready)
             self.processor = AccelerationProcessor(calibration, param("imu_lever_xy", [0.08, 0.0]))
             self.pub = self.create_publisher(Imu, output, qos_profile_sensor_data)
             self.sub = self.create_subscription(Imu, source, self.callback, qos_profile_sensor_data)
-            self.get_logger().info(f"Planar acceleration enabled={self.enabled}; gyro_z unchanged; {source} -> {output}")
+            self.get_logger().info(f"Planar acceleration enabled={self.enabled}; gyro_z sign/scale preserved, startup residual correction enabled; {source} -> {output}")
+
+        def on_stationary(self, message):
+            self.stationary, self.stationary_at = bool(message.data), time.monotonic()
+
+        def publish_ready(self):
+            fresh = self.last_received is not None and time.monotonic()-self.last_received < .25
+            if self.startup.calibrated and not fresh:
+                if self.last_received is not None and time.monotonic()-self.last_received > self.startup.max_interruption_s:
+                    self.startup.invalidate("imu_timeout_restart_required")
+                elif self.startup.ready:
+                    self.startup.pause()
+                    self.processor.reset()
+            self.ready_pub.publish(Bool(data=self.enabled and self.startup.calibrated))
+            self.data_ready_pub.publish(Bool(data=self.enabled and fresh and self.startup.ready))
+            if not self.startup.ready and time.monotonic()-self.started_at > 60:
+                instruction = ("; restart chain" if self.startup.failed else
+                               "; validating continuous data" if self.startup.calibrated else
+                               "; keep stationary in a feature-rich area")
+                self.get_logger().warning("IMU not ready: " + self.startup.reason + instruction, throttle_duration_sec=5.)
 
         def callback(self, message):
             if not self.enabled:
                 return
             if message.header.frame_id != self.source_frame:
                 self.processor.reset()
+                self.startup.invalidate("imu_frame_mismatch")
+                self.publish_ready()
                 self.get_logger().error("IMU source frame mismatch", throttle_duration_sec=5.0)
                 return
+            self.last_received = time.monotonic()
             t = message.header.stamp.sec + message.header.stamp.nanosec * 1e-9
             a = message.linear_acceleration
+            stationary = self.stationary and self.stationary_at is not None and time.monotonic()-self.stationary_at < .3
+            if not self.startup_enabled:
+                self.get_logger().error("Startup calibration must be enabled for tracked inertial fusion", throttle_duration_sec=5.)
+                return
+            if not self.startup.push(t, [a.x,a.y,a.z], message.angular_velocity.z, stationary):
+                self.processor.reset()
+                return
+            if not self.ready_announced:
+                self.processor.calibration.rest = self.startup.rest.copy()
+                # 安装矩阵保持不变，仅更新本次平放静止合量。
+                c = self.processor.calibration.rotation
+                self.acc_cov = c @ self.startup.covariance[:3,:3] @ c.T
+                floor = np.maximum(self.processor.calibration.variance-np.diag(self.acc_cov), 0.)
+                self.acc_cov += np.diag(floor)
+                self.processor.reset()
+                self.ready_announced = True
+                self.get_logger().info("Startup IMU calibration: " + json.dumps({"residual_gyro_bias": self.startup.bias, "rest_acceleration": self.startup.rest.tolist(), "acceleration_covariance": self.acc_cov.tolist(), "samples": len(self.startup.samples)}))
+            rate = message.angular_velocity.z-self.startup.bias
+            gyro = Imu()
+            gyro.header = message.header
+            gyro.header.frame_id = self.output_frame
+            gyro.orientation_covariance[0] = -1.
+            gyro.linear_acceleration_covariance[0] = -1.
+            gyro.angular_velocity.z = rate
+            gyro.angular_velocity_covariance = [1e3,0.,0.,0.,1e3,0.,0.,0.,max(self.gyro_variance_floor, float(self.startup.covariance[3,3]))]
+            self.gyro_pub.publish(gyro)
             try:
-                result = self.processor.push(t, [a.x, a.y, a.z], message.angular_velocity.z)
+                result = self.processor.push(t, [a.x, a.y, a.z], rate)
             except ValueError as error:
                 self.get_logger().error(str(error), throttle_duration_sec=5.0)
                 return
@@ -189,8 +262,7 @@ def main(args=None):
             output.orientation_covariance[0] = -1.0
             output.angular_velocity_covariance[0] = -1.0
             output.linear_acceleration.x, output.linear_acceleration.y, output.linear_acceleration.z = map(float, acceleration)
-            for index, variance in zip((0, 4, 8), self.processor.calibration.variance):
-                output.linear_acceleration_covariance[index] = float(variance)
+            output.linear_acceleration_covariance = self.acc_cov.reshape(-1).tolist()
             self.pub.publish(output)
 
     rclpy.init(args=args)

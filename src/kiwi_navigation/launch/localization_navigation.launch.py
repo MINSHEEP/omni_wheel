@@ -56,6 +56,6 @@ def generate_launch_description():
         *[DeclareLaunchArgument(field, default_value="") for field in PARAMS],
         DeclareLaunchArgument("rviz_config_file", default_value=""),
         DeclareLaunchArgument("use_rviz", default_value="true"),
-        DeclareLaunchArgument("rviz_software_rendering", default_value="true"),
+        DeclareLaunchArgument("rviz_software_rendering", default_value="false"),
         OpaqueFunction(function=_setup),
     ])

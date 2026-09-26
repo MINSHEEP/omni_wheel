@@ -1,0 +1,5 @@
+#!/usr/bin/env python3
+from kiwi_slam.estimation_guard import main
+
+if __name__ == '__main__':
+    main()

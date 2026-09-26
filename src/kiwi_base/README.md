@@ -4,6 +4,8 @@
 
 `kiwi_platform` 是配置选择器，并不取代本包的驱动；`config/kiwi_base.yaml` 和 `config/tracked_pwm.yaml` 分别是两个底盘正在使用的实际节点参数。
 
+履带短时中断恢复和有效性保护配置也在 `config/tracked_pwm.yaml`；启动 EKF 时自动加载共用链路中的 `tracked_inertial_odometry` 和 `tracked_estimation_guard`（实现位于 kiwi_slam）。激光短时失效且惯导有效时，`INERTIAL` 最多续接 2 秒公共里程计和 TF，EKF 保持运行；超时、IMU 失效或方差越界后停止有效输出。正常起步确认不再误触发激光失效，解除静止保持时保留累计真实位移。短时恢复经同时间激光/EKF 核验后直接交回 EKF，不例行调用 `SetPose`；真正 `PAUSED` 或持续不一致才重置。建图只在激光核验完成且估计回到 `VALID` 后继续。具体状态及恢复过程见 [kiwi_slam 文档](../kiwi_slam/README.md#履带估计有效性与恢复)。
+
 以下反馈轮式里程计参数说明专指 Kiwi。`kiwi_base` 是 Kiwi 三轮全向底盘的 ROS 2 Humble 驱动包。C 板通过 USB CDC 接收
 速度命令并异步上报电机/IMU 遥测；本包负责正逆运动学、反馈轮式里程计、轮关节状态和键盘遥操作。
 
@@ -67,7 +69,7 @@ deadman_timeout_ms             无新按键后的自动停车时间
 ## 构建和启动
 
 ```bash
-cd /home/ym/ros2_ws
+cd ~/ros2_ws
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install --packages-up-to kiwi_base
 source install/setup.bash
@@ -95,12 +97,36 @@ ros2 run kiwi_base kiwi_teleop_keyboard
 
 ## 履带底盘
 
-选择 `tracked_pwm` 后，同一底盘 launch 会启动 `tracked_base_node`，同一键盘命令读取 `config/tracked_pwm.yaml`。履带无编码器，不发布 `/chassis/odom/raw`；`kiwi_base_ekf.launch.py` 会启动 M10P、RF2O 和 EKF。履带不支持 `linear.y`，键盘 `A/D` 会被驱动拒绝并停车。用户确认的速度换算 `command_per_m_s=21.2` 已用于正常运动，`hardware_calibrated=true`、`enable_motion=true`，临时键盘试车和原始电机试车均关闭。首次实车导航仍需观察低速起步、反向和原地转向，机身 0.70 × 0.59 m、履带中心距 0.50 m 已记录，其余待测项见[平台架构](../../documents/platform_architecture.md)。
+选择 `tracked_pwm` 后，同一底盘 launch 会启动 `tracked_base_node`，同一键盘命令读取 `config/tracked_pwm.yaml`。履带无编码器，不发布 `/chassis/odom/raw`；`kiwi_base_ekf.launch.py` 会启动 M10P、RF2O、IMU 预处理、独立惯性里程计、EKF 和估计保护。履带不支持 `linear.y`，键盘 `A/D` 会被驱动拒绝并停车。用户确认的速度换算 `command_per_m_s=21.2` 已用于正常运动，`hardware_calibrated=true`、`enable_motion=true`，临时键盘试车和原始电机试车均关闭。首次实车导航仍需观察低速起步、反向和原地转向，机身 0.70 × 0.59 m、履带中心距 0.50 m 已记录，其余待测项见[平台架构](../../documents/platform_architecture.md)。
 
 履带驱动在 `gyro_z_sign`、`gyro_z_scale` 后，从发布的 ROS z 轴角速度中扣除
 `gyro_z_bias_rad_s`。当前值 `-0.00355 rad/s` 来自静止 bag；它只消除静止
-均值，不降低陀螺随机噪声，也不替代激光里程计约束。更换 C 板或 IMU 后
-重新静止录制并修改履带 YAML，不能直接沿用该值。
+均值，不降低陀螺随机噪声，也不替代激光里程计约束。启动完整履带 EKF 链路后，
+`tracked_imu_acceleration` 另用约 10 秒有效静止窗口估计本次残余偏置，校准后的
+`/chassis/imu/gyro` 才进入 EKF；原始话题继续保留。不要再次将同一残余值写回驱动造成双重扣除。
+更换 C 板、IMU 或安装方式仍需重新验证轴向、倍率及重力方向。启动 ready 与录包命令见根 README。
+
+独立惯导从最近可信激光的位置、航向和多帧速度开始积分校准后的 ax/ay/wz，输出
+`/chassis/odom/inertial`；该输出不反灌 EKF，不单独发布 TF。2 秒无观测上限与
+`max_position_growth_variance=0.09`（新增 xy 方差，单位 m²）及
+`max_yaw_growth_variance=0.05`（新增 yaw 方差，单位 rad²）共同限制续接。
+`max_position_variance=4.0` m² 是正常预算：若可信激光锚点本身已有例如 12.5 m² 方差，
+保留该基线并检查新增预算，不因继承值超过 4.0 就立即失效，也不压小方差冒充精度。
+2–10 秒的激光中断只允许强旧参考几何核验后恢复；
+超过 10 秒需重新定位或重新建图。长走廊仍缺少独立平移观测，本次未完成实车精度验收。
+切回 `kiwi` 后不会启动上述履带节点，也无需单独切换键盘、建图或导航入口。
+
+部分激光匹配通过独立 `/chassis/odom/laser_partial` 提供速度观测，与完整激光输出逐帧
+互斥。EKF 使用速度及方向相关协方差，独立惯导只吸收强可观测的平移速度方向；弱方向
+不能作为零速度约束。部分观测不重置位置或 2 秒完整观测期限，也不单独放行建图。
+监控项 `inertial_fallback` 单独报告惯导备用输出的可用性和原因。履带地图栅格配置为
+每 0.5 秒发布，不能和约 12 Hz 的扫描频率等同。
+
+当前证据与测试范围见[建图卡顿与惯导可用性复核](../../documents/tracked_mapping_optimization_20260926.md)。
+[惯性续接与建图恢复](../../documents/tracked_inertial_recovery_20260926.md)是历史前版报告，
+旧测试通过不代表本轮精度通过。新录包使用 `tools/analyze_tracked_estimation.py` 审查，
+命令见[根 README](../../README.md#步骤-2遥控建图)；没有独立距离/角度及对应时间真值时，
+精度必须为 `NOT_EVALUATED`，激光、惯导、EKF 轨迹相似不能替代真实位置测量。
 
 ## 调试
 

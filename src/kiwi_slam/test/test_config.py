@@ -61,7 +61,7 @@ def test_slam_frames_ranges_and_mode_match_base_and_lidar():
     assert params["minimum_travel_heading"] == 0.20
 
 
-def test_tracked_mapping_handles_tf_latency_and_unverified_loop_closure():
+def test_tracked_mapping_handles_tf_latency_and_enabled_loop_closure():
     tracked = load_parameters("tracked_slam_toolbox.yaml", "slam_toolbox")
     kiwi = load_parameters("slam_toolbox.yaml", "slam_toolbox")
     assert tracked["scan_topic"] == kiwi["scan_topic"] == "/scan_slam"
@@ -69,7 +69,7 @@ def test_tracked_mapping_handles_tf_latency_and_unverified_loop_closure():
     assert tracked["use_scan_matching"] is True
     # 实测 TF 等待 p95=0.134 s，扫描周期=0.083 s；默认单帧队列容不下等待期间的扫描。
     assert tracked["scan_queue_size"] >= 4
-    assert tracked["do_loop_closing"] is False
+    assert tracked["do_loop_closing"] is True
     assert kiwi["do_loop_closing"] is True
 
 
@@ -138,6 +138,8 @@ def test_rviz_and_monitor_expose_map_robot_and_debug_contracts():
     assert "rviz_default_plugins/RobotModel" in classes
     assert "rviz_default_plugins/LaserScan" in classes
     assert rviz["Visualization Manager"]["Global Options"]["Fixed Frame"] == "map"
+    scan_display = next(display for display in displays if display["Class"] == "rviz_default_plugins/LaserScan")
+    assert scan_display["Topic"]["Value"] == load_parameters("tracked_slam_toolbox.yaml", "slam_toolbox")["scan_topic"]
 
     robot_model = next(
         display

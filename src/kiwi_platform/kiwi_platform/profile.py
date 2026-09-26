@@ -154,6 +154,9 @@ def validate_rf2o(profile: Profile) -> None:
     _equal("RF2O 扫描", rf2o["laser_scan_topic"], lidar["laserscan_topic"], "/scan")
     _equal("RF2O -> 协方差适配", rf2o["odom_topic"], adapter["source_topic"])
     _equal("协方差适配 -> EKF", adapter["output_topic"], ekf["odom0"])
+    _equal("条件零速度 -> EKF", adapter["zero_velocity_topic"], ekf["odom1"])
+    if ekf["odom1_config"] != [False]*6+[True,True]+[False]*7:
+        raise ValueError("停车约束仅可融合 vx/vy")
     if adapter["source_topic"] == adapter["output_topic"]:
         raise ValueError("RF2O 协方差输入和输出不能相同")
     _equal("RF2O 机体", rf2o["base_frame_id"], ekf["base_link_frame"])
@@ -168,6 +171,8 @@ def validate_rf2o(profile: Profile) -> None:
     if adapter["stationary_filter_enabled"] is not True:
         raise ValueError("履带 RF2O 必须启用静止零漂约束")
     _equal("RF2O 静止检测扫描", adapter["scan_topic"], lidar["laserscan_topic"])
+    _equal("质量检查雷达坐标", adapter["scan_frame"], lidar["frame_id"])
+    _equal("质量检查 IMU 坐标", adapter["imu_frame"], base["imu_frame_id"])
     _equal("RF2O 静止检测 IMU", adapter["imu_topic"], base["imu_topic"])
     for key in (
         "stationary_window_s", "stationary_max_scan_median_delta_m",
@@ -179,11 +184,87 @@ def validate_rf2o(profile: Profile) -> None:
         value = adapter[key]
         if isinstance(value, bool) or not isinstance(value, (float, int)) or not 0.0 < value <= 1.0:
             raise ValueError(f"RF2O {key} 必须在 (0, 1] 范围内")
-    _equal("IMU -> EKF", base["imu_topic"], ekf["imu0"])
+    if profile.odometry == "wheel":
+        _equal("IMU -> EKF", base["imu_topic"], ekf["imu0"])
     _equal("IMU 坐标", base["imu_frame_id"], "chassis_imu_link")
     acceleration = _node(profile.data("base"), "tracked_imu_acceleration", profile.files["base"])
     _equal("加速度原始输入", acceleration["source_topic"], base["imu_topic"])
     _equal("加速度原始坐标", acceleration["source_frame"], base["imu_frame_id"])
+    if len({acceleration["source_topic"], acceleration["gyro_output_topic"], acceleration["output_topic"]}) != 3:
+        raise ValueError("原始 IMU、校准陀螺、加速度话题必须独立")
+    if ekf["imu0_config"] != [False]*11+[True]+[False]*3:
+        raise ValueError("校准陀螺仅可融合 gyro_z")
+    if ekf["odom0_config"] != [True,True,False,False,False,True]+[False]*9:
+        raise ValueError("激光仅融合位姿；停车速度使用独立条件约束")
+    _equal("校准陀螺 -> EKF", acceleration["gyro_output_topic"], ekf["imu0"])
+    _equal("IMU 数据 ready", acceleration["data_ready_topic"], adapter["imu_ready_topic"])
+    _equal("校准静止证据", acceleration["stationary_topic"], adapter["stationary_topic"])
+    _equal("零速度否决加速度", adapter["acceleration_topic"], acceleration["output_topic"])
+    if adapter.get("zero_velocity_acceleration_veto_enabled") is not True:
+        raise ValueError("履带必须启用校准加速度对零速度约束的否决")
+    window = adapter["zero_velocity_acceleration_window_s"]
+    duration = adapter["zero_velocity_acceleration_duration_s"]
+    holdoff = adapter["zero_velocity_acceleration_holdoff_s"]
+    for name, value in (("窗口", window), ("持续时间", duration), ("保持时间", holdoff)):
+        _positive("零速度否决" + name, value)
+    if not .1 <= window <= .3 or not .05 <= duration <= window or not .1 <= holdoff <= .5:
+        raise ValueError("零速度否决时间窗口超出有效范围")
+    if not acceleration.get("startup_calibration_enabled") or not adapter.get("quality_enabled"):
+        raise ValueError("履带惯性融合必须启用启动校准和激光质量检查")
+    _positive("启动校准窗口", acceleration["startup_duration_s"])
+    _positive("激光可观测性阈值", adapter["minimum_information_ratio"])
+    guard = _node(profile.data("base"), "tracked_estimation_guard", profile.files["base"])
+    _equal("保护层激光就绪", guard["laser_ready_topic"], adapter["quality_topic"])
+    inertial = _node(profile.data("base"), "tracked_inertial_odometry", profile.files["base"])
+    _equal("惯导位置锚点", inertial["anchor_topic"], adapter["output_topic"])
+    _equal("惯导陀螺", inertial["gyro_topic"], acceleration["gyro_output_topic"])
+    _equal("惯导加速度", inertial["acceleration_topic"], acceleration["output_topic"])
+    _equal("惯导 IMU 就绪", inertial["imu_ready_topic"], acceleration["data_ready_topic"])
+    _equal("惯导激光就绪", inertial["laser_ready_topic"], adapter["quality_topic"])
+    _equal("惯导机体坐标", inertial["base_frame"], ekf["base_link_frame"])
+    _equal("惯导里程计坐标", inertial["odom_frame"], ekf["world_frame"])
+    _equal("惯导候选 -> 保护及激光恢复", inertial["output_topic"], guard["inertial_topic"], adapter["inertial_topic"])
+    _equal("惯导有效 -> 保护及激光恢复", inertial["valid_topic"], guard["inertial_valid_topic"], adapter["inertial_valid_topic"])
+    if not guard["inertial_enabled"] or not adapter["inertial_recovery_enabled"]:
+        raise ValueError("履带短时续接必须同时开启惯导保护和激光恢复")
+    distinct = [inertial["output_topic"], inertial["anchor_topic"], adapter["source_topic"],
+                guard["input_topic"], guard["output_topic"]]
+    if len(set(distinct)) != len(distinct):
+        raise ValueError("惯导、激光和公共融合话题必须独立，禁止输出反哺自身")
+    for name, value in ekf.items():
+        if name.startswith(("odom", "imu")) and isinstance(value, str) and value == inertial["output_topic"]:
+            raise ValueError("独立 INS 不能与同源 IMU 重复计权进入 EKF")
+    _equal("退化方向速度 -> EKF", adapter["partial_output_topic"], ekf["odom2"], inertial["partial_topic"])
+    _equal("退化方向速度状态", adapter["partial_ready_topic"], inertial["partial_ready_topic"])
+    if ekf["odom2_config"] != [False]*6+[True,True,False,False,False,True]+[False]*3:
+        raise ValueError("退化扫描只提供方向性速度，不能作为完整位姿或重新锚定")
+    if not adapter["partial_observation_enabled"]:
+        raise ValueError("履带必须保留可验证的退化方向速度观测")
+    if adapter["partial_output_topic"] in distinct:
+        raise ValueError("退化速度必须使用独立话题，不能与完整激光/惯导混淆")
+    _equal("惯导新增位置方差", inertial["max_position_growth_variance"], guard["max_inertial_xy_growth_variance"], adapter["inertial_max_xy_growth_variance"])
+    _equal("惯导航向新增方差", inertial["max_yaw_growth_variance"], guard["max_inertial_yaw_growth_variance"], adapter["inertial_max_yaw_growth_variance"])
+    for key in ("handoff_correction_speed_m_s", "handoff_correction_yaw_rate_rad_s"):
+        _positive(key, guard[key])
+    _equal("惯导最大失观测时间", inertial["max_coast_s"], guard["max_inertial_duration_s"], adapter["recovery_max_gap_s"])
+    for axis, key in (("xy", "max_position_variance"), ("yaw", "max_yaw_variance")):
+        _equal("惯导方差上限 "+axis, inertial[key], guard["max_inertial_"+axis+"_variance"],
+               adapter["inertial_max_"+axis+"_variance"])
+    if not 0 < inertial["max_position_growth_variance"] <= .25:
+        raise ValueError("惯导新增位置方差必须有界，不能因放大基线方差无限传播")
+    if not 0 < inertial["max_coast_s"] <= 5.0:
+        raise ValueError("惯导无独立位移观测时仅允许最多 5 秒的有界预测")
+    if not inertial["max_coast_s"] <= adapter["recovery_reference_max_gap_s"] <= 30.0:
+        raise ValueError("旧扫描参考恢复期限无效")
+    if inertial["max_position_variance"] <= adapter["pose_xy_variance"] or inertial["max_yaw_variance"] <= adapter["pose_yaw_variance"]:
+        raise ValueError("惯导保护方差必须大于可信激光锚点方差，否则不能启动")
+
+    if acceleration["data_ready_topic"] == acceleration["ready_topic"]:
+        raise ValueError("IMU 标定和数据就绪话题必须区分")
+    if not .3 < adapter["recovery_max_gap_s"] <= 5 or not 0 < adapter["recovery_duration_s"] < adapter["recovery_max_gap_s"]:
+        raise ValueError("激光恢复时间配置无效")
+    if not 0 < acceleration["recovery_duration_s"] < acceleration["max_interruption_s"] <= 5:
+        raise ValueError("IMU 恢复时间配置无效")
     _equal("加速度 -> EKF", acceleration["output_topic"], ekf["imu1"])
     _equal("加速度输出坐标", acceleration["output_frame"], ekf["base_link_frame"])
     if acceleration["output_topic"] == acceleration["source_topic"]:
@@ -196,6 +277,8 @@ def validate_rf2o(profile: Profile) -> None:
         raise ValueError("加速度 enabled 必须为布尔值")
     model = _node(profile.data("base"), "tracked_robot_model", profile.files["base"])
     _equal("加速度杆臂", acceleration["imu_lever_xy"], model["imu_xyz"][:2])
+    _equal("激光质量杆臂", adapter["lidar_xy"], model["lidar_xyz"][:2])
+    _equal("激光质量安装旋转", model["lidar_rpy"], [0.0,0.0,0.0])
     _equal("平面加速度模型旋转", model["imu_rpy"], [0.0, 0.0, 0.0])
     for key, length in (("accel_rotation", 9), ("rest_acceleration", 3),
                         ("acceleration_variance", 3), ("imu_lever_xy", 2)):
@@ -240,12 +323,29 @@ def validate_profile(profile: Profile, mode: str = "driver") -> bool:
         raise ValueError("键盘速度超过底盘物理限速")
     if profile.odometry == "wheel" and teleop["speed_m_s"] > base["max_lateral_speed_m_s"]:
         raise ValueError("键盘横移速度超过底盘物理限速")
-    _equal("IMU -> EKF", base["imu_topic"], ekf["imu0"])
+    if profile.odometry == "wheel":
+        _equal("IMU -> EKF", base["imu_topic"], ekf["imu0"])
     _equal("机体坐标", ekf["base_link_frame"], "base_footprint")
     _equal("里程计坐标", ekf["odom_frame"], ekf["world_frame"], "odom")
     _equal("地图坐标", ekf["map_frame"], "map")
-    if ekf["publish_tf"] is not True:
-        raise ValueError("EKF 必须独占发布 odom -> base_footprint")
+    if profile.odometry == "wheel":
+        if ekf["publish_tf"] is not True:
+            raise ValueError("Kiwi EKF 必须独占发布 odom -> base_footprint")
+    else:
+        if ekf["publish_tf"] is not False:
+            raise ValueError("履带 EKF 必须关闭直接 TF，由有效性保护节点独占转发")
+        guard = _node(base_yaml, "tracked_estimation_guard", profile.files["base"])
+        acceleration = _node(base_yaml, "tracked_imu_acceleration", profile.files["base"])
+        _equal("保护层公共里程计", guard["output_topic"], "/odometry/filtered")
+        _equal("保护层坐标", guard["base_frame"], ekf["base_link_frame"])
+        _equal("保护层里程计坐标", guard["odom_frame"], ekf["world_frame"])
+        _equal("保护层激光输入", guard["laser_topic"], ekf["odom0"])
+        _equal("保护层惯性输入", guard["gyro_topic"], ekf["imu0"])
+        _equal("保护层 IMU 就绪", guard["imu_ready_topic"], acceleration["data_ready_topic"])
+        if guard["input_topic"] == guard["output_topic"]:
+            raise ValueError("保护层输入输出不能相同")
+        for key in ("max_prediction_s", "recovery_duration_s", "max_position_error_m", "max_yaw_error_rad"):
+            _positive(key,guard[key])
     if profile.odometry == "wheel":
         _equal("轮式里程计", base["wheel_odom_topic"], ekf["odom0"])
         motion = True
@@ -284,7 +384,21 @@ def validate_profile(profile: Profile, mode: str = "driver") -> bool:
         _equal("建图机体", gate["base_frame"], slam["base_frame"], ekf["base_link_frame"])
         _equal("建图里程计", gate["odom_frame"], slam["odom_frame"], ekf["odom_frame"])
         _equal("建图地图", slam["map_frame"], ekf["map_frame"])
-        _equal("建图扫描", gate["input_scan_topic"], lidar["laserscan_topic"])
+        if profile.odometry == "wheel":
+            _equal("建图扫描", gate["input_scan_topic"], lidar["laserscan_topic"])
+        else:
+            adapter = _node(profile.data("rf2o"), "rf2o_covariance_adapter", profile.files["rf2o"])
+            acceleration = _node(base_yaml, "tracked_imu_acceleration", profile.files["base"])
+            _equal("质量扫描 -> 门控", gate["input_scan_topic"], adapter["validated_scan_topic"])
+            _equal("激光质量 -> 门控", gate["laser_quality_topic"], adapter["quality_topic"])
+            _equal("IMU 校准 -> 门控", gate["imu_ready_topic"], acceleration["ready_topic"])
+            guard = _node(base_yaml, "tracked_estimation_guard", profile.files["base"])
+            _equal("估计有效 -> 建图", gate["estimation_ready_topic"], guard["valid_topic"])
+            _equal("估计状态 -> 建图", gate["estimation_state_topic"], guard["state_topic"])
+            if gate.get("require_estimation_ready") is not True:
+                raise ValueError("履带建图必须检查估计有效状态")
+            if not gate["require_imu_ready"] or not gate["require_laser_quality"]:
+                raise ValueError("履带建图必须等待 IMU 校准和激光质量")
         _equal("建图雷达坐标", gate["laser_frame"], lidar["frame_id"])
         _equal("SLAM 扫描", gate["output_scan_topic"], slam["scan_topic"], "/scan_slam")
         _equal("SLAM 最小量程", slam["min_laser_range"], lidar["min_range"])

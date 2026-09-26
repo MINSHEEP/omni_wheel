@@ -1,8 +1,53 @@
 """建图首帧门控状态机单元测试。"""
 
 import math
+from pathlib import Path
+
+import pytest
+import yaml
 
 from kiwi_slam.mapping_gate import MappingGateConfig, MappingStartupGate
+
+
+@pytest.mark.parametrize('filename,tracked', [('tracked_mapping_gate.yaml', True),
+                                           ('mapping_gate.yaml', False)])
+def test_ready_qos_preserves_omni_latched_calibration_and_tracked_freshness(monkeypatch, filename, tracked):
+    from unittest.mock import Mock
+    from rclpy.node import Node
+    from rclpy.parameter import Parameter
+    from rclpy.qos import DurabilityPolicy, ReliabilityPolicy
+    from kiwi_slam.mapping_gate import MappingScanGateNode
+
+    config = yaml.safe_load((Path(__file__).parents[1]/'config'/filename).read_text())
+    parameters = config['kiwi_mapping_scan_gate']['ros__parameters']
+    readers, writers = {}, {}
+    monkeypatch.setattr(Node, '__init__', lambda self, name: None)
+    monkeypatch.setattr(Node, 'declare_parameter', lambda self, name, default:
+                        Parameter(name, value=parameters.get(name, default)))
+    def subscription(self, message_type, topic, callback, qos):
+        readers[topic] = qos
+        return Mock()
+    def publisher(self, message_type, topic, qos):
+        writers[topic] = qos
+        return Mock()
+    monkeypatch.setattr(Node, 'create_subscription', subscription)
+    monkeypatch.setattr(Node, 'create_publisher', publisher)
+    monkeypatch.setattr(Node, 'create_timer', Mock())
+    monkeypatch.setattr(Node, 'get_logger', Mock())
+    MappingScanGateNode()
+    ready = readers['/chassis/imu/calibration_ready']
+    if tracked:
+        for topic in ('/chassis/imu/calibration_ready', '/chassis/odom/laser_ready',
+                      '/chassis/estimation/valid', '/chassis/estimation/state'):
+            assert readers[topic].depth == 10
+            assert readers[topic].durability == DurabilityPolicy.VOLATILE
+            assert readers[topic].reliability == ReliabilityPolicy.RELIABLE
+    else:
+        # kiwi_base校准成功只发一次，建图后启动必须能读取已经提交的状态。
+        assert ready.durability == DurabilityPolicy.TRANSIENT_LOCAL
+        assert ready.depth == 1
+    assert writers['/kiwi_slam/mapping_gate_ready'].durability == DurabilityPolicy.TRANSIENT_LOCAL
+    assert writers['/kiwi_slam/mapping_gate_ready'].depth == 1
 
 
 def make_gate(required_scans=3):
@@ -176,3 +221,48 @@ def test_tracked_gate_pauses_when_filtered_odometry_stops():
     assert not gate.observe_scan(0.85, [1.0] * 8, 0.1, 5.0)
     gate.observe_odometry(0.86, 0.2, 0.0, 0.1, 0.1)
     assert gate.observe_scan(0.87, [1.0] * 8, 0.1, 5.0)
+
+
+def test_calibration_revocation_closes_an_already_open_gate():
+    gate = make_gate(required_scans=2)
+    gate.set_imu_ready(True)
+    observe_stationary(gate)
+    gate.observe_scan(.61, [1.]*8, .1, 5.)
+    assert gate.observe_scan(.66, [1.]*8, .1, 5.)
+    gate.set_imu_ready(False)
+    assert not gate.opened
+    assert not gate.observe_scan(.67, [1.]*8, .1, 5.)
+
+
+def test_estimation_invalid_closes_gate_even_with_recent_odometry(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from kiwi_slam.mapping_gate import MappingScanGateNode
+    monkeypatch.setattr('kiwi_slam.mapping_gate.time.monotonic',lambda:10.)
+    node=SimpleNamespace(quality_ready=True, quality_time=9.9, imu_ready_time=9.9,
+        gate=SimpleNamespace(imu_ready=True, opened=True, _sources_ready=lambda t:True),
+        require_estimation_ready=True, estimation_ready=False, estimation_time=9.9,
+        estimation_state="VALID", estimation_state_time=9.9,
+        ready_pub=Mock())
+    assert not MappingScanGateNode._health(node)
+    assert node.ready_pub.publish.call_args.args[0].data is False
+    node.estimation_ready=True
+    assert MappingScanGateNode._health(node)
+    node.estimation_time=9.
+    assert not MappingScanGateNode._health(node)
+
+
+def test_inertial_tf_does_not_authorize_map_writes_before_filter_recovery(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from kiwi_slam.mapping_gate import MappingScanGateNode
+    monkeypatch.setattr('kiwi_slam.mapping_gate.time.monotonic', lambda: 10.)
+    node = SimpleNamespace(quality_ready=True, quality_time=9.9, imu_ready_time=9.9,
+        gate=SimpleNamespace(imu_ready=True, opened=True, _sources_ready=lambda t: True),
+        require_estimation_ready=True, estimation_ready=True, estimation_time=9.9,
+        estimation_state='INERTIAL', estimation_state_time=9.9, ready_pub=Mock())
+    assert not MappingScanGateNode._health(node)
+    node.estimation_state = 'VALID'
+    assert MappingScanGateNode._health(node)
+    node.estimation_state_time = 9.0
+    assert not MappingScanGateNode._health(node)

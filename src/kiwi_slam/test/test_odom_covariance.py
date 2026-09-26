@@ -1,6 +1,9 @@
 """确认适配器保留真实运动，同时压住静止 RF2O 伪运动。"""
 
 import math
+from pathlib import Path
+
+import yaml
 
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu, LaserScan
@@ -10,6 +13,40 @@ from kiwi_slam.odom_covariance import (
     StationaryOdomFilter,
     set_covariance,
 )
+
+
+def test_quality_adapter_reads_live_heartbeats_and_preserves_latched_status(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from rclpy.node import Node
+    from rclpy.qos import DurabilityPolicy, ReliabilityPolicy
+    from kiwi_slam.odom_covariance import OdometryCovarianceAdapter
+
+    config = yaml.safe_load((Path(__file__).parents[1]/'config/tracked_rf2o.yaml').read_text())
+    parameters = config['rf2o_covariance_adapter']['ros__parameters']
+    readers, writers = {}, {}
+    monkeypatch.setattr(Node, '__init__', lambda self, name: None)
+    monkeypatch.setattr(Node, 'declare_parameter', lambda self, name, default:
+                        SimpleNamespace(value=parameters.get(name, default)))
+    def subscription(self, message_type, topic, callback, qos):
+        readers[topic] = qos
+        return Mock()
+    def publisher(self, message_type, topic, qos):
+        writers[topic] = qos
+        return Mock()
+    monkeypatch.setattr(Node, 'create_subscription', subscription)
+    monkeypatch.setattr(Node, 'create_publisher', publisher)
+    monkeypatch.setattr(Node, 'create_timer', Mock())
+    monkeypatch.setattr(Node, 'get_logger', Mock())
+    OdometryCovarianceAdapter()
+    for topic in ('/chassis/imu/data_ready', '/chassis/inertial/valid'):
+        assert readers[topic].depth == 10
+        assert readers[topic].durability == DurabilityPolicy.VOLATILE
+        assert readers[topic].reliability == ReliabilityPolicy.RELIABLE
+    for topic in ('/chassis/odom/laser_ready', '/chassis/odom/laser_partial_ready',
+                  '/chassis/odom/calibration_stationary'):
+        assert writers[topic].durability == DurabilityPolicy.TRANSIENT_LOCAL
+        assert writers[topic].depth == 1
 
 
 def stationary_filter():

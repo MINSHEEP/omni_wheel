@@ -90,6 +90,7 @@ set -u
 if [[ -z "${ROS_DOMAIN_ID:-}" ]]; then
   export ROS_DOMAIN_ID=42
 fi
+export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-1}"
 command -v ros2 >/dev/null 2>&1 || die "找不到 ros2，请先安装或 source ROS 2 Humble"
 command -v tar >/dev/null 2>&1 || die "找不到 tar"
 command -v df >/dev/null 2>&1 || die "找不到 df（coreutils）"
@@ -363,9 +364,49 @@ trap request_stop INT TERM
 trap on_exit EXIT
 
 printf '输出目录：%s\n' "$RUN_DIR"
+# --include-unpublished-topics 会在发布者出现前订阅，默认 reliable
+# 无法接收后来出现的 best_effort 扫描；显式规定传感器话题 QoS。
+cat > "$RUN_DIR/snapshots/recorder_qos.yaml" <<'EOF'
+/scan:
+  history: keep_last
+  depth: 100
+  reliability: best_effort
+  durability: volatile
+/scan_validated:
+  history: keep_last
+  depth: 100
+  reliability: best_effort
+  durability: volatile
+/scan_slam:
+  history: keep_last
+  depth: 100
+  reliability: best_effort
+  durability: volatile
+/chassis/imu/data_raw:
+  history: keep_last
+  depth: 100
+  reliability: best_effort
+  durability: volatile
+/chassis/imu/gyro:
+  history: keep_last
+  depth: 100
+  reliability: best_effort
+  durability: volatile
+/chassis/imu/acceleration:
+  history: keep_last
+  depth: 100
+  reliability: best_effort
+  durability: volatile
+/tf_static:
+  history: keep_last
+  depth: 100
+  reliability: reliable
+  durability: transient_local
+EOF
 printf '开始录制所有（含隐藏）话题...\n'
 setsid ros2 bag record \
   --output "$BAG_DIR" \
+  --qos-profile-overrides-path "$RUN_DIR/snapshots/recorder_qos.yaml" \
   --all \
   --include-hidden-topics \
   --include-unpublished-topics \

@@ -42,7 +42,10 @@ def test_tracked_navigation_has_its_own_complete_differential_yaml():
     assert nav["amcl"]["ros__parameters"]["robot_model_type"] == "nav2_amcl::DifferentialMotionModel"
     assert "alpha5" not in nav["amcl"]["ros__parameters"]
     assert ekf["odom0"] == gate["source_odom_topic"] == "/chassis/odom/laser"
-    assert ekf["imu0"] == gate["imu_topic"] == "/chassis/imu/data_raw"
+    assert ekf["imu0"] == "/chassis/imu/gyro"
+    assert gate["imu_topic"] == "/chassis/imu/data_raw"
+    assert gate["require_imu_ready"] is True
+    assert gate["require_laser_quality"] is True
     assert gate["require_imu_samples"] and gate["require_source_odom"]
     controller = nav["controller_server"]["ros__parameters"]["FollowPath"]
     smoother = nav["velocity_smoother"]["ros__parameters"]
@@ -133,7 +136,7 @@ def test_calibrated_tracked_localization_uses_own_nav2_and_rf2o(tmp_path):
     actions = launch._setup(context)
     nodes = [action.node_executable for action in actions if hasattr(action, "node_executable")]
     assert nodes == ["robot_state_publisher", "tracked_base_node", "lslidar_driver_node",
-                     "rf2o_laser_odometry_node", "rf2o_covariance_adapter", "tracked_imu_acceleration", "ekf_node"]
+                     "rf2o_laser_odometry_node", "rf2o_covariance_adapter", "tracked_imu_acceleration", "tracked_inertial_odometry", "tracked_estimation_guard", "ekf_node"]
     includes = [action for action in actions if action.__class__.__name__ == "IncludeLaunchDescription"]
     assert len(includes) == 2
     localization = dict(includes[0]._IncludeLaunchDescription__launch_arguments)

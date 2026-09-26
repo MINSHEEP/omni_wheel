@@ -34,6 +34,10 @@ elif [[ "${ROS_DOMAIN_ID}" != 42 ]]; then
   echo "提示：当前 ROS_DOMAIN_ID=${ROS_DOMAIN_ID}，Kiwi 默认域为 42；请确认没有接入其他机器的同名 TF。" >&2
 fi
 
+# 建图、录包和查询终端默认在本机发现；跨机 ROS 通信时所有终端显式设为 0。
+# 切换此值后应在新环境运行 ros2 daemon stop，清除旧发现缓存。
+export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-1}"
+
 for KIWI_PACKAGE_NAME in kiwi_platform kiwi_base kiwi_slam kiwi_navigation; do
   KIWI_PACKAGE_PREFIX="$(ros2 pkg prefix "${KIWI_PACKAGE_NAME}" 2>/dev/null)" || {
     echo "错误：当前 ament 索引找不到 ${KIWI_PACKAGE_NAME}。" >&2
@@ -62,4 +66,4 @@ done
 
 export KIWI_WORKSPACE_ROOT
 unset KIWI_INSTALL_SETUP KIWI_PACKAGE_NAME KIWI_PACKAGE_PREFIX KIWI_KEYBOARD_ENTRY KIWI_SCRIPT_NAME KIWI_SCRIPT_ENTRY
-echo "Kiwi 工作区已加载：${KIWI_WORKSPACE_ROOT}（ROS_DOMAIN_ID=${ROS_DOMAIN_ID}）"
+echo "Kiwi 工作区已加载：${KIWI_WORKSPACE_ROOT}（ROS_DOMAIN_ID=${ROS_DOMAIN_ID}，ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY}）"
