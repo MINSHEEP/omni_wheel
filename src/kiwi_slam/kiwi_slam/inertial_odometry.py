@@ -87,6 +87,7 @@ class InertialOdometry:
         self.last_anchor_rejection = None
         self.last_partial_stamp = None
         self.last_partial_rejection = None
+        self.last_imu_rejection_detail = None
 
     def invalidate(self, reason):
         self.state = self.covariance = None
@@ -350,6 +351,7 @@ class InertialOdometry:
         return True
 
     def push_imu(self, stamp, acceleration, angular_velocity, acceleration_covariance, angular_variance):
+        self.last_imu_rejection_detail = None
         acceleration = np.asarray(acceleration, dtype=float)
         if (not math.isfinite(stamp) or acceleration.shape != (2,) or
                 not np.isfinite(acceleration).all() or not math.isfinite(angular_velocity) or
@@ -361,9 +363,23 @@ class InertialOdometry:
         except ValueError:
             self.invalidate('imu_covariance_invalid')
             return False
-        if (np.linalg.norm(acceleration) > self.config.max_acceleration_m_s2 or
-                abs(angular_velocity) > self.config.max_yaw_rate_rad_s):
+        acceleration_norm = float(np.linalg.norm(acceleration))
+        acceleration_exceeded = acceleration_norm > self.config.max_acceleration_m_s2
+        yaw_rate_exceeded = abs(angular_velocity) > self.config.max_yaw_rate_rad_s
+        if acceleration_exceeded or yaw_rate_exceeded:
             self.invalidate('imu_motion_outside_validated_limits')
+            self.last_imu_rejection_detail = {
+                'stamp': float(stamp),
+                'ax_m_s2': float(acceleration[0]),
+                'ay_m_s2': float(acceleration[1]),
+                'acceleration_norm_m_s2': acceleration_norm,
+                'max_acceleration_m_s2': self.config.max_acceleration_m_s2,
+                'wz_rad_s': float(angular_velocity),
+                'max_yaw_rate_rad_s': self.config.max_yaw_rate_rad_s,
+                'trigger': ','.join(name for name, exceeded in (
+                    ('acceleration_norm', acceleration_exceeded),
+                    ('yaw_rate', yaw_rate_exceeded)) if exceeded),
+            }
             return False
         sample = (float(stamp), acceleration.copy(), float(angular_velocity),
                   covariance, float(angular_variance))
@@ -638,6 +654,17 @@ def main(args=None):
                 a = message.linear_acceleration
                 covariance = np.array(message.linear_acceleration_covariance).reshape(3, 3)[:2, :2]
                 self.core.push_imu(stamp, [a.x, a.y], angular[0], covariance, angular[1])
+                detail = self.core.last_imu_rejection_detail
+                if detail is not None:
+                    self.get_logger().warning(
+                        'IMU rejected: imu_motion_outside_validated_limits '
+                        f"trigger={detail['trigger']} stamp={detail['stamp']:.9f} "
+                        f"ax={detail['ax_m_s2']:.6f} ay={detail['ay_m_s2']:.6f} "
+                        f"acceleration_norm={detail['acceleration_norm_m_s2']:.6f} m/s^2 "
+                        f"max_acceleration={detail['max_acceleration_m_s2']:.6f} m/s^2 "
+                        f"wz={detail['wz_rad_s']:.6f} rad/s "
+                        f"max_yaw_rate={detail['max_yaw_rate_rad_s']:.6f} rad/s",
+                        throttle_duration_sec=2.0)
                 self.last_received = time.monotonic()
             self.drain_partial()
             self.publish()

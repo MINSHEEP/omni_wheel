@@ -30,20 +30,33 @@ def set_stamp(message, stamp):
     message.header.stamp.sec, message.header.stamp.nanosec = divmod(nanos, 1000000000)
 
 
-def candidate_valid(message):
-    """核验实际待发布帧，不能用较旧插值帧替代这些检查。"""
+def candidate_issue(message):
+    """返回实际待发布帧的拒绝原因；不能用较旧插值帧替代检查。"""
     p, q, v = message.pose.pose.position, message.pose.pose.orientation, message.twist.twist
     values = [p.x,p.y,p.z,q.x,q.y,q.z,q.w,v.linear.x,v.linear.y,v.linear.z,
               v.angular.x,v.angular.y,v.angular.z,*message.pose.covariance,*message.twist.covariance]
-    if (not all(math.isfinite(x) for x in values) or
-            abs(q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w-1.) > .01 or
-            math.hypot(v.linear.x,v.linear.y) > .8 or abs(v.angular.z) > 1.8):
-        return False
-    for data in (message.pose.covariance, message.twist.covariance):
+    if not all(math.isfinite(x) for x in values):
+        return 'nonfinite_pose_twist_or_covariance'
+    norm=q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w
+    if abs(norm-1.) > .01:
+        return f'quaternion_norm_squared={norm:.6f}, expected=1+/-0.01'
+    speed=math.hypot(v.linear.x,v.linear.y)
+    if speed > .8:
+        return f'linear_speed={speed:.6f}m/s, limit=0.8m/s'
+    if abs(v.angular.z) > 1.8:
+        return f'yaw_speed={v.angular.z:.6f}rad/s, limit=1.8rad/s'
+    for label,data in (('pose',message.pose.covariance),('twist',message.twist.covariance)):
         covariance = np.array(data).reshape(6,6)
-        if not np.allclose(covariance,covariance.T,atol=1e-8) or np.linalg.eigvalsh(covariance).min() < -1e-9:
-            return False
-    return True
+        if not np.allclose(covariance,covariance.T,atol=1e-8):
+            return f'{label}_covariance_asymmetry={np.abs(covariance-covariance.T).max():.6g}'
+        eigenvalue=float(np.linalg.eigvalsh(covariance).min())
+        if eigenvalue < -1e-9:
+            return f'{label}_covariance_min_eigenvalue={eigenvalue:.6g}'
+    return None
+
+
+def candidate_valid(message):
+    return candidate_issue(message) is None
 
 
 def plausible_step(first, second, max_gap=.35):
@@ -53,6 +66,17 @@ def plausible_step(first, second, max_gap=.35):
     p, q = first.pose.pose.position, second.pose.pose.position
     return (math.hypot(q.x-p.x,q.y-p.y) <= .8*dt+.02 and
             abs(math.remainder(yaw(second)-yaw(first),2*math.pi)) <= 1.8*dt+.03)
+
+
+def step_issue(first, second, max_gap=.35):
+    if first is None or plausible_step(first,second,max_gap):
+        return None
+    dt=stamp_seconds(second)-stamp_seconds(first)
+    p,q=first.pose.pose.position,second.pose.pose.position
+    distance=math.hypot(q.x-p.x,q.y-p.y)
+    turn=abs(math.remainder(yaw(second)-yaw(first),2*math.pi))
+    return (f'discontinuous_step dt={dt:.6f}s, distance={distance:.6f}m '
+            f'(limit={.8*dt+.02:.6f}), yaw={turn:.6f}rad (limit={1.8*dt+.03:.6f})')
 
 
 def predict_odometry(message, target_stamp, gyro_history=(), max_dt=.35,
@@ -203,6 +227,10 @@ class EstimationGuard(Node):
                 for v in (self.max_inertial_xy,self.max_inertial_yaw,self.max_inertial_yaw_growth)):
             raise ValueError('invalid bounded inertial fallback limits')
         self.health_reason = 'waiting_sensors'
+        self.observation_reason = 'waiting_sensors'
+        self.pause_reason = None
+        self.filtered_epoch_stamp = None
+        self.filtered_reject_reason = 'waiting_filtered_output'
         self.odom_frame = param('odom_frame','odom')
         self.base_frame = param('base_frame','base_footprint')
         source = param('input_topic','/chassis/odometry/filtered_unchecked')
@@ -289,27 +317,49 @@ class EstimationGuard(Node):
                 if math.isfinite(variance) and variance >= 0 and abs(message.angular_velocity.z) <= 1.8:
                     self.gyro_history.append((stamp,message.angular_velocity.z,max(.001,variance)))
 
-    def fresh(self,message,received):
+    def freshness_issue(self,message,received):
         if message is None or received is None:
-            return False
+            return 'missing_message'
         age = self.get_clock().now().nanoseconds*1e-9-stamp_seconds(message)
-        return -.05 <= age <= self.max_source_age and time.monotonic()-received <= self.max_age
+        receipt_age=time.monotonic()-received
+        if not -.05 <= age <= self.max_source_age or receipt_age > self.max_age:
+            return (f'header_age={age:.6f}s (allowed=-0.05..{self.max_source_age:.3f}), '
+                    f'receipt_age={receipt_age:.6f}s (limit={self.max_age:.3f})')
+        return None
+
+    def fresh(self,message,received):
+        return self.freshness_issue(message,received) is None
+
+    def pause(self,reason):
+        # 第一触发原因保留至成功恢复；healthy() 只能更新观测状态，不能抹掉故障。
+        if self.pause_reason is None:
+            self.pause_reason=reason
+        self.health_reason=self.pause_reason
+        self.valid=self.inertial_output=False
+        self.mode='PAUSING'
 
     def healthy(self):
         now = time.monotonic()
+        reason=None
         for key in ['imu','laser']:
             if key not in self.flags or not self.flags[key][0] or now-self.flags[key][1]>=.5:
-                self.health_reason = key+'_not_ready'
-                return False
-        for key,message,received in [('laser',self.laser,self.laser_at),('gyro',self.gyro,self.gyro_at)]:
-            if not self.fresh(message,received):
-                self.health_reason = key+'_stale'
-                return False
-        if not candidate_valid(self.laser):
-            self.health_reason='laser_candidate_invalid'
-            return False
-        self.health_reason = 'observations_ready'
-        return True
+                flag=self.flags.get(key)
+                detail='missing_heartbeat' if flag is None else f'value={flag[0]}, heartbeat_age={now-flag[1]:.6f}s'
+                reason=key+'_not_ready: '+detail
+                break
+        if reason is None:
+            for key,message,received in [('laser',self.laser,self.laser_at),('gyro',self.gyro,self.gyro_at)]:
+                issue=self.freshness_issue(message,received)
+                if issue is not None:
+                    reason=key+'_stale: '+issue
+                    break
+        if reason is None:
+            issue=candidate_issue(self.laser)
+            if issue is not None:
+                reason='laser_candidate_invalid: '+issue
+        self.observation_reason=reason or 'observations_ready'
+        self.health_reason=self.pause_reason or self.observation_reason
+        return reason is None
 
     def on_inertial(self, message):
         if message.header.frame_id == self.odom_frame and message.child_frame_id == self.base_frame:
@@ -356,7 +406,10 @@ class EstimationGuard(Node):
         self.valid_pub.publish(Bool(data=self.valid))
         self.state_pub.publish(String(data=state))
         if state != self.last_state:
-            self.get_logger().info('Estimation state: '+state+' ('+self.health_reason+')')
+            detail=self.health_reason
+            if self.pause_reason and self.observation_reason != self.pause_reason:
+                detail+='; current_observations='+self.observation_reason
+            self.get_logger().info('Estimation state: '+state+' ('+detail+')')
             self.last_state = state
 
     def request_toggle(self, on):
@@ -375,6 +428,22 @@ class EstimationGuard(Node):
             self.request_started = time.monotonic()
             self.mode = 'RESETTING'
 
+    def begin_filtered_epoch(self):
+        # SetPose 已明确造成不连续的新滤波时期。以确认时刻隔离排队旧帧，
+        # 不能拿重置后的真实位姿与重置前的插值/步长历史继续做连续性判断。
+        stamp=self.get_clock().now().nanoseconds*1e-9
+        self.filtered_epoch_stamp=max(stamp,self.filtered_epoch_stamp or stamp)
+        self.filtered_history.clear()
+        self.last_source_message.clear()
+        self.last_output=self.output_source=None
+        self.output_offset=[0.,0.,0.]
+        self.inconsistent_since=self.handoff_started=None
+        self.valid=self.inertial_output=False
+        self.pause_reason=None
+        self.health_reason='ekf_reset_confirmed_waiting_new_epoch'
+        self.filtered_reject_reason='waiting_post_reset_output'
+        # last_forwarded 保留：即使显式重定位，公共 TF 时间也不能倒退。
+
     def finish_request(self, now):
         if self.future is None:
             return
@@ -383,7 +452,7 @@ class EstimationGuard(Node):
                 return
             self.future.cancel()
             self.get_logger().error('EKF service timeout; confirming pause before recovery')
-            self.mode = 'PAUSING'
+            self.pause('ekf_service_timeout: '+str(self.future_operation))
         else:
             try:
                 result = self.future.result()
@@ -391,14 +460,15 @@ class EstimationGuard(Node):
                     raise RuntimeError('EKF service returned no response')
                 # Humble ToggleFilterProcessing.status=false 表示已是请求状态，
                 # 并非失败。短时惯导期间 EKF 保持开启，恢复 enable 是幂等确认。
-
+                if self.future_operation == 'reset':
+                    self.begin_filtered_epoch()
                 self.mode = {'pause': 'PAUSED', 'reset': 'ENABLING',
                              'enable': 'WARMING'}[self.future_operation]
                 if self.mode == 'WARMING':
                     self.enabled_at = now
             except Exception as error:
                 self.get_logger().error('EKF service failure: '+str(error))
-                self.mode = 'PAUSING'
+                self.pause('ekf_service_failure: '+str(error))
         self.future = None
         self.future_operation = None
 
@@ -424,8 +494,11 @@ class EstimationGuard(Node):
             else:
                 self.valid = self.inertial_output = False
                 if self.future is None:
-                    self.mode = 'PAUSING' if self.mode != 'PAUSED' else 'PAUSED'
-                self.health_reason += '; inertial_unavailable_or_expired'
+                    if self.mode != 'PAUSED':
+                        self.pause(self.observation_reason+'; inertial_unavailable_or_expired')
+                if self.pause_reason is None:
+                    self.pause_reason=self.observation_reason+'; inertial_unavailable_or_expired'
+                self.health_reason=self.pause_reason
         elif self.mode in ('PAUSED', 'INERTIAL'):
             if self.recovery_since is None:
                 self.recovery_since = now
@@ -437,8 +510,7 @@ class EstimationGuard(Node):
             self.request_toggle(True)
         if (self.mode == 'WARMING' and self.enabled_at is not None
                 and now-self.enabled_at > 3.0):
-            self.health_reason = 'ekf_output_recovery_timeout'
-            self.mode = 'PAUSING'
+            self.pause('ekf_output_recovery_timeout: '+self.filtered_reject_reason)
         if self.mode == 'PAUSING' and self.future is None:
             self.valid = self.inertial_output = False
             self.request_toggle(False)
@@ -452,41 +524,55 @@ class EstimationGuard(Node):
         if self.valid and (self.last_forwarded is None or now-self.last_forwarded[1] > self.max_age):
             self.valid = False
             if self.future is None:
-                self.mode = 'PAUSING'
+                age=math.inf if self.last_forwarded is None else now-self.last_forwarded[1]
+                self.pause(f'output_stale: age={age:.3f}s, limit={self.max_age:.3f}s; '
+                           +self.filtered_reject_reason)
         self.publish_state()
 
     def on_filtered(self, message):
-        now = time.monotonic()
-        if message.header.frame_id != self.odom_frame or message.child_frame_id != self.base_frame:
-            self.valid = False
-            self.mode = 'PAUSING'
+        # 暂停/服务处理中来的 EKF 输出可能属于旧时期，不能改变恢复状态机，
+        # 也不能先写进连续性历史。只有启用后的 WARMING 才开始核验新候选。
+        if self.mode not in ('WARMING', 'VALID', 'INERTIAL'):
             return
-        if not self.fresh(message, now):
+        now = time.monotonic()
+        if self.filtered_epoch_stamp is not None and stamp_seconds(message) <= self.filtered_epoch_stamp:
+            self.filtered_reject_reason=(f'pre_reset_ekf_frame: stamp={stamp_seconds(message):.6f}, '
+                                         f'epoch={self.filtered_epoch_stamp:.6f}')
+            return
+        if message.header.frame_id != self.odom_frame or message.child_frame_id != self.base_frame:
+            self.pause('ekf_frame_mismatch: '+message.header.frame_id+'->'+message.child_frame_id)
+            return
+        issue=self.freshness_issue(message,now)
+        if issue is not None:
+            self.filtered_reject_reason='ekf_stale: '+issue
             return
         if self.filtered_history and stamp_seconds(message) <= stamp_seconds(self.filtered_history[-1]):
+            self.filtered_reject_reason='ekf_stamp_not_increasing'
             return
-        if (not candidate_valid(message) or
-                (self.filtered_history and not plausible_step(self.filtered_history[-1],message,self.max_source_age))):
-            self.health_reason='ekf_candidate_invalid_or_discontinuous'
-            self.valid=self.inertial_output=False
-            self.mode='PAUSING'
+        issue=candidate_issue(message) or step_issue(
+            self.filtered_history[-1] if self.filtered_history else None,message,self.max_source_age)
+        if issue is not None:
+            self.pause('ekf_candidate_invalid: '+issue)
             return
         if not self.filtered_history or stamp_seconds(message) > stamp_seconds(self.filtered_history[-1]):
             self.filtered_history.append(message)
-        if self.mode not in ('WARMING', 'VALID', 'INERTIAL') or not self.healthy():
+        self.filtered_reject_reason=''
+        if not self.healthy():
+            self.filtered_reject_reason=self.observation_reason
             return
         consistency = aligned_consistency(self.filtered_history, self.laser_history,
                                           self.max_error, self.max_yaw_error)
         if consistency is None:
+            self.filtered_reject_reason='awaiting_time_aligned_ekf_laser'
             return
         if not consistency:
+            self.filtered_reject_reason='ekf_laser_aligned_innovation_exceeds_bound'
             if self.inconsistent_since is None:
                 self.inconsistent_since = now
             if now-self.inconsistent_since >= self.recovery_duration:
                 self.get_logger().warning('EKF output persistently inconsistent at aligned timestamps; resetting filter',
                                           throttle_duration_sec=5.)
-                self.valid = False
-                self.mode = 'PAUSING'
+                self.pause(self.filtered_reject_reason)
             return
         self.inconsistent_since = None
         if self.mode == 'WARMING' and now-self.enabled_at < self.recovery_duration:
@@ -502,6 +588,7 @@ class EstimationGuard(Node):
         candidate=predict_odometry(message,target_stamp,self.gyro_history,self.max_source_age,
                                    self.prediction_acceleration_bound,self.prediction_yaw_acceleration_bound)
         if candidate is None:
+            self.filtered_reject_reason='ekf_delay_prediction_unavailable'
             return
         if self.inertial_output and self.handoff_started is None:
             # 已有当前采样时刻的完整预测候选；只让出下一帧发布权，
@@ -509,6 +596,8 @@ class EstimationGuard(Node):
             self.handoff_started=now
         if self.forward(candidate, 'filtered'):
             self.mode = 'VALID'
+            self.pause_reason=None
+            self.health_reason=self.observation_reason
             self.valid = self.ever_valid = True
             self.inertial_output = False
             self.handoff_started = None
@@ -523,11 +612,9 @@ class EstimationGuard(Node):
         if self.last_forwarded is not None and stamp <= self.last_forwarded[0]:
             return False
         previous=self.last_source_message.get(source)
-        if (not candidate_valid(message) or
-                (previous is not None and not plausible_step(previous,message,self.max_source_age))):
-            self.health_reason='output_candidate_invalid_or_discontinuous'
-            self.valid=self.inertial_output=False
-            self.mode='PAUSING'
+        issue=candidate_issue(message) or step_issue(previous,message,self.max_source_age)
+        if issue is not None:
+            self.pause(source+'_output_candidate_invalid: '+issue)
             return False
         output = deepcopy(message)
         angle = yaw(message)
@@ -544,9 +631,9 @@ class EstimationGuard(Node):
                     offset = [px-message.pose.pose.position.x, py-message.pose.pose.position.y,
                               math.remainder(old_yaw+dt*old_v.angular.z-angle,2*math.pi)]
                     if math.hypot(*offset[:2]) > self.max_error or abs(offset[2]) > self.max_yaw_error:
-                        self.health_reason = 'handoff_innovation_exceeds_bound'
-                        self.valid = False
-                        self.mode = 'PAUSING'
+                        self.pause(f'handoff_innovation_exceeds_bound: xy={math.hypot(*offset[:2]):.6f}m '
+                                   f'(limit={self.max_error}), yaw={offset[2]:.6f}rad '
+                                   f'(limit={self.max_yaw_error})')
                         return False
                     self.output_offset = offset
                 else:

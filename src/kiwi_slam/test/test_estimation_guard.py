@@ -71,6 +71,8 @@ def guard(monkeypatch):
         flags={}, laser=None, gyro=None, inertial=None,
         laser_at=None, gyro_at=None, inertial_at=None,
         last_trusted_laser_stamp=100., health_reason='',
+        observation_reason='', pause_reason=None, filtered_epoch_stamp=None,
+        filtered_reject_reason='waiting_filtered_output',
         mode='VALID', valid=True, inertial_output=False,
         future=None, future_operation=None, request_started=None,
         recovery_since=None, enabled_at=None, last_forwarded=(99.9,99.9),
@@ -161,7 +163,7 @@ def test_missing_ekf_output_does_not_wait_forever_after_enable(guard):
     n.mode='WARMING';n.enabled_at=100.;n.valid=False
     n.tick()
     assert n.mode=='PAUSING' and not n.valid
-    assert n.health_reason=='ekf_output_recovery_timeout'
+    assert n.health_reason.startswith('ekf_output_recovery_timeout:')
 
 
 @pytest.mark.parametrize('operation,status,expected', [
@@ -369,3 +371,76 @@ def test_smaller_covariance_from_new_laser_does_not_reject_older_valid_ins(guard
     assert n.trusted_xy_variance==pytest.approx(.25)
     assert n.inertial_usable() and n.valid
     assert n.publisher.publish.call_count==1
+
+
+@pytest.mark.parametrize('mode', ['PAUSING', 'PAUSED', 'RESETTING', 'ENABLING'])
+@pytest.mark.parametrize('bad', ['frame', 'jump', 'nonfinite', 'ordinary'])
+def test_queued_ekf_messages_cannot_change_suspended_filter_epoch(guard, mode, bad):
+    n,_,samples=guard
+    samples(100.,True)
+    n.filtered_history.append(odom(99.95))
+    n.mode=mode;n.valid=False
+    message=odom(100.,.01)
+    if bad=='frame':message.header.frame_id='wrong_frame'
+    if bad=='jump':message.pose.pose.position.x=1.
+    if bad=='nonfinite':message.twist.twist.linear.x=math.nan
+    n.on_filtered(message)
+    assert n.mode==mode
+    assert not n.valid
+    assert len(n.filtered_history)==1
+    n.publisher.publish.assert_not_called()
+
+
+def test_successful_set_pose_starts_new_filtered_epoch_without_zeroing_position(guard):
+    n,clock,samples=guard
+    samples(100.,True)
+    n.on_filtered(odom(100.))
+    n.mode='PAUSED';n.valid=False
+    samples(100.05,True)
+    n.laser.pose.pose.position.x=.5
+    n.set_pose.service_is_ready.return_value=True
+    future=Mock();future.done.return_value=True;future.result.return_value=SimpleNamespace()
+    n.set_pose.call_async.return_value=future
+    n.request_reset()
+    assert n.set_pose.call_async.call_args.args[0].pose.pose.pose.position.x==.5
+    clock[0]=100.08
+    n.finish_request(clock[0])
+    assert n.mode=='ENABLING'
+    assert not n.filtered_history
+    assert 'filtered' not in n.last_source_message
+    assert n.last_forwarded[0]==pytest.approx(100.)  # 公共 TF 时间不能倒退。
+    n.mode='WARMING';n.enabled_at=100.09
+    samples(100.10,True)
+    n.laser.pose.pose.position.x=.5
+    queued=odom(100.07,10.)  # 请求后、确认前已排队的旧 epoch 消息。
+    n.on_filtered(queued)
+    assert n.mode=='WARMING' and not n.filtered_history
+    n.on_filtered(odom(100.10,.5))
+    assert n.mode=='WARMING' and len(n.filtered_history)==1
+    samples(100.45,True);n.laser.pose.pose.position.x=.5
+    n.on_filtered(odom(100.45,.5))
+    assert n.mode=='VALID' and n.valid
+    assert n.publisher.publish.call_args.args[0].pose.pose.position.x==pytest.approx(.5)
+
+
+def test_pause_reason_survives_healthy_observations_at_next_tick(guard):
+    n,_,samples=guard
+    samples(100.,True);n.on_filtered(odom(100.))
+    samples(100.05,True)
+    message=odom(100.05);message.twist.twist.linear.x=10.
+    n.on_filtered(message)
+    assert n.mode=='PAUSING'
+    reason=n.health_reason
+    assert 'speed' in reason and '10' in reason
+    n.tick()
+    assert n.health_reason==reason
+    assert reason in n.get_logger.return_value.info.call_args.args[0]
+
+
+def test_output_watchdog_reports_why_fresh_sensor_input_cannot_publish(guard):
+    n,_,samples=guard
+    samples(100.5,True)
+    n.last_forwarded=(100.,100.)
+    n.tick()
+    assert n.mode=='PAUSING' and not n.valid
+    assert 'output_stale' in n.health_reason and '0.500' in n.health_reason

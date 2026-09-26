@@ -233,6 +233,36 @@ def test_acceleration_shock_invalid_covariance_and_backwards_clock_cannot_output
         assert core.estimate(stamp) is None
 
 
+@pytest.mark.parametrize('acceleration,rate,trigger', [
+    ((1.2, -1.2), .2, 'acceleration_norm'),
+    ((.2, -.1), -2.1, 'yaw_rate'),
+    ((-1.2, 1.2), 2.1, 'acceleration_norm,yaw_rate'),
+])
+def test_motion_limit_detail_reports_actual_sample_and_preserves_rejection(acceleration, rate, trigger):
+    core = primed(config=InertialConfig(max_yaw_rate_rad_s=1.8))
+    assert not push(core, 10.42, acceleration, rate)
+    assert core.reason == 'imu_motion_outside_validated_limits'
+    assert core.estimate(10.42) is None
+    detail = core.last_imu_rejection_detail
+    assert detail == {
+        'stamp': 10.42, 'ax_m_s2': acceleration[0], 'ay_m_s2': acceleration[1],
+        'acceleration_norm_m_s2': pytest.approx(np.linalg.norm(acceleration)),
+        'max_acceleration_m_s2': 1.5, 'wz_rad_s': rate,
+        'max_yaw_rate_rad_s': 1.8, 'trigger': trigger,
+    }
+    # 正常样本不能沿用上次拒绝的诊断，也不能凭一帧恢复丢失的锚点。
+    assert not push(core, 10.44)
+    assert core.last_imu_rejection_detail is None
+    assert core.estimate(10.44) is None
+
+
+def test_motion_limit_boundary_remains_accepted_without_rejection_detail():
+    core = primed(config=InertialConfig(max_yaw_rate_rad_s=1.8))
+    assert push(core, 10.42, (1.5, 0.), -1.8)
+    assert core.last_imu_rejection_detail is None
+    assert core.estimate(10.42).valid
+
+
 def test_timestamp_matched_gyro_interpolation_does_not_take_arbitrary_latest_sample():
     samples = [(1., .1, .01), (1.02, .2, .02), (1.04, .3, .03)]
     assert gyro_at(samples, 1.01, .025) == pytest.approx((.15, .015))
