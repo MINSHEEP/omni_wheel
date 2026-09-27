@@ -11,6 +11,8 @@ PARAMETER_FILES = (
     "monitor_params_file",
     "nav2_params_file",
 )
+MID360_PARAMETER_FILES = ("mount_file", "fastlio_params_file")
+MID360_OPTIONS = ("sensor_pipeline", "lidar_interface", "host_ip", "lidar_ip", "lidar_model", "map_pcd")
 
 
 def workspace_root(explicit="", prefix=None):
@@ -33,7 +35,7 @@ def resolve_paths(config):
     config["workspace"] = str(root)
     maps = Path(config.get("maps_dir") or "maps").expanduser()
     config["maps_dir"] = str((maps if maps.is_absolute() else root / maps).resolve())
-    for key in (*PARAMETER_FILES, "platform_file"):
+    for key in (*PARAMETER_FILES, *MID360_PARAMETER_FILES, "platform_file"):
         value = config.get(key)
         if value:
             path = Path(value).expanduser()

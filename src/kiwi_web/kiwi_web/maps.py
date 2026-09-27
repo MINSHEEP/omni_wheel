@@ -242,10 +242,15 @@ class MapStore:
         with self.lock:
             document = self.read(name)
             archive = self.versions / (name + "_deleted_" + uuid.uuid4().hex + ".yaml")
+            cloud = self.root / (valid_name(name) + ".pcd")
+            if cloud.is_symlink():
+                raise ValueError("不支持符号链接点云地图")
             os.replace(self.path(name), archive)
             route_path = self.routes / (name + ".json")
             if route_path.exists():
                 os.replace(route_path, archive.with_suffix(".routes.json"))
+            if cloud.is_file():
+                os.replace(cloud, archive.with_suffix(".pcd"))
             return self.public(document)
 
     def export(self, name):

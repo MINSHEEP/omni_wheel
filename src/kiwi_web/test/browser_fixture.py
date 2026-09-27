@@ -55,6 +55,9 @@ def main():
     chassis = os.environ.get("KIWI_BROWSER_CHASSIS", "kiwi")
     if chassis not in ("kiwi", "tracked_pwm"):
         raise ValueError("KIWI_BROWSER_CHASSIS 必须是 kiwi 或 tracked_pwm")
+    pipeline = os.environ.get("KIWI_BROWSER_PIPELINE", "legacy")
+    if pipeline not in ("legacy", "mid360s") or (pipeline == "mid360s" and chassis != "tracked_pwm"):
+        raise ValueError("KIWI_BROWSER_PIPELINE 必须是 legacy；履带底盘还可选 mid360s")
     tracked = chassis == "tracked_pwm"
     port = 8083 if tracked else 8081
     os.environ["ROS_DOMAIN_ID"] = "222" if tracked else "217"
@@ -93,7 +96,7 @@ def main():
         "fixture_lab", dict(width=width, height=height, resolution=0.1, origin=[0, 0, 0]), cells
     )
     console = Console(
-        dict(port=port, active_chassis=chassis),
+        dict(port=port, active_chassis=chassis, sensor_pipeline=pipeline),
         bridge,
         gate,
         store,

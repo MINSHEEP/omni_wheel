@@ -1,5 +1,7 @@
 # kiwi_slam
 
+MID360S + 内部 IMU 的 FAST-LIO2 链路在 `mid360_pipeline.launch.py`，由 `kiwi_navigation/mid360_navigation.launch.py` 编排二维建图/AMCL。FAST-LIO2 内部完成惯性融合，新链路不启动外部 EKF；旧 M10P、RF2O、C 板 IMU 融合链保留为独立入口，C 板 IMU 话题仍可供诊断。具体部署和实机 IP 配置见[部署说明](../../documents/navigation/mid360_fastlio2_deployment.md)。
+
 ### 查询不到话题、录包为空或建图停止更新
 
 启动、RViz、查询、录包终端必须使用一致的通信设置。`source tools/activate_workspace.sh`

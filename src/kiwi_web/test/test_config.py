@@ -1,5 +1,6 @@
 """Configuration ownership, relocated workspaces, and launch argument routing."""
 
+import asyncio
 from argparse import Namespace
 import importlib.util
 from pathlib import Path
@@ -11,6 +12,7 @@ from launch.utilities import perform_substitutions
 
 from kiwi_web.config import PARAMETER_FILES, resolve_paths, workspace_root
 from kiwi_web.server import load_config
+from kiwi_web.supervisor import Supervisor
 
 
 def test_workspace_paths_follow_installation_not_working_directory(tmp_path, monkeypatch):
@@ -88,12 +90,153 @@ def test_web_limits_follow_tracked_profile_and_disable_lateral(tmp_path):
     )
     assert config["active_chassis"] == "tracked_pwm"
     assert config["platform_file"] == str(selector)
-    assert config["feedback_topic"] == "/chassis/odom/laser"
-    assert config["imu_topic"] == "/chassis/imu/data_raw"
-    assert config["imu_frame_id"] == "chassis_imu_link"
+    assert config["sensor_pipeline"] == "mid360s"
+    assert config["command_topic"] == "/kiwi_web/cmd_vel"
+    assert config["feedback_topic"] == "/chassis/imu/data_raw"
+    assert config["feedback_type"] == "imu"
+    assert config["odom_topic"] == "/fastlio/odom_base"
+    assert config["scan_topic"] == "/scan_mid360"
+    assert config["imu_topic"] == "/livox/imu"
+    assert config["imu_frame_id"] == ""
     assert config["motion_enabled"] is True
     assert manual[1] == navigation[1] == 0.0
     assert manual[0] > 0 and manual[2] > 0
+
+
+def test_tracked_can_explicitly_keep_legacy_sensor_stack(tmp_path):
+    selector = tmp_path / "active.yaml"
+    selector.write_text("chassis: tracked_pwm\n")
+    config, _, _, _ = load_config(
+        Namespace(config=None, workspace=str(tmp_path), platform_file=str(selector),
+                  sensor_pipeline="legacy")
+    )
+    assert config["sensor_pipeline"] == "legacy"
+    assert config["command_topic"] == "/cmd_vel"
+    assert config["feedback_topic"] == "/chassis/odom/laser"
+    assert config["odom_topic"] == "/odometry/filtered"
+    assert config["scan_topic"] == "/scan"
+    assert config["imu_topic"] == "/chassis/imu/data_raw"
+
+
+def test_mid360_web_stack_routes_sources_and_nav_velocity(tmp_path):
+    selector = tmp_path / "active.yaml"
+    selector.write_text("chassis: tracked_pwm\n")
+    map_file = tmp_path / "map.yaml"
+    map_file.write_text("image: map.pgm\nresolution: 0.05\norigin: [0,0,0]\n")
+    (tmp_path / "map.pgm").write_bytes(b"P5\n1 1\n255\n\xff")
+    spec = importlib.util.spec_from_file_location(
+        "web_stack_mid", Path(__file__).resolve().parents[1] / "launch/stack.launch.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    context = LaunchContext()
+    context.launch_configurations.update(
+        mode="navigation", map=str(map_file), platform_file=str(selector),
+        sensor_pipeline="mid360s", expected_chassis="tracked_pwm",
+        lidar_interface="enp2s0", host_ip="192.168.1.50", lidar_ip="192.168.1.117",
+        map_pcd=str(tmp_path / "session.pcd"),
+        **{key: "" for key in (*PARAMETER_FILES, "mount_file", "fastlio_params_file")},
+    )
+    actions = module.setup(context)
+    assert len(actions) == 2
+    pipeline = next(item for item in actions[0].get_sub_entities()
+                    if item.__class__.__name__ == "IncludeLaunchDescription")
+    pipeline_args = dict(pipeline._IncludeLaunchDescription__launch_arguments)
+    assert pipeline_args["mode"] == "localization"
+    assert pipeline_args["motion_gate_input_topic"] == "/kiwi_web/cmd_vel"
+    assert pipeline_args["host_ip"] == "192.168.1.50"
+    assert pipeline_args["map_pcd"] == str(tmp_path / "session.pcd")
+    nav = next(item for item in actions[1].get_sub_entities()
+               if item.__class__.__name__ == "IncludeLaunchDescription")
+    nav_args = dict(nav._IncludeLaunchDescription__launch_arguments)
+    assert nav_args["sensor_pipeline"] == "mid360s"
+    assert nav_args["raw_cmd_vel_topic"] == "/kiwi_web/nav_raw"
+    assert nav_args["cmd_vel_topic"] == "/kiwi_web/nav_cmd_vel"
+
+
+def test_mid360_navigation_core_has_no_direct_cmd_vel_publisher(tmp_path):
+    from kiwi_platform import load_profile
+
+    selector = tmp_path / "active.yaml"
+    selector.write_text("chassis: tracked_pwm\n")
+    profile = load_profile(str(selector))
+    base = profile.data("base")
+    motor = base["tracked_base_node"]["ros__parameters"]
+    motor.update(hardware_calibrated=True, enable_motion=True,
+                 open_loop_test_enabled=False)
+    calibrated = tmp_path / "base.yaml"
+    calibrated.write_text(yaml.safe_dump(base))
+    map_file = tmp_path / "map.yaml"
+    map_file.write_text("image: map.pgm\nresolution: 0.05\norigin: [0,0,0]\n")
+    (tmp_path / "map.pgm").write_bytes(b"P5\n1 1\n255\n\xff")
+    spec = importlib.util.spec_from_file_location(
+        "nav_core_mid", Path(__file__).resolve().parents[2]
+        / "kiwi_navigation/launch/navigation_core.launch.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    context = LaunchContext()
+    context.launch_configurations.update(
+        map=str(map_file), platform_file=str(selector), sensor_pipeline="mid360s",
+        base_params_file=str(calibrated), nav2_params_file="", lidar_params_file="",
+        raw_cmd_vel_topic="/kiwi_web/nav_raw",
+        cmd_vel_topic="/kiwi_web/nav_cmd_vel",
+    )
+    actions = module.setup(context)
+    remaps = {}
+    for action in actions:
+        if action.__class__.__name__ != "Node":
+            continue
+        remaps[action._Node__node_executable] = [
+            (perform_substitutions(context, source), perform_substitutions(context, target))
+            for source, target in action._Node__remappings
+        ]
+    assert ("cmd_vel", "/kiwi_web/nav_raw") in remaps["controller_server"]
+    assert ("cmd_vel", "/kiwi_web/nav_raw") in remaps["behavior_server"]
+    assert ("cmd_vel_smoothed", "/kiwi_web/nav_cmd_vel") in remaps["velocity_smoother"]
+    assert ("cmd_vel", "/kiwi_web/nav_raw") in remaps["velocity_smoother"]
+
+
+def test_supervisor_mid360_session_pcd_is_unique_and_removed_after_stop(tmp_path, monkeypatch):
+    commands = []
+
+    class Process:
+        returncode = None
+        stdout = None
+
+    async def launch(*command, **_kwargs):
+        commands.append(command)
+        return Process()
+
+    async def read(_process):
+        return None
+
+    async def skip_stop():
+        return None
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", launch)
+    config = dict(sensor_pipeline="mid360s", maps_dir=str(tmp_path),
+                  active_chassis="tracked_pwm", platform_file="/tmp/active.yaml")
+
+    async def exercise():
+        paths = []
+        for _ in range(2):
+            supervisor = Supervisor(config)
+            supervisor.stop = skip_stop
+            supervisor._read = read
+            await supervisor.start("mapping")
+            paths.append(supervisor.session_pcd)
+            assert str(tmp_path) in supervisor.session_pcd
+            assert "map_pcd:=" + supervisor.session_pcd in commands[-1]
+        assert paths[0] != paths[1]
+        cleanup = Supervisor(config)
+        cleanup.session_pcd, cleanup.session_pcd_owned = paths[0], True
+        Path(paths[0]).write_bytes(b"session")
+        await cleanup.stop()
+        assert not Path(paths[0]).exists()
+        assert cleanup.session_pcd == ""
+
+    asyncio.run(exercise())
 
 
 def test_web_navigation_passes_selected_base_file_to_nav_core(tmp_path):
@@ -123,6 +266,7 @@ def test_web_navigation_passes_selected_base_file_to_nav_core(tmp_path):
     context = LaunchContext()
     context.launch_configurations.update(
         mode="navigation", map=str(map_file), platform_file=str(selector),
+        sensor_pipeline="legacy",
         expected_chassis="tracked_pwm",
         **{key: str(calibrated) if key == "base_params_file" else
            str(lidar) if key == "lidar_params_file" else ""

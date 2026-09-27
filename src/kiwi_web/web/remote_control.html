@@ -78,7 +78,7 @@
         </section>
         <aside class="panel">
           <h1>独立遥控</h1>
-          <p class="subtitle">
+          <p id="remote-subtitle" class="subtitle">
             启动底盘和激光雷达后开启遥控。左侧显示里程计坐标中的实时激光与底盘位置。
           </p>
           <section class="section">
@@ -95,16 +95,20 @@
             <div class="section-title">底盘实时状态</div>
             <div class="status-grid">
               <div class="status-card">
-                <span class="label">底盘反馈</span
+                <span id="feedback-label" class="label">底盘反馈</span
                 ><span id="feedback-display" class="value">等待</span>
               </div>
               <div class="status-card">
-                <span class="label">激光雷达</span
+                <span id="lidar-label" class="label">激光雷达</span
                 ><span id="lidar-display" class="value">等待</span>
               </div>
               <div class="status-card">
-                <span class="label">IMU 标定</span
+                <span id="imu-label" class="label">IMU 标定</span
                 ><span id="imu-display" class="value">等待</span>
+              </div>
+              <div class="status-card" data-mid360-status hidden>
+                <span class="label">FAST-LIO2 里程计</span
+                ><span id="lio-display" class="value">等待</span>
               </div>
               <div class="status-card">
                 <span class="label">运行模式</span

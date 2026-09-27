@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+from kiwi_slam.mid360_scan_projector import main
+
+
+if __name__ == "__main__":
+    main()

@@ -49,7 +49,7 @@
         </section>
         <aside class="panel navigation-panel">
           <h1>导航</h1>
-          <p class="subtitle">
+          <p id="navigation-subtitle" class="subtitle">
             选择地图并完成初始定位，设置单点目标或按顺序执行多点路径。
           </p>
           <section class="section">
@@ -60,7 +60,7 @@
                 ><span id="mode-display" class="value">等待</span>
               </div>
               <div class="status-card">
-                <span class="label">定位</span
+                <span id="localization-label" class="label">定位</span
                 ><span id="localization-display" class="value">等待</span>
               </div>
               <div class="status-card">
@@ -70,6 +70,18 @@
               <div class="status-card">
                 <span class="label">目标进度</span
                 ><span id="nav-progress" class="value">等待</span>
+              </div>
+              <div class="status-card" data-mid360-status hidden>
+                <span class="label">FAST-LIO2 里程计</span
+                ><span id="lio-display" class="value">等待</span>
+              </div>
+              <div class="status-card" data-mid360-status hidden>
+                <span class="label">MID360S 内置 IMU</span
+                ><span id="imu-display" class="value">等待</span>
+              </div>
+              <div class="status-card" data-mid360-status hidden>
+                <span class="label">二维投影扫描</span
+                ><span id="scan-display" class="value">等待</span>
               </div>
             </div>
             <p id="nav-feedback" class="hint">等待导航任务</p>

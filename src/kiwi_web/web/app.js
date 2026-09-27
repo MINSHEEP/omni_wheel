@@ -29,6 +29,7 @@
     speed = 0.5,
     limits = [0.4, 0.4, 0.6],
     chassis = "",
+    sensorPipeline = "legacy",
     lateralEnabled = true,
     keys = new Set(),
     heldPointers = new Map();
@@ -79,14 +80,62 @@
     document.querySelectorAll("[data-lateral-hint]").forEach((hint) => {
       hint.hidden = !lateralEnabled;
     });
-    const imuLabel = $("imu-display")?.closest(".status-card")?.querySelector(".label");
-    if (imuLabel) imuLabel.textContent = chassis === "tracked_pwm" ? "IMU 数据" : "IMU 标定";
+    applySensorPipeline(sensorPipeline);
     setText(
       "remote-safety-hint",
       lateralEnabled
         ? "按住移动，松开停止。开启后仅当前页面持有遥控权。后退和横移前请确认周围空间。"
         : "按住移动，松开停止。开启后仅当前页面持有遥控权。后退和转向前请确认周围空间。",
     );
+  }
+  function applySensorPipeline(value) {
+    sensorPipeline = value === "mid360s" ? "mid360s" : "legacy";
+    const mid360 = sensorPipeline === "mid360s";
+    document.body.dataset.sensorPipeline = sensorPipeline;
+    document.querySelectorAll("[data-mid360-status]").forEach((element) => {
+      element.hidden = !mid360;
+    });
+    setText(
+      "mapping-subtitle",
+      mid360
+        ? "MID360S 点云与内置 IMU 驱动 FAST-LIO2 三维里程计；投影扫描用于构建二维导航地图。开始后保持底盘静止，等待数据就绪。"
+        : "使用 M10P 激光雷达构建二维地图。开始后保持底盘静止，等待标定和扫描检查完成。",
+    );
+    setText(
+      "navigation-subtitle",
+      mid360
+        ? "FAST-LIO2 提供局部运动估计；加载二维栅格图后由 AMCL 定位，再设置单点或多点导航目标。"
+        : "选择地图并完成初始定位，设置单点目标或按顺序执行多点路径。",
+    );
+    setText(
+      "remote-subtitle",
+      mid360
+        ? "启动底盘与 MID360S 后开启遥控。左侧显示 FAST-LIO2 里程计坐标中的二维投影扫描与底盘位置。"
+        : "启动底盘和激光雷达后开启遥控。左侧显示里程计坐标中的实时激光与底盘位置。",
+    );
+    setText("localization-label", mid360 ? "AMCL 地图定位" : "定位");
+    setText("lidar-label", mid360 ? "二维投影扫描" : "激光雷达");
+    setText("feedback-label", mid360 ? "C 板数据流" : "底盘反馈");
+    if ($("feedback-label"))
+      $("feedback-label").title = mid360
+        ? "仅表示收到 C 板串口回传，不代表电机实际执行；不参与定位融合"
+        : "";
+    setText(
+      "imu-label",
+      mid360 ? "MID360S 内置 IMU" : chassis === "tracked_pwm" ? "IMU 数据" : "IMU 标定",
+    );
+  }
+  function sensorStatus(sensor) {
+    if (sensor?.healthy === true) return "在线";
+    return typeof sensor?.age_s === "number" ? "数据超时" : "未连接";
+  }
+  function setSensorStatus(id, sensor) {
+    const element = $(id);
+    if (!element) return;
+    element.textContent = sensorStatus(sensor);
+    element.title = sensor?.topic
+      ? `${sensor.topic}${typeof sensor.age_s === "number" ? ` · 最近数据 ${sensor.age_s.toFixed(2)} s 前` : " · 尚无数据"}`
+      : "";
   }
   function log(message, error = false) {
     const area = $("log-area");
@@ -264,7 +313,11 @@
       return;
     }
     if (!state?.control.manual_ready)
-      throw new Error("请先启动对应模式，等待底盘标定与状态就绪");
+      throw new Error(
+        sensorPipeline === "mid360s"
+          ? "请先启动对应模式，等待底盘、MID360S 和 FAST-LIO2 就绪"
+          : "请先启动对应模式，等待底盘标定与状态就绪",
+      );
     if (!send({ op: "acquire" })) throw new Error("设备连接已断开");
   });
   $("speed-slider")?.addEventListener("input", (e) => setSpeed(e.target.value));
@@ -372,6 +425,23 @@
     if (robot.motion_fault) return robot.motion_fault;
     if (robot.conflicts.length) return "速度源冲突：请停止其他遥控或导航程序";
     if (state.mode === "idle") return "选择运行模式后启动设备";
+    if (sensorPipeline === "mid360s" && !robot.feedback)
+      return "等待 C 板串口数据，请检查底盘供电和串口";
+    if (sensorPipeline === "mid360s") {
+      if (!robot.livox_imu?.healthy)
+        return "等待 MID360S 内置 IMU，请检查雷达供电与网口";
+      if (!robot.lio?.healthy)
+        return "等待 FAST-LIO2 里程计，请检查点云与内置 IMU";
+      if (!robot.lidar) return "等待二维投影扫描，请检查点云投影节点";
+      if (state.mode === "mapping" && !robot.mapping_ready)
+        return "等待二维地图更新，请保持底盘静止";
+      if (state.mode === "navigation" && !robot.pose)
+        return "请在二维地图中设置 AMCL 初始位置与朝向";
+      if (state.mode === "navigation" && !robot.action_ready)
+        return "Nav2 初始化中";
+      if (!state.motion_enabled) return "传感器数据就绪，底盘运动尚未解锁";
+      return "设备就绪";
+    }
     if (!robot.feedback) return "等待底盘反馈，请检查底盘供电和串口";
     if (!robot.imu_ready)
       return chassis === "tracked_pwm"
@@ -394,6 +464,8 @@
   function updateState(value) {
     state = value;
     if (value.chassis && value.chassis !== chassis) applyChassis(value.chassis);
+    if (value.sensor_pipeline && value.sensor_pipeline !== sensorPipeline)
+      applySensorPipeline(value.sensor_pipeline);
     lastState = performance.now();
     challenge = value.challenge || challenge;
     const r = state.robot,
@@ -437,12 +509,17 @@
     setText("gate-display", r.mapping_ready ? "已就绪" : "等待中");
     setText("feedback-display", r.feedback ? "在线" : "未连接");
     setText("lidar-display", r.lidar ? "在线" : "未连接");
-    setText(
-      "imu-display",
-      chassis === "tracked_pwm"
-        ? r.imu_ready ? "在线" : "未连接"
-        : r.imu_ready ? "已完成" : "未完成",
-    );
+    setText("scan-display", r.lidar ? "在线" : "未连接");
+    setSensorStatus("lio-display", r.lio);
+    if (sensorPipeline === "mid360s")
+      setSensorStatus("imu-display", r.livox_imu);
+    else
+      setText(
+        "imu-display",
+        chassis === "tracked_pwm"
+          ? r.imu_ready ? "在线" : "未连接"
+          : r.imu_ready ? "已完成" : "未完成",
+      );
     setText("readiness", readiness(r));
     setText(
       "localization-display",
@@ -618,7 +695,9 @@
       );
       setText(
         "map-overlay",
-        "里程计视图 · 激光点为实时障碍观测，背景不表示可通行区域",
+        sensorPipeline === "mid360s"
+          ? "FAST-LIO2 里程计视图 · 红点为二维投影扫描，背景不表示可通行区域"
+          : "里程计视图 · 激光点为实时障碍观测，背景不表示可通行区域",
       );
     }
   }
@@ -679,7 +758,9 @@
         "map-overlay",
         page === "navigation"
           ? "在地图上按下并拖拽设置位置和朝向；右键平移，滚轮缩放。"
-          : "二维实时建图 · 红色为激光点，箭头为底盘位置。",
+          : sensorPipeline === "mid360s"
+            ? "二维实时建图 · 红点为 MID360S 投影扫描，箭头为底盘位置。"
+            : "二维实时建图 · 红色为激光点，箭头为底盘位置。",
       );
     } finally {
       mapBusy = false;
@@ -704,11 +785,20 @@
     const selected = preferred || $("map-selector").value || state?.current_map;
     const maps = await request("/api/maps");
     $("map-selector").replaceChildren(new Option("请选择已保存地图", ""));
-    for (const map of maps)
-      $("map-selector").add(new Option(map.name, map.name));
+    for (const map of maps) {
+      const option = new Option(map.name, map.name);
+      option.dataset.hasPcd = map.has_pcd ? "1" : "0";
+      $("map-selector").add(option);
+    }
     if (maps.some((m) => m.name === selected))
       $("map-selector").value = selected;
+    updatePointcloudExport();
   }
+  function updatePointcloudExport() {
+    const button = $("btn-export-pcd");
+    if (button) button.disabled = $("map-selector")?.selectedOptions[0]?.dataset.hasPcd !== "1";
+  }
+  $("map-selector")?.addEventListener("change", updatePointcloudExport);
   function selectedMap() {
     const name = $("map-selector")?.value;
     if (!name) throw new Error("请先选择地图");
@@ -737,9 +827,14 @@
   bind("btn-stop-mode", () => mode("idle"));
   bind("btn-save-map", async () => {
     const name = $("map-name").value.trim();
-    await command("save_map", { name });
-    log(`地图 ${name} 已保存`);
-    toast("地图保存成功");
+    const response = await command("save_map", { name });
+    if (response.result?.pcd) {
+      log(`地图 ${name} 已保存：二维 PGM/YAML 与三维 PCD（${response.result.pcd.points} 点）`);
+      toast("二维地图与三维点云已保存");
+    } else {
+      log(`地图 ${name} 已保存`);
+      toast("地图保存成功");
+    }
   });
   bind("btn-load-map", async () => {
     const name = selectedMap();
@@ -759,6 +854,13 @@
     const link = document.createElement("a");
     link.href = `/api/maps/${encodeURIComponent(name)}/export`;
     link.download = name + ".zip";
+    link.click();
+  });
+  bind("btn-export-pcd", () => {
+    const name = selectedMap();
+    const link = document.createElement("a");
+    link.href = `/api/maps/${encodeURIComponent(name)}/pointcloud`;
+    link.download = name + ".pcd";
     link.click();
   });
   bind("btn-delete-map", async () => {
@@ -1198,6 +1300,7 @@
     .then((config) => {
       limits = config.limits;
       applyChassis(config.chassis);
+      applySensorPipeline(config.sensor_pipeline);
       if (config.auth_required) login();
       else connect();
     })

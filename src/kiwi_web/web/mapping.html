@@ -49,9 +49,8 @@
         </section>
         <aside class="panel">
           <h1>二维建图</h1>
-          <p class="subtitle">
-            使用 M10P
-            激光雷达构建二维地图。开始后保持底盘静止，等待标定和扫描检查完成。
+          <p id="mapping-subtitle" class="subtitle">
+            使用激光扫描构建二维地图。开始后保持底盘静止，等待传感器就绪。
           </p>
           <section class="section">
             <div class="section-title">建图状态</div>
@@ -71,6 +70,18 @@
               <div class="status-card">
                 <span class="label">遥控</span
                 ><span id="remote-display" class="value">等待</span>
+              </div>
+              <div class="status-card" data-mid360-status hidden>
+                <span class="label">MID360S 内置 IMU</span
+                ><span id="imu-display" class="value">等待</span>
+              </div>
+              <div class="status-card" data-mid360-status hidden>
+                <span class="label">FAST-LIO2 里程计</span
+                ><span id="lio-display" class="value">等待</span>
+              </div>
+              <div class="status-card" data-mid360-status hidden>
+                <span class="label">二维投影扫描</span
+                ><span id="scan-display" class="value">等待</span>
               </div>
             </div>
             <div class="row">
@@ -134,6 +145,9 @@
             <p class="hint">
               停车后保存为 PGM +
               YAML。名称使用英文、数字、下划线或连字符；已有地图请另存新名称。
+            </p>
+            <p class="hint" data-mid360-status hidden>
+              MID360S 模式会同时保存供 AMCL 使用的二维栅格图及 FAST-LIO2 三维 PCD；点云使用本次启动的局部坐标。
             </p>
           </section>
           <section class="section">

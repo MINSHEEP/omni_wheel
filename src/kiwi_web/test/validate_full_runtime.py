@@ -195,11 +195,14 @@ async def main():
     for block in lidar.values():
         block["ros__parameters"]["serial_port"] = str(root / "NO_PHYSICAL_LIDAR")
     (root / "lidar.yaml").write_text(yaml.safe_dump(lidar))
+    (root / "active_platform.yaml").write_text("chassis: kiwi\n")
     rclpy.init()
     gate = CommandGate(navigation_limits=(0.8, 0.8, 1.5))
     bridge, hardware = RosBridge(gate), Hardware(root)
     supervisor = TestSupervisor(
-        dict(base_params_file=str(hardware.base_file), lidar_params_file=str(root / "lidar.yaml")),
+        dict(base_params_file=str(hardware.base_file), lidar_params_file=str(root / "lidar.yaml"),
+             platform_file=str(root / "active_platform.yaml"), sensor_pipeline="legacy",
+             active_chassis="kiwi"),
         hardware,
         root,
     )
@@ -371,12 +374,16 @@ async def main():
             assert list(grid.data) == expected_grid
             print("PASS every edited map pixel survives real map_server", flush=True)
             await until(
-                lambda: bridge.navigation.server_is_ready() and bridge.imu_ready,
-                "Nav2 action + real base calibration",
+                lambda: bridge.count_subscribers("/initialpose") > 0 and bridge.imu_ready,
+                "AMCL initial pose subscriber + real base calibration",
                 50,
             )
             await command("initial_pose", pose=dict(x=0.0, y=0.0, yaw=0.0))
-            await until(lambda: gate.nav_ready, "web initial pose -> real AMCL map/odom TF", 20)
+            await until(
+                lambda: bridge.navigation.server_is_ready() and gate.nav_ready,
+                "web initial pose -> real AMCL map/odom TF + Nav2 action",
+                30,
+            )
             assert bridge.pose["frame"] == "map"
             assert len(bridge.scan) > 500
             assert (

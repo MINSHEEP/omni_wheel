@@ -258,3 +258,66 @@ def test_tracked_web_readiness_uses_rf2o_and_live_imu():
         robot.destroy_node()
         bridge.destroy_node()
         rclpy.shutdown()
+
+
+def test_mid360_web_uses_livox_imu_lio_scan_and_board_heartbeat():
+    os.environ["ROS_DOMAIN_ID"] = "223"
+    os.environ["ROS_LOCALHOST_ONLY"] = "1"
+    rclpy.init()
+    gate = CommandGate(lateral=0.0, navigation_limits=(0.2, 0.0, 0.4))
+    gate.mode = "remote"
+    bridge = RosBridge(
+        gate, feedback_topic="/chassis/imu/data_raw", feedback_type="imu",
+        imu_topic="/livox/imu", imu_frame_id="", odom_topic="/fastlio/odom_base",
+        scan_topic="/scan_mid360", sensor_pipeline="mid360s",
+        command_topic="/kiwi_web/cmd_vel",
+    )
+    try:
+        stamp = bridge.get_clock().now().to_msg()
+        lio = Odometry()
+        lio.header.stamp = stamp
+        lio.header.frame_id = "odom"
+        lio.child_frame_id = "base_footprint"
+        bridge._odom(lio)
+        scan = LaserScan()
+        scan.header.stamp, scan.header.frame_id = stamp, "lidar_link"
+        scan.angle_increment, scan.range_min, scan.range_max = 0.1, 0.05, 20.0
+        scan.ranges = [1.0]
+        bridge._scan(scan)
+        livox = Imu()
+        livox.header.stamp, livox.header.frame_id = stamp, "lidar_link"
+        bridge._raw_imu(livox)
+        board = Imu()
+        board.header.stamp, board.header.frame_id = stamp, "chassis_imu_link"
+        bridge._board_imu(board)
+        bridge._control()
+        status = bridge.status()
+        assert bridge.command_topic == "/kiwi_web/cmd_vel"
+        assert gate.manual_ready
+        assert status["lio"]["topic"] == "/fastlio/odom_base" and status["lio"]["healthy"]
+        assert status["livox_imu"]["topic"] == "/livox/imu" and status["livox_imu"]["healthy"]
+        assert status["feedback"] and status["lidar"]
+
+        # 旧建图门控的布尔消息不得伪造 MID360 就绪。
+        gate.mode = "mapping"
+        bridge._mapping_ready(Bool(data=True))
+        bridge._control()
+        assert not bridge.status()["mapping_ready"]
+        grid = OccupancyGrid()
+        grid.header.frame_id = "map"
+        grid.info.width = grid.info.height = 1
+        grid.info.resolution = 0.05
+        grid.data = [0]
+        bridge._map(grid)
+        bridge._control()
+        assert bridge.status()["mapping_ready"]
+
+        bridge.feedback_at = time.monotonic() - 1.0
+        bridge._control()
+        assert not gate.manual_ready
+        assert bridge.status()["lio"]["healthy"]
+        assert not bridge.status()["feedback"]
+    finally:
+        gate.stop(latch=True)
+        bridge.destroy_node()
+        rclpy.shutdown()

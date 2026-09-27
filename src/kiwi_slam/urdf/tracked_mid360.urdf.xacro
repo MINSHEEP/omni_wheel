@@ -1,0 +1,57 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="tracked_mid360">
+  <xacro:arg name="hardware_config" default="$(find kiwi_base)/config/tracked_pwm.yaml"/>
+  <xacro:arg name="mount_config" default="$(find kiwi_slam)/config/mid360_mount.yaml"/>
+  <xacro:property name="hardware" value="${xacro.load_yaml('$(arg hardware_config)')}"/>
+  <xacro:property name="model" value="${hardware['tracked_robot_model']['ros__parameters']}"/>
+  <xacro:property name="mount" value="${xacro.load_yaml('$(arg mount_config)')['mid360_mount']['ros__parameters']}"/>
+
+  <link name="base_footprint"/>
+  <link name="base_link">
+    <visual><geometry><box size="${model['base_length_m']} ${model['base_width_m']} ${model['base_height_m']}"/></geometry></visual>
+    <collision><geometry><box size="${model['base_length_m']} ${model['base_width_m']} ${model['base_height_m']}"/></geometry></collision>
+    <inertial>
+      <mass value="${model['mass_kg']}"/>
+      <inertia ixx="${model['mass_kg'] * (model['base_width_m']**2 + model['base_height_m']**2) / 12}" ixy="0" ixz="0"
+               iyy="${model['mass_kg'] * (model['base_length_m']**2 + model['base_height_m']**2) / 12}" iyz="0"
+               izz="${model['mass_kg'] * (model['base_length_m']**2 + model['base_width_m']**2) / 12}"/>
+    </inertial>
+  </link>
+  <joint name="base_footprint_to_base_link" type="fixed">
+    <parent link="base_footprint"/><child link="base_link"/>
+    <origin xyz="0 0 ${model['base_z_m']}" rpy="0 0 0"/>
+  </joint>
+
+  <link name="left_track"/>
+  <joint name="left_track_joint" type="fixed">
+    <parent link="base_link"/><child link="left_track"/>
+    <origin xyz="0 ${hardware['tracked_base_node']['ros__parameters']['track_separation_m'] / 2} ${-model['base_height_m'] / 2}"/>
+  </joint>
+  <link name="right_track"/>
+  <joint name="right_track_joint" type="fixed">
+    <parent link="base_link"/><child link="right_track"/>
+    <origin xyz="0 ${-hardware['tracked_base_node']['ros__parameters']['track_separation_m'] / 2} ${-model['base_height_m'] / 2}"/>
+  </joint>
+
+  <!-- FAST-LIO2 的 body 即 MID360 内部 IMU；外参必须在 mid360_mount.yaml 标定。 -->
+  <link name="body"/>
+  <joint name="base_footprint_to_body" type="fixed">
+    <parent link="base_footprint"/><child link="body"/>
+    <origin xyz="${mount['base_to_body_xyz'][0]} ${mount['base_to_body_xyz'][1]} ${mount['base_to_body_xyz'][2]}"
+            rpy="${mount['base_to_body_rpy'][0]} ${mount['base_to_body_rpy'][1]} ${mount['base_to_body_rpy'][2]}"/>
+  </joint>
+  <link name="lidar_link"/>
+  <joint name="body_to_lidar" type="fixed">
+    <parent link="body"/><child link="lidar_link"/>
+    <origin xyz="${mount['body_to_lidar_xyz'][0]} ${mount['body_to_lidar_xyz'][1]} ${mount['body_to_lidar_xyz'][2]}"
+            rpy="${mount['body_to_lidar_rpy'][0]} ${mount['body_to_lidar_rpy'][1]} ${mount['body_to_lidar_rpy'][2]}"/>
+  </joint>
+
+  <!-- 保留 C 板 IMU 诊断接口；新 EKF 不订阅。 -->
+  <link name="chassis_imu_link"/>
+  <joint name="base_link_to_chassis_imu" type="fixed">
+    <parent link="base_link"/><child link="chassis_imu_link"/>
+    <origin xyz="${model['imu_xyz'][0]} ${model['imu_xyz'][1]} ${model['imu_xyz'][2]}"
+            rpy="${model['imu_rpy'][0]} ${model['imu_rpy'][1]} ${model['imu_rpy'][2]}"/>
+  </joint>
+</robot>

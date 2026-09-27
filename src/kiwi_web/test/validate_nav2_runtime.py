@@ -25,11 +25,15 @@ from kiwi_web.ros_bridge import ros_future
 
 
 class Sensors(Node):
-    def __init__(self):
+    def __init__(self, pipeline="legacy"):
         super().__init__("web_nav_runtime_fixture")
         self.tf = TransformBroadcaster(self)
-        self.scan = self.create_publisher(LaserScan, "/scan", 1)
-        self.odom = self.create_publisher(Odometry, "/odometry/filtered", 1)
+        self.scan = self.create_publisher(
+            LaserScan, "/scan_mid360" if pipeline == "mid360s" else "/scan", 1
+        )
+        self.odom = self.create_publisher(
+            Odometry, "/fastlio/odom_base" if pipeline == "mid360s" else "/odometry/filtered", 1
+        )
         self.create_timer(0.05, self.tick)
 
     def tick(self):
@@ -68,6 +72,9 @@ class Sensors(Node):
 
 
 async def main():
+    pipeline = os.environ.get("KIWI_NAV_PIPELINE", "legacy")
+    if pipeline not in ("legacy", "mid360s"):
+        raise ValueError("KIWI_NAV_PIPELINE 必须是 legacy 或 mid360s")
     with tempfile.TemporaryDirectory(prefix="kiwi-nav-runtime-") as directory:
         store = MapStore(directory)
         store.save_grid(
@@ -79,9 +86,15 @@ async def main():
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         context = LaunchContext()
+        selector = Path(directory) / "active_platform.yaml"
+        chassis = "tracked_pwm" if pipeline == "mid360s" else "kiwi"
+        selector.write_text(f"chassis: {chassis}\n")
         context.launch_configurations.update(
             mode="navigation",
             map=str(store.path("room")),
+            platform_file=str(selector),
+            expected_chassis=chassis,
+            sensor_pipeline=pipeline,
             base_params_file="",
             lidar_params_file="",
             nav2_params_file="",
@@ -91,7 +104,7 @@ async def main():
         service.include_launch_description(LaunchDescription(actions))
         launch_task = asyncio.create_task(service.run_async())
         rclpy.init()
-        node = Sensors()
+        node = Sensors(pipeline)
         executor = SingleThreadedExecutor()
         executor.add_node(node)
         thread = threading.Thread(target=executor.spin, daemon=True)

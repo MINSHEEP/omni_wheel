@@ -23,8 +23,9 @@ import yaml
 from .control import CommandGate
 from kiwi_platform import load_profile, validate_profile
 from kiwi_platform.launching import validate_map_file
-from .config import PARAMETER_FILES, resolve_paths
-from .maps import MapStore, finite, pose
+from .config import PARAMETER_FILES, MID360_PARAMETER_FILES, MID360_OPTIONS, resolve_paths
+from .maps import MapStore, finite, pose, valid_name
+from .pointcloud import copy_validated_pcd, point_cloud_path
 from .ros_bridge import Navigator, RosBridge
 from .supervisor import Supervisor
 
@@ -55,6 +56,7 @@ class Console:
                 web.get("/api/maps", self.maps),
                 web.get("/api/maps/{name}/image", self.map_image),
                 web.get("/api/maps/{name}/export", self.map_export),
+                web.get("/api/maps/{name}/pointcloud", self.pointcloud_export),
                 web.get("/api/maps/{name}/routes", self.routes),
                 web.get("/api/maps/{name}", self.map_metadata),
                 web.get("/api/live/map", self.live_metadata),
@@ -111,6 +113,7 @@ class Console:
             dict(
                 auth_required=not self.authorized(request),
                 chassis=self.config.get("active_chassis", "kiwi"),
+                sensor_pipeline=self.config.get("sensor_pipeline", "legacy"),
                 limits=self.gate.limits,
                 motion_enabled=self.config.get("motion_enabled", True),
                 port=self.config["port"],
@@ -146,6 +149,7 @@ class Console:
     def snapshot(self):
         return dict(
             chassis=self.config.get("active_chassis", "kiwi"),
+            sensor_pipeline=self.config.get("sensor_pipeline", "legacy"),
             motion_enabled=self.config.get("motion_enabled", True),
             mode=self.supervisor.mode,
             mode_id=self.mode_id,
@@ -163,11 +167,16 @@ class Console:
         return web.json_response(self.snapshot())
 
     async def maps(self, request):
-        return web.json_response(await asyncio.to_thread(self.store.list))
+        maps = await asyncio.to_thread(self.store.list)
+        for item in maps:
+            item["has_pcd"] = point_cloud_path(self.store.root, item["name"]).is_file()
+        return web.json_response(maps)
 
     async def map_metadata(self, request):
         document = await asyncio.to_thread(self.store.read, request.match_info["name"])
-        return web.json_response(self.store.public(document))
+        metadata = self.store.public(document)
+        metadata["has_pcd"] = point_cloud_path(self.store.root, document["name"]).is_file()
+        return web.json_response(metadata)
 
     async def map_image(self, request):
         data, revision = await asyncio.to_thread(self.store.png, request.match_info["name"])
@@ -182,6 +191,17 @@ class Console:
             body=data,
             content_type="application/zip",
             headers={"Content-Disposition": 'attachment; filename="' + name + '.zip"'},
+        )
+
+    async def pointcloud_export(self, request):
+        name = valid_name(request.match_info["name"])
+        await asyncio.to_thread(self.store.read, name)
+        path = point_cloud_path(self.store.root, name)
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        return web.FileResponse(
+            path,
+            headers={"Content-Disposition": 'attachment; filename="' + name + '.pcd"'},
         )
 
     async def routes(self, request):
@@ -216,16 +236,32 @@ class Console:
             # Production load_config always resolves platform_file; test fixtures
             # without a physical platform keep their synthetic ROS graph.
             if self.config.get("platform_file"):
-                overrides = {
-                    key: self.config.get(argument, "")
-                    for argument, key in (
-                        ("base_params_file", "base"),
-                        ("lidar_params_file", "lidar"),
-                        ("nav2_params_file", "nav2"),
+                if self.config.get("sensor_pipeline") == "mid360s":
+                    profile = load_profile(
+                        self.config["platform_file"],
+                        {"base": self.config.get("base_params_file", "")},
+                        required_keys=("base",),
                     )
-                }
-                profile = load_profile(self.config["platform_file"], overrides)
-                validate_profile(profile, "localization")
+                    base = profile.data("base")[profile.driver]["ros__parameters"]
+                    if not (profile.chassis == "tracked_pwm"
+                            and base["hardware_calibrated"] is True
+                            and base["enable_motion"] is True
+                            and base["open_loop_test_enabled"] is False):
+                        raise ValueError("履带未完成速度标定或仍处于试车模式，不得启动导航")
+                    if self.config.get("nav2_params_file") and not Path(
+                            self.config["nav2_params_file"]).is_file():
+                        raise ValueError("MID360S Nav2 参数文件不存在")
+                else:
+                    overrides = {
+                        key: self.config.get(argument, "")
+                        for argument, key in (
+                            ("base_params_file", "base"),
+                            ("lidar_params_file", "lidar"),
+                            ("nav2_params_file", "nav2"),
+                        )
+                    }
+                    profile = load_profile(self.config["platform_file"], overrides)
+                    validate_profile(profile, "localization")
                 validate_map_file(str(map_path))
         if not self.supervisor.process and mode != "idle":
             await self.wait_for_robot_exit()
@@ -256,7 +292,10 @@ class Console:
             names = self.bridge.get_node_names()
             if not any(
                 node in names
-                for node in ("kiwi_base_node", "tracked_base_node", "slam_toolbox", "controller_server", "amcl")
+                for node in ("kiwi_base_node", "tracked_base_node", "slam_toolbox",
+                             "controller_server", "amcl", "fastlio_mapping",
+                             "livox_lidar_publisher", "lio_odom_adapter",
+                             "mid360_scan_projector", "mid360_motion_gate")
             ):
                 return
             if time.monotonic() >= deadline:
@@ -303,9 +342,37 @@ class Console:
                 raise ValueError("请先完成有效建图")
             if any(abs(v) > 0.02 for v in self.bridge.status()["speed"]) or any(self.gate.output()):
                 raise ValueError("请先松开控制并等待底盘静止后保存")
+            name = valid_name(body["name"])
+            if self.store.path(name).exists():
+                raise ValueError("地图名称已存在，请使用新名称保存")
             self.gate.release()
+            self.bridge.publish_velocity((0, 0, 0))
             info, data = self.bridge.grid()
-            return await asyncio.to_thread(self.store.save_grid, body["name"], info, data)
+            if self.config.get("sensor_pipeline") != "mid360s":
+                return await asyncio.to_thread(self.store.save_grid, name, info, data)
+            stage = Path(self.supervisor.session_pcd)
+            if not self.supervisor.session_pcd or point_cloud_path(self.store.root, name).exists():
+                raise ValueError("点云保存路径无效或同名点云地图已存在")
+            before = None
+            if self.supervisor.session_pcd_owned:
+                stage.unlink(missing_ok=True)
+            elif stage.exists():
+                stat = stage.stat()
+                before = (stat.st_size, stat.st_mtime_ns)
+            await self.bridge.save_pointcloud()
+            if not stage.is_file():
+                raise ValueError("FAST-LIO2 未生成点云文件，二维地图未保存")
+            stat = stage.stat()
+            if before == (stat.st_size, stat.st_mtime_ns):
+                raise ValueError("点云文件未更新，二维地图未保存")
+            cloud = await asyncio.to_thread(copy_validated_pcd, stage, self.store.root, name)
+            try:
+                result = await asyncio.to_thread(self.store.save_grid, name, info, data)
+            except Exception:
+                point_cloud_path(self.store.root, name).unlink(missing_ok=True)
+                raise
+            result["pcd"] = cloud
+            return result
         elif operation == "edit_map":
             if self.supervisor.mode != "idle":
                 raise ValueError("修图前请先停止运行模式")
@@ -496,26 +563,65 @@ def load_config(args):
     config = yaml.safe_load((share / "config/web.yaml").read_text())
     if args.config:
         config.update(yaml.safe_load(Path(args.config).read_text()) or {})
-    for key in ("host", "port", "maps_dir", "workspace", "platform_file", *PARAMETER_FILES):
+    for key in ("host", "port", "maps_dir", "workspace", "platform_file",
+                *PARAMETER_FILES, *MID360_PARAMETER_FILES, *MID360_OPTIONS):
         if getattr(args, key, None) is not None:
             config[key] = getattr(args, key)
     resolve_paths(config)
     profile = load_profile(config.get("platform_file", ""),
-                           {"base": config.get("base_params_file", "")})
-    validate_profile(profile, "driver")
+                           {"base": config.get("base_params_file", "")},
+                           required_keys=("base",))
+    pipeline = config.get("sensor_pipeline", "auto")
+    if pipeline not in ("auto", "mid360s", "legacy"):
+        raise ValueError("sensor_pipeline 必须是 auto、mid360s 或 legacy")
+    if pipeline == "auto":
+        pipeline = "mid360s" if profile.chassis == "tracked_pwm" else "legacy"
+    if pipeline == "mid360s" and profile.chassis != "tracked_pwm":
+        raise ValueError("MID360S 网页链路仅支持 tracked_pwm 履带底盘")
+    if pipeline == "legacy":
+        profile = load_profile(config.get("platform_file", ""),
+                               {"base": config.get("base_params_file", "")})
+        validate_profile(profile, "driver")
     config["platform_file"] = str(profile.selector)
     config["active_chassis"] = profile.chassis
+    config["sensor_pipeline"] = pipeline
     base_file = config.get("base_params_file") or profile.path("base")
     base = yaml.safe_load(Path(base_file).read_text())[profile.driver]["ros__parameters"]
-    config["feedback_topic"] = (
-        "/chassis/odom/laser" if profile.odometry == "rf2o" else base["wheel_odom_topic"]
-    )
-    config["imu_topic"] = base["imu_topic"] if profile.odometry == "rf2o" else ""
-    config["imu_frame_id"] = base["imu_frame_id"] if profile.odometry == "rf2o" else ""
-    config["motion_enabled"] = (
-        base["enable_motion"] and base["hardware_calibrated"]
-        if profile.odometry == "rf2o" else True
-    )
+    if pipeline == "mid360s":
+        for unused in ("lidar_params_file", "mapping_gate_params_file", "monitor_params_file"):
+            if config.get(unused):
+                raise ValueError(f"MID360S 链路不使用旧参数 {unused}")
+        config["feedback_topic"] = base["imu_topic"]
+        config["feedback_frame_id"] = base["imu_frame_id"]
+        config["feedback_type"] = "imu"
+        config["command_topic"] = "/kiwi_web/cmd_vel"
+        config["odom_topic"] = "/fastlio/odom_base"
+        config["scan_topic"] = "/scan_mid360"
+        config["imu_topic"] = "/livox/imu"
+        # 驱动独占 IMU 话题；frame_id 由雷达驱动配置决定。
+        config["imu_frame_id"] = ""
+        config["motion_enabled"] = bool(base["enable_motion"] and base["hardware_calibrated"]
+                                        and not base["open_loop_test_enabled"])
+        if config.get("map_pcd"):
+            pcd = Path(config["map_pcd"]).expanduser()
+            if not pcd.is_absolute():
+                pcd = Path(config["workspace"]) / pcd
+            config["map_pcd"] = str(pcd.resolve())
+    else:
+        config["feedback_type"] = "odom"
+        config["command_topic"] = "/cmd_vel"
+        config["feedback_frame_id"] = ""
+        config["feedback_topic"] = (
+            "/chassis/odom/laser" if profile.odometry == "rf2o" else base["wheel_odom_topic"]
+        )
+        config["odom_topic"] = "/odometry/filtered"
+        config["scan_topic"] = "/scan"
+        config["imu_topic"] = base["imu_topic"] if profile.odometry == "rf2o" else ""
+        config["imu_frame_id"] = base["imu_frame_id"] if profile.odometry == "rf2o" else ""
+        config["motion_enabled"] = (
+            base["enable_motion"] and base["hardware_calibrated"]
+            if profile.odometry == "rf2o" else True
+        )
     limits = []
     for web_key, base_key in (
         ("manual_linear", "max_linear_speed_m_s"),
@@ -543,7 +649,7 @@ def main():
     parser.add_argument("--maps-dir")
     parser.add_argument("--workspace")
     parser.add_argument("--platform-file")
-    for key in PARAMETER_FILES:
+    for key in (*PARAMETER_FILES, *MID360_PARAMETER_FILES, *MID360_OPTIONS):
         parser.add_argument("--" + key.replace("_", "-"))
     args, ros_args = parser.parse_known_args()
     logging.basicConfig(level=logging.INFO)
@@ -566,8 +672,12 @@ def main():
     gate = CommandGate(*limits, navigation_limits=navigation_limits)
     bridge = RosBridge(
         gate, feedback_topic=config["feedback_topic"],
+        feedback_type=config["feedback_type"],
+        feedback_frame_id=config["feedback_frame_id"],
         imu_topic=config["imu_topic"], imu_frame_id=config["imu_frame_id"],
-        motion_enabled=config["motion_enabled"],
+        motion_enabled=config["motion_enabled"], odom_topic=config["odom_topic"],
+        scan_topic=config["scan_topic"], sensor_pipeline=config["sensor_pipeline"],
+        command_topic=config["command_topic"],
     )
     executor = SingleThreadedExecutor()
     executor.add_node(bridge)

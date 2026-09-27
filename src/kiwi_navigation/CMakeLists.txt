@@ -12,12 +12,15 @@ install(
     launch/mapping_navigation.launch.py
     launch/navigation_core.launch.py
     launch/platform.launch.py
+    launch/mid360_navigation.launch.py
   DESTINATION share/${PROJECT_NAME}/launch)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(test_config test/test_config.py)
   ament_add_pytest_test(test_tracked_nav2_config test/test_tracked_nav2_config.py)
+  ament_add_pytest_test(test_mid360_config test/test_mid360_config.py)
+  ament_add_pytest_test(test_mid360_launch test/test_mid360_launch.py)
   ament_add_pytest_test(
     test_cross_package_contract
     test/test_cross_package_contract.py)

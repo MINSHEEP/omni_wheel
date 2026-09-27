@@ -4,8 +4,10 @@ import asyncio
 from collections import deque
 import os
 import signal
+from pathlib import Path
+import uuid
 
-from .config import PARAMETER_FILES
+from .config import PARAMETER_FILES, MID360_PARAMETER_FILES, MID360_OPTIONS
 
 
 class Supervisor:
@@ -17,6 +19,8 @@ class Supervisor:
         self.map_name = ""
         self.log = deque(maxlen=100)
         self.error = ""
+        self.session_pcd = ""
+        self.session_pcd_owned = False
 
     async def start(self, mode, map_name="", map_path=""):
         if (
@@ -35,7 +39,14 @@ class Supervisor:
         command.append("expected_chassis:=" + self.config.get("active_chassis", ""))
         if map_path:
             command.append("map:=" + str(map_path))
-        for key in PARAMETER_FILES:
+        if self.config.get("sensor_pipeline") == "mid360s":
+            self.session_pcd_owned = not bool(self.config.get("map_pcd"))
+            self.session_pcd = (self.config.get("map_pcd") or str(
+                Path(self.config["maps_dir"]) / (".mid360_web_" + uuid.uuid4().hex + ".pcd")
+            ))
+            command.append("map_pcd:=" + self.session_pcd)
+        for key in (*PARAMETER_FILES, *MID360_PARAMETER_FILES,
+                    *(key for key in MID360_OPTIONS if key != "map_pcd")):
             if self.config.get(key):
                 command.append(key + ":=" + self.config[key])
         self.error = ""
@@ -98,3 +109,7 @@ class Supervisor:
                 except asyncio.TimeoutError:
                     self.reader.cancel()
         self.process = None
+        if self.session_pcd_owned and self.session_pcd:
+            Path(self.session_pcd).unlink(missing_ok=True)
+        self.session_pcd = ""
+        self.session_pcd_owned = False

@@ -5,9 +5,10 @@ from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
-from kiwi_web.config import PARAMETER_FILES
+from kiwi_web.config import PARAMETER_FILES, MID360_PARAMETER_FILES, MID360_OPTIONS
 
-OVERRIDES = ("workspace", "maps_dir", "host", "port", "platform_file", *PARAMETER_FILES)
+OVERRIDES = ("workspace", "maps_dir", "host", "port", "platform_file", *PARAMETER_FILES,
+             *MID360_PARAMETER_FILES, *MID360_OPTIONS)
 
 
 def setup(context):

@@ -1,5 +1,7 @@
 # Kiwi ROS 2 操作手册
 
+履带底盘现有两套独立入口：MID360S + FAST-LIO2 新链路见下文“MID360S 履带建图与导航”；原 M10P + RF2O/C 板 IMU 链路保留，后续旧流程只适用于该入口。两套入口不能同时启动。
+
 ## 1. 环境准备与底盘切换
 
 启动、RViz 和录包终端必须统一 `ROS_DOMAIN_ID` 与 `ROS_LOCALHOST_ONLY`。
@@ -7,12 +9,12 @@
 如果查不到节点、录包只收到 `/rosout`，或地图突然停止更新，请先按
 [通信检查与建图暂停排查](src/kiwi_slam/README.md#查询不到话题录包为空或建图停止更新)操作。
 
-每个新终端启动前必须加载环境：
+使用原 `~/ros2_ws` 工作区时，每个新终端先加载环境；MID360S 使用下文单独的工作区和加载顺序：
 
 ```bash
 cd ~/ros2_ws
-# 编译工作空间
-colcon build --symlink-install 
+# 首次或代码变更后编译工作区
+colcon build --symlink-install
 source tools/activate_workspace.sh
 
 ```
@@ -28,9 +30,59 @@ sed -i 's/^chassis:.*/chassis: kiwi/' src/kiwi_platform/config/active_platform.y
 
 ```
 
+## MID360S 履带建图与导航（2026-09-27）
+
+实机 MID360S 位于 `192.168.1.117`，远程上位机 `a@192.168.66.112` 的雷达网卡 `enp2s0` 已持久设为 `192.168.1.50/24`。新链路部署在远程 `~/ros2_ws_mid360`，Livox 驱动和 FAST-LIO2 分别安装在 `~/livox_ws`、`~/fastlio_ws`；没有覆盖原 `~/ros2_ws`。活动底盘须为 `tracked_pwm`。每个新终端按顺序加载：
+
+```bash
+source /opt/ros/humble/setup.bash
+source "$HOME/livox_ws/install/setup.bash"
+source "$HOME/fastlio_ws/install/setup.bash"
+source "$HOME/ros2_ws_mid360/install/setup.bash"
+export ROS_DOMAIN_ID=42 ROS_LOCALHOST_ONLY=1
+mkdir -p "$HOME/maps"
+```
+
+FAST-LIO2 用三维点云与 MID360S 内置 IMU 在内部完成惯性融合，输出本地三维里程计；本模式不启动外部 EKF，C 板 IMU 话题仍保留供诊断。Nav2 使用投影的 `/scan_mid360` 和 `/fastlio/odom_base`：建图时由 SLAM Toolbox 生成二维栅格图，已知图导航时由 AMCL 发布 `map → odom`。FAST-LIO2 的本地里程计不能代替 AMCL 的全局重定位，三维 PCD 也不能直接作为 AMCL 地图。
+
+首次受控建图可先不启动 Nav2，确认雷达和 TF 后再低速遥控车辆：
+
+```bash
+ros2 launch kiwi_navigation mid360_navigation.launch.py \
+  mode:=mapping start_nav2:=false lidar_model:=Mid360s \
+  lidar_interface:=enp2s0 host_ip:=192.168.1.50 lidar_ip:=192.168.1.117 \
+  map_pcd:="$HOME/maps/mid360_3d.pcd" use_rviz:=true
+```
+
+`use_rviz:=true` 应在远程上位机的图形会话运行；只通过 SSH 启动时可改为 `false`。确认 `/livox/lidar`、`/livox/imu`、`/fastlio/odom_base`、`/scan_mid360` 均持续更新后，在另一个终端加载相同环境并启动键盘遥控：
+
+```bash
+ros2 run kiwi_base kiwi_teleop_keyboard --ros-args \
+  --params-file "$HOME/ros2_ws_mid360/src/kiwi_base/config/tracked_pwm.yaml"
+```
+
+建图完成后，在已加载相同环境的终端保存二维和三维地图：
+
+```bash
+
+ros2 run nav2_map_server map_saver_cli -f "$HOME/maps/mid360_2d"
+ros2 service call /map_save std_srvs/srv/Trigger '{}'
+```
+
+人工核对二维地图后，停止建图入口，再启动 AMCL 与 Nav2；在 RViz 设置真实初始位姿，确认定位稳定后才发送目标：
+
+```bash
+ros2 launch kiwi_navigation mid360_navigation.launch.py \
+  mode:=localization map:="$HOME/maps/mid360_2d.yaml" \
+  lidar_model:=Mid360s lidar_interface:=enp2s0 \
+  host_ip:=192.168.1.50 lidar_ip:=192.168.1.117 use_rviz:=true
+```
+
+静止实机检查已验证点云约 10 Hz、内置 IMU 约 200 Hz、三维里程计与二维扫描约 10 Hz；二维图、三维 PCD 保存及零速 Nav2 启动均通过。静止测试图不能用于实际导航，安装外参、行驶漂移、地图质量与 AMCL 重定位仍需现场运动验收。详细安装版本、校验步骤与注意事项见 [MID360S/FAST-LIO2 部署说明](documents/navigation/mid360_fastlio2_deployment.md)。
+
 ---
 
-## 履带启动校准与建图更新（2026-09-26）
+## 原 M10P 履带启动校准与建图更新（2026-09-26）
 
 新增运行依赖（ROS 2 已安装）：
 
@@ -65,7 +117,7 @@ ros2 param get /slam_toolbox do_loop_closing
 
 当前现场证据、修复边界和本轮验证结果统一见 [建图卡顿与惯导可用性复核](documents/tracked_mapping_optimization_20260926.md)。[惯性续接与建图恢复](documents/tracked_inertial_recovery_20260926.md)、[早期中断恢复记录](documents/tracked_recovery_20260926.md)与[此前静止测试](documents/tracked_estimation_repair_20260926.md)均为历史前版记录，旧测试通过不代表本轮实车精度通过。当前行为以有效 YAML 和当前报告为准。旧测试目录中的 `base_locked.yaml` 是旧参数快照，不能再拿来启动新版；临时静止测试应从当前 `src/kiwi_base/config/tracked_pwm.yaml` 复制，并关闭运动/试车开关。
 
-## 2. 基础测试（底盘与 EKF）
+## 2. 原 M10P 链路基础测试（底盘与 EKF）
 
 ```bash
 # 启动底盘、传感器与 EKF 融合
@@ -78,7 +130,7 @@ ros2 run kiwi_base kiwi_teleop_keyboard
 
 ---
 
-## 3. 移动建图流程
+## 3. 原 M10P 链路移动建图流程
 
 ### 步骤 1：启动建图节点
 
@@ -132,7 +184,7 @@ ros2 run nav2_map_server map_saver_cli -f ~/ros2_ws/maps/warehouse
 
 ---
 
-## 4. 已知地图定位与导航
+## 4. 原 M10P 链路已知地图定位与导航
 
 启动定位与 Nav2 导航（必须指定 `.yaml` 地图路径）：
 
@@ -153,14 +205,20 @@ ros2 launch kiwi_navigation localization_navigation.launch.py \
 
 ## 5. Web 控制台（可选）
 
+MID360S 履带链路可通过 Web 启动建图、遥控和已知二维图导航。网页显示 MID360S 内置 IMU、FAST-LIO2 里程计、二维投影扫描及 AMCL 状态；二维栅格用于地图编辑和 Nav2，不把三维点云误称为 AMCL 地图。MID360S Web 速度经私有 `/kiwi_web/cmd_vel`、雷达运动门控和 `/mid360/cmd_vel_safe` 后到达底盘，外部 `/cmd_vel` 不会进入这条 Web 链路。原 M10P 链路可在 Web 配置中选择 `sensor_pipeline: legacy`。
+
+在远程 `a@192.168.66.112` 的 `~/ros2_ws_mid360` 使用 Web 时，先加载 MID360S 节列出的四层 ROS 环境，再启动服务；`maps_dir` 指向实机已有的 `~/maps`，与命令行保存的二维地图共用目录：
+
 ```bash
-ros2 launch kiwi_web web.launch.py
+ros2 launch kiwi_web web.launch.py maps_dir:="$HOME/maps"
 
 ```
 
+浏览器打开 `http://192.168.66.112:8080`。服务启动本身不会启动雷达和底盘；进入对应页面并点击开始后才拉起所需节点。建图停车后点击“保存”会生成同名二维 YAML/PGM 与三维 PCD，设置页分别提供下载；PCD 使用本次 FAST-LIO2 启动的局部坐标，不直接用于 AMCL。导航前仍需提供实际运动建成的二维地图、在地图上设置 AMCL 初始位姿并检查扫描对齐。详细配置和校验见 [Web 控制台说明](src/kiwi_web/README.md)。
+
 ---
 
-## 6. 快捷排错命令
+## 6. 原 M10P 链路快捷排错命令
 
 ```bash
 # 检查关键数据流频率

@@ -9,7 +9,7 @@ ament_python_install_package(${PROJECT_NAME})
 
 # symlink-install 会继承源码的执行位；复制/解压工作区后脚本可能变成 0644。
 set(KIWI_SLAM_PROGRAMS)
-foreach(program kiwi_slam_monitor kiwi_slam_compatibility kiwi_mapping_scan_gate rf2o_covariance_adapter tracked_imu_acceleration tracked_estimation_guard tracked_inertial_odometry calibrate_planar_imu)
+foreach(program kiwi_slam_monitor kiwi_slam_compatibility kiwi_mapping_scan_gate rf2o_covariance_adapter lio_odom_adapter mid360_scan_projector mid360_motion_gate tracked_imu_acceleration tracked_estimation_guard tracked_inertial_odometry calibrate_planar_imu)
   set(installed_program "${CMAKE_CURRENT_BINARY_DIR}/${program}")
   configure_file("scripts/${program}" "${installed_program}" COPYONLY)
   file(CHMOD "${installed_program}" PERMISSIONS
@@ -24,9 +24,10 @@ install(
     launch/kiwi_robot.launch.py
     launch/kiwi_slam.launch.py
     launch/m10p_uart_lidar.launch.py
+    launch/mid360_pipeline.launch.py
   DESTINATION share/${PROJECT_NAME}/launch)
 install(
-  FILES urdf/kiwi.urdf.xacro urdf/tracked.urdf.xacro
+  FILES urdf/kiwi.urdf.xacro urdf/tracked.urdf.xacro urdf/tracked_mid360.urdf.xacro
   DESTINATION share/${PROJECT_NAME}/urdf)
 
 if(BUILD_TESTING)
@@ -42,6 +43,10 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_laser_recovery test/test_laser_recovery.py)
   ament_add_pytest_test(test_inertial_odometry test/test_inertial_odometry.py)
   ament_add_pytest_test(test_estimation_guard test/test_estimation_guard.py)
+  ament_add_pytest_test(test_lio_odom_adapter test/test_lio_odom_adapter.py)
+  ament_add_pytest_test(test_mid360_scan_projector test/test_mid360_scan_projector.py)
+  ament_add_pytest_test(test_mid360_contract test/test_mid360_contract.py)
+  ament_add_pytest_test(test_mid360_motion_gate test/test_mid360_motion_gate.py)
 endif()
 
 ament_package()

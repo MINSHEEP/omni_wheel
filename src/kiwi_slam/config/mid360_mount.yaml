@@ -1,0 +1,12 @@
+# 用户确认 MID360 雷达原点/轴向与旧 M10P 相同。旧雷达相对 base_link 为
+# [0.24, 0, 0]，base_link 相对 base_footprint 高 0.15 m。按内部 LiDAR
+# 相对 IMU 的 [-0.011, -0.02329, 0.04412] 推得 T_base_footprint_body。
+# 实机仍须用静态点云/转弯轨迹复核雷达光学原点是否确实与旧雷达重合。
+mid360_mount:
+  ros__parameters:
+    calibrated: true
+    base_to_body_xyz: [0.251, 0.02329, 0.10588]
+    base_to_body_rpy: [0.0, 0.0, 0.0]
+    # 内部 LiDAR 相对内部 IMU 的出厂初值，须与 mid360_fastlio.yaml 一致。
+    body_to_lidar_xyz: [-0.011, -0.02329, 0.04412]
+    body_to_lidar_rpy: [0.0, 0.0, 0.0]

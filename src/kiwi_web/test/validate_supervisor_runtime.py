@@ -28,9 +28,12 @@ async def main():
                 section["ros__parameters"]["serial_port"] = str(root / "absent-lidar-device")
         (root / "base.yaml").write_text(yaml.safe_dump(base))
         (root / "lidar.yaml").write_text(yaml.safe_dump(lidar))
+        (root / "active_platform.yaml").write_text("chassis: kiwi\n")
         supervisor = Supervisor(
             dict(
-                base_params_file=str(root / "base.yaml"), lidar_params_file=str(root / "lidar.yaml")
+                base_params_file=str(root / "base.yaml"), lidar_params_file=str(root / "lidar.yaml"),
+                platform_file=str(root / "active_platform.yaml"), sensor_pipeline="legacy",
+                active_chassis="kiwi",
             )
         )
         try:

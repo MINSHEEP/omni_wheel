@@ -18,6 +18,7 @@ from nav2_msgs.action import NavigateToPose
 from nav2_msgs.srv import ClearEntireCostmap
 from sensor_msgs.msg import Imu, LaserScan
 from std_msgs.msg import Bool
+from std_srvs.srv import Trigger
 from diagnostic_msgs.msg import DiagnosticArray
 from lifecycle_msgs.srv import GetState
 from tf2_ros import Buffer, TransformException, TransformListener
@@ -50,9 +51,23 @@ async def ros_future(future, timeout=10):
 
 class RosBridge(Node):
     def __init__(self, gate, *, feedback_topic="/chassis/odom/raw",
-                 imu_topic="", imu_frame_id="chassis_imu_link", motion_enabled=True):
+                 feedback_type="odom", feedback_frame_id="chassis_imu_link",
+                 imu_topic="", imu_frame_id="chassis_imu_link",
+                 motion_enabled=True,
+                 odom_topic="/odometry/filtered", scan_topic="/scan",
+                 sensor_pipeline="legacy", command_topic="/cmd_vel"):
         super().__init__("kiwi_web_bridge")
         self.gate = gate
+        if sensor_pipeline not in ("legacy", "mid360s"):
+            raise ValueError("未知传感器链路")
+        self.sensor_pipeline = sensor_pipeline
+        self.odom_topic = odom_topic
+        self.scan_topic = scan_topic
+        self.command_topic = command_topic
+        self.imu_topic = imu_topic
+        self.feedback_frame_id = feedback_frame_id
+        if feedback_type not in ("odom", "imu"):
+            raise ValueError("未知底盘反馈类型")
         self.use_raw_imu = bool(imu_topic)
         self.imu_frame_id = imu_frame_id
         self.motion_enabled = motion_enabled
@@ -81,16 +96,19 @@ class RosBridge(Node):
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
             reliability=ReliabilityPolicy.RELIABLE,
         )
-        self.command_pub = self.create_publisher(Twist, "/cmd_vel", 1)
+        self.command_pub = self.create_publisher(Twist, command_topic, 1)
         self.initial_pub = self.create_publisher(PoseWithCovarianceStamped, "/initialpose", 1)
         self.create_subscription(OccupancyGrid, "/map", self._map, latched)
         self.create_subscription(
-            Odometry, "/odometry/filtered", self._odom, qos_profile_sensor_data
+            Odometry, odom_topic, self._odom, qos_profile_sensor_data
         )
-        self.create_subscription(
-            Odometry, feedback_topic, self._feedback, qos_profile_sensor_data
-        )
-        self.create_subscription(LaserScan, "/scan", self._scan, qos_profile_sensor_data)
+        if feedback_type == "imu":
+            self.create_subscription(Imu, feedback_topic, self._board_imu,
+                                     qos_profile_sensor_data)
+        else:
+            self.create_subscription(Odometry, feedback_topic, self._feedback,
+                                     qos_profile_sensor_data)
+        self.create_subscription(LaserScan, scan_topic, self._scan, qos_profile_sensor_data)
         self.create_subscription(Path, "/plan", self._path, 1)
         if self.use_raw_imu:
             self.create_subscription(Imu, imu_topic, self._raw_imu, qos_profile_sensor_data)
@@ -104,6 +122,7 @@ class RosBridge(Node):
         self.create_subscription(Twist, "/kiwi_web/nav_cmd_vel", self._nav_velocity, 1)
         self.navigation = ActionClient(self, NavigateToPose, "/navigate_to_pose")
         self.navigation_state = self.create_client(GetState, "/bt_navigator/get_state")
+        self.map_save_client = self.create_client(Trigger, "/map_save")
         self.navigation_active = False
         self.state_future = None
         self.graph_epoch = 0
@@ -151,12 +170,20 @@ class RosBridge(Node):
             with self.lock:
                 self.feedback_at = time.monotonic()
 
+    def _board_imu(self, message):
+        # C 板 IMU 只证明底盘串口仍在更新，绝不送入 FAST-LIO2 或定位融合。
+        if (message.header.frame_id == self.feedback_frame_id
+                and self._fresh_stamp(message.header.stamp)):
+            with self.lock:
+                self.feedback_at = time.monotonic()
+
     def _imu(self, message):
         with self.lock:
             self.imu_ready = message.data
 
     def _raw_imu(self, message):
-        if message.header.frame_id == self.imu_frame_id and self._fresh_stamp(message.header.stamp):
+        if ((not self.imu_frame_id or message.header.frame_id == self.imu_frame_id)
+                and self._fresh_stamp(message.header.stamp)):
             with self.lock:
                 self.imu_at = time.monotonic()
 
@@ -164,6 +191,8 @@ class RosBridge(Node):
         return now - self.imu_at < 0.5 if self.use_raw_imu else self.imu_ready
 
     def _mapping_ready(self, message):
+        if self.sensor_pipeline == "mid360s":
+            return
         with self.lock:
             self.mapping_ready = message.data
 
@@ -271,7 +300,7 @@ class RosBridge(Node):
 
     def _check_publishers(self):
         self._check_navigation_state()
-        entries = self.get_publishers_info_by_topic("/cmd_vel")
+        entries = self.get_publishers_info_by_topic(self.command_topic)
         with self.lock:
             self.conflicts = [
                 e.node_namespace + "/" + e.node_name
@@ -304,13 +333,22 @@ class RosBridge(Node):
     def _control(self):
         now = time.monotonic()
         with self.lock:
+            lidar_ready = now - self.scan_at < 0.5
+            lio_ready = now - self.odom_at < 0.5
+            imu_ready = self._imu_healthy(now)
+            if self.sensor_pipeline == "mid360s":
+                # 新链路无旧建图门控；地图须来自本次启动的实时 SLAM。
+                self.mapping_ready = (self.gate.mode == "mapping"
+                                      and self.map_message is not None
+                                      and lidar_ready and lio_ready and imu_ready)
             healthy = (
-                now - self.feedback_at < 0.5 and now - self.odom_at < 0.5 and not self.conflicts
+                now - self.feedback_at < 0.5 and lio_ready and not self.conflicts
             )
             manual_ready = (
                 healthy
                 and self.motion_enabled
-                and self._imu_healthy(now)
+                and imu_ready
+                and (self.sensor_pipeline != "mid360s" or lidar_ready)
                 and (
                     self.gate.mode == "remote"
                     or (self.gate.mode == "mapping" and self.mapping_ready)
@@ -320,8 +358,8 @@ class RosBridge(Node):
                 healthy
                 and self.motion_enabled
                 and self.navigation_active
-                and self._imu_healthy(now)
-                and now - self.scan_at < 0.5
+                and imu_ready
+                and lidar_ready
                 and self.pose is not None
                 and now - self.pose_at < 0.5
             )
@@ -371,12 +409,21 @@ class RosBridge(Node):
     def status(self):
         now = time.monotonic()
         with self.lock:
+            def source(topic, last_seen):
+                age = now - last_seen if last_seen else None
+                return dict(topic=topic, healthy=age is not None and age < 0.5,
+                            age_s=round(age, 3) if age is not None else None)
+
             return dict(
                 motion_fault=self.motion_fault,
                 odom=now - self.odom_at < 0.5,
                 feedback=now - self.feedback_at < 0.5,
                 lidar=now - self.scan_at < 0.5,
                 imu_ready=self._imu_healthy(now),
+                lio=source(self.odom_topic if self.sensor_pipeline == "mid360s" else "", self.odom_at
+                           if self.sensor_pipeline == "mid360s" else 0.0),
+                livox_imu=source(self.imu_topic if self.sensor_pipeline == "mid360s" else "", self.imu_at
+                                 if self.sensor_pipeline == "mid360s" else 0.0),
                 mapping_ready=self.mapping_ready,
                 pose=self.pose,
                 speed=self.speed,
@@ -463,6 +510,16 @@ class RosBridge(Node):
                 for client in self.clear_clients
             )
         )
+
+    async def save_pointcloud(self):
+        if self.sensor_pipeline != "mid360s" or not self.map_save_client.service_is_ready():
+            raise ValueError("FAST-LIO2 点云保存服务尚未就绪")
+        try:
+            result = await ros_future(self.map_save_client.call_async(Trigger.Request()), 120)
+        except asyncio.TimeoutError as error:
+            raise ValueError("点云保存超时，写盘结果不确定；请检查地图目录后重试") from error
+        if not result.success:
+            raise ValueError("FAST-LIO2 点云保存失败：" + result.message)
 
 
 class Navigator:

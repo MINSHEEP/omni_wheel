@@ -20,16 +20,33 @@ def setup(context):
     map_file = validate_map_file(LaunchConfiguration("map").perform(context))
     navigation = Path(get_package_share_directory("kiwi_navigation"))
     selector = LaunchConfiguration("platform_file").perform(context)
+    pipeline = LaunchConfiguration("sensor_pipeline", default="legacy").perform(context)
+    if pipeline not in ("legacy", "mid360s"):
+        raise ValueError("sensor_pipeline 必须是 legacy 或 mid360s")
     overrides = {"nav2": LaunchConfiguration("nav2_params_file").perform(context),
                  "base": LaunchConfiguration("base_params_file").perform(context),
                  "lidar": LaunchConfiguration("lidar_params_file").perform(context)}
-    selected = load_profile(selector, {"base": overrides["base"]}, required_keys=("base",))
-    keys = ["base", "lidar", "nav2"]
-    if selected.odometry == "rf2o":
-        keys.append("rf2o")
-    profile = load_profile(selector, overrides, required_keys=tuple(keys))
-    validate_profile(profile, "localization")
-    params = profile.path("nav2")
+    if pipeline == "mid360s":
+        if overrides["lidar"]:
+            raise ValueError("MID360S 导航不使用旧 M10P lidar_params_file")
+        profile = load_profile(selector, {"base": overrides["base"]}, required_keys=("base",))
+        if profile.chassis != "tracked_pwm":
+            raise ValueError("MID360S 导航仅支持 tracked_pwm 底盘")
+        base = profile.data("base")[profile.driver]["ros__parameters"]
+        if not (base["hardware_calibrated"] is True and base["enable_motion"] is True
+                and base["open_loop_test_enabled"] is False):
+            raise ValueError("履带未完成速度标定或仍处于试车模式，不得启动导航")
+        params = overrides["nav2"] or str(navigation / "config/mid360_tracked_nav2.yaml")
+        if not Path(params).is_file():
+            raise ValueError("MID360S Nav2 参数文件不存在")
+    else:
+        selected = load_profile(selector, {"base": overrides["base"]}, required_keys=("base",))
+        keys = ["base", "lidar", "nav2"]
+        if selected.odometry == "rf2o":
+            keys.append("rf2o")
+        profile = load_profile(selector, overrides, required_keys=tuple(keys))
+        validate_profile(profile, "localization")
+        params = profile.path("nav2")
     raw_topic = LaunchConfiguration("raw_cmd_vel_topic").perform(context)
     output_topic = LaunchConfiguration("cmd_vel_topic").perform(context)
     actions = [
@@ -113,6 +130,7 @@ def generate_launch_description():
             DeclareLaunchArgument("nav2_params_file", default_value=""),
             DeclareLaunchArgument("base_params_file", default_value=""),
             DeclareLaunchArgument("lidar_params_file", default_value=""),
+            DeclareLaunchArgument("sensor_pipeline", default_value="legacy"),
             DeclareLaunchArgument("raw_cmd_vel_topic", default_value="/cmd_vel_nav"),
             DeclareLaunchArgument("cmd_vel_topic", default_value="/cmd_vel"),
             OpaqueFunction(function=setup),

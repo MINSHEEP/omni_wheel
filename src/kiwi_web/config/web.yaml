@@ -8,6 +8,17 @@ ros_domain_id: 42
 # Relative data/config paths resolve against that workspace, never cwd.
 workspace: ""
 maps_dir: maps
+# auto: tracked_pwm 使用 MID360S，Kiwi 保留原 M10P；legacy 可临时回到旧链路。
+sensor_pipeline: auto
+# MID360S 直连网卡；不得填用于 SSH 的 Wi-Fi 地址。
+lidar_interface: enp2s0
+host_ip: 192.168.1.50
+lidar_ip: 192.168.1.117
+lidar_model: Mid360s
+# 空值由 Web 选择 maps_dir 内的本次建图 PCD 文件。
+map_pcd: ""
+mount_file: ""
+fastlio_params_file: ""
 # Optional shared access password (or KIWI_WEB_TOKEN environment variable).
 # Empty permits access from the trusted LAN; cross-origin writes are rejected.
 access_token: ""
