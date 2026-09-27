@@ -33,6 +33,16 @@ def test_gate_never_opens_before_real_imu_calibration_ready():
     assert not gate.opened
 
 
+def test_laser_only_gate_opens_without_imu_or_ekf():
+    gate = MappingStartupGate(make_gate(required_scans=2).config, require_imu_ready=False)
+    assert gate.imu_ready
+    gate.set_imu_ready(False)
+    observe_stationary(gate)
+    assert not gate.observe_scan(0.61, [1.0] * 8, 0.1, 5.0)
+    assert gate.observe_scan(0.66, [1.0] * 8, 0.1, 5.0)
+    assert gate.opened
+
+
 def test_consistent_scans_open_gate_and_first_released_scan_is_fresh():
     gate = make_gate(required_scans=3)
     gate.set_imu_ready(True)

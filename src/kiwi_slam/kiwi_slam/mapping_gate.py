@@ -57,15 +57,16 @@ class MappingGateConfig:
 class MappingStartupGate:
     """可独立测试的首帧门控状态机。
 
-    IMU ready 由底盘实际三个标定器产生，不能用固定等待时间替代。ready 后还
-    要求 EKF 连续静止，并确认若干相邻 LaserScan 的共同有效束距离一致。任何
+    默认要求 IMU 标定 ready；纯激光配置可显式关闭该要求。之后还
+    要求里程计连续静止，并确认若干相邻 LaserScan 的共同有效束距离一致。任何
     运动、断流或异常扫描都会清空本轮证据；门一旦打开则保持打开，避免正常
     建图运动期间反复断流。
     """
 
-    def __init__(self, config: MappingGateConfig) -> None:
+    def __init__(self, config: MappingGateConfig, require_imu_ready: bool = True) -> None:
         self.config = config
-        self.imu_ready = False
+        self.require_imu_ready = require_imu_ready
+        self.imu_ready = not require_imu_ready
         self.opened = False
         self.stationary_since: float | None = None
         self.last_odom_time: float | None = None
@@ -75,6 +76,8 @@ class MappingStartupGate:
 
     def set_imu_ready(self, ready: bool) -> None:
         """更新底盘标定状态；只在状态改变时重建启动证据。"""
+        if not self.require_imu_ready:
+            return
         if ready == self.imu_ready or self.opened:
             return
         self.imu_ready = ready
@@ -88,7 +91,7 @@ class MappingStartupGate:
         angular_z: float,
         yaw: float,
     ) -> None:
-        """输入一帧 EKF 里程计，用速度、yaw 连续性和接收间隔确认静止。"""
+        """输入一帧里程计，用速度、yaw 连续性和接收间隔确认静止。"""
         if self.opened:
             return
         values = (received_at, velocity_x, velocity_y, angular_z, yaw)
@@ -208,7 +211,7 @@ class MappingStartupGate:
         return self.opened
 
     def _odom_is_ready(self, now: float) -> bool:
-        """确认标定已完成、静止时间达标且 EKF 消息仍新鲜。"""
+        """确认必需的标定已完成、静止时间达标且里程计仍新鲜。"""
         return (
             self.imu_ready
             and self.stationary_since is not None
@@ -267,6 +270,9 @@ class MappingScanGateNode(Node):
         self.imu_ready_topic = str(
             self._required("imu_ready_topic", Parameter.Type.STRING)
         )
+        self.require_imu_ready = bool(
+            self.declare_parameter("require_imu_ready", True).value
+        )
         self.gate_ready_topic = str(
             self._required("gate_ready_topic", Parameter.Type.STRING)
         )
@@ -299,7 +305,7 @@ class MappingScanGateNode(Node):
             raise ValueError(
                 "input_scan_topic and output_scan_topic must differ"
             )
-        self.gate = MappingStartupGate(config)
+        self.gate = MappingStartupGate(config, self.require_imu_ready)
         self.last_warning: dict[str, float] = {}
 
         state_qos = QoSProfile(
@@ -313,8 +319,12 @@ class MappingScanGateNode(Node):
         self.ready_pub = self.create_publisher(
             Bool, self.gate_ready_topic, state_qos
         )
-        self.ready_sub = self.create_subscription(
-            Bool, self.imu_ready_topic, self._on_imu_ready, state_qos
+        self.ready_sub = (
+            self.create_subscription(
+                Bool, self.imu_ready_topic, self._on_imu_ready, state_qos
+            )
+            if self.require_imu_ready
+            else None
         )
         self.odom_sub = self.create_subscription(
             Odometry, self.odom_topic, self._on_odom, 10
@@ -326,9 +336,14 @@ class MappingScanGateNode(Node):
             qos_profile_sensor_data,
         )
         self.ready_pub.publish(Bool(data=False))
+        condition = (
+            "calibrated IMU, stationary odometry and consistent scans"
+            if self.require_imu_ready
+            else "stationary laser odometry and consistent scans"
+        )
         self.get_logger().info(
             f"mapping gate {self.input_scan_topic}->{self.output_scan_topic}; "
-            "waiting for calibrated IMU, stationary EKF and consistent scans"
+            f"waiting for {condition}"
         )
 
     def _required(self, name: str, parameter_type: Parameter.Type) -> object:

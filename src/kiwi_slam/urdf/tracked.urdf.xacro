@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="tracked_pwm">
+  <xacro:arg name="hardware_config" default="$(find kiwi_base)/config/tracked_pwm.yaml"/>
+  <xacro:property name="hardware" value="${xacro.load_yaml('$(arg hardware_config)')}"/>
+  <xacro:property name="model" value="${hardware['tracked_robot_model']['ros__parameters']}"/>
+  <link name="base_footprint"/>
+  <link name="base_link">
+    <visual><geometry><box size="${model['base_length_m']} ${model['base_width_m']} ${model['base_height_m']}"/></geometry></visual>
+    <collision><geometry><box size="${model['base_length_m']} ${model['base_width_m']} ${model['base_height_m']}"/></geometry></collision>
+    <inertial>
+      <mass value="${model['mass_kg']}"/>
+      <inertia ixx="${model['mass_kg'] * (model['base_width_m']**2 + model['base_height_m']**2) / 12}" ixy="0" ixz="0"
+               iyy="${model['mass_kg'] * (model['base_length_m']**2 + model['base_height_m']**2) / 12}" iyz="0"
+               izz="${model['mass_kg'] * (model['base_length_m']**2 + model['base_width_m']**2) / 12}"/>
+    </inertial>
+  </link>
+  <joint name="base_footprint_to_base_link" type="fixed">
+    <parent link="base_footprint"/><child link="base_link"/>
+    <origin xyz="0 0 ${model['base_z_m']}" rpy="0 0 0"/>
+  </joint>
+  <link name="left_track">
+    <visual><geometry><box size="${model['base_length_m']} ${model['track_width_m']} ${model['track_height_m']}"/></geometry></visual>
+  </link>
+  <joint name="left_track_joint" type="fixed">
+    <parent link="base_link"/><child link="left_track"/>
+    <origin xyz="0 ${hardware['tracked_base_node']['ros__parameters']['track_separation_m'] / 2} ${-model['base_height_m'] / 2}"/>
+  </joint>
+  <link name="right_track">
+    <visual><geometry><box size="${model['base_length_m']} ${model['track_width_m']} ${model['track_height_m']}"/></geometry></visual>
+  </link>
+  <joint name="right_track_joint" type="fixed">
+    <parent link="base_link"/><child link="right_track"/>
+    <origin xyz="0 ${-hardware['tracked_base_node']['ros__parameters']['track_separation_m'] / 2} ${-model['base_height_m'] / 2}"/>
+  </joint>
+  <link name="lidar_link"/>
+  <joint name="base_link_to_lidar" type="fixed">
+    <parent link="base_link"/><child link="lidar_link"/>
+    <origin xyz="${model['lidar_xyz'][0]} ${model['lidar_xyz'][1]} ${model['lidar_xyz'][2]}" rpy="${model['lidar_rpy'][0]} ${model['lidar_rpy'][1]} ${model['lidar_rpy'][2]}"/>
+  </joint>
+  <link name="chassis_imu_link"/>
+  <joint name="base_link_to_chassis_imu" type="fixed">
+    <parent link="base_link"/><child link="chassis_imu_link"/>
+    <origin xyz="${model['imu_xyz'][0]} ${model['imu_xyz'][1]} ${model['imu_xyz'][2]}" rpy="${model['imu_rpy'][0]} ${model['imu_rpy'][1]} ${model['imu_rpy'][2]}"/>
+  </joint>
+</robot>

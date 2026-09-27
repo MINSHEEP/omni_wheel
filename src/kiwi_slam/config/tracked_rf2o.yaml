@@ -1,0 +1,11 @@
+# RF2O 是唯一 odom->base_footprint TF 与 /odometry/filtered 发布者。
+# scan_topic 必须与 M10P 的 laserscan_topic 一致；不使用 IMU、轮速、EKF。
+rf2o_laser_odometry:
+  ros__parameters:
+    laser_scan_topic: /scan
+    odom_topic: /odometry/filtered
+    publish_tf: true
+    base_frame_id: base_footprint
+    odom_frame_id: odom
+    init_pose_from_topic: ""
+    freq: 20.0

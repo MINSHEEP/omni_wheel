@@ -1,0 +1,54 @@
+diff --git a/include/rf2o_laser_odometry/CLaserOdometry2DNode.h b/include/rf2o_laser_odometry/CLaserOdometry2DNode.h
+index 85bd6bf..4e1536b 100644
+--- a/include/rf2o_laser_odometry/CLaserOdometry2DNode.h
++++ b/include/rf2o_laser_odometry/CLaserOdometry2DNode.h
+@@ -91,7 +91,7 @@ CLaserOdometry2DNode::CLaserOdometry2DNode(): Node("CLaserOdometry2DNode")
+     initial_robot_pose.pose.pose.position.x = 0;
+     initial_robot_pose.pose.pose.position.y = 0;
+     initial_robot_pose.pose.pose.position.z = 0;
+-    initial_robot_pose.pose.pose.orientation.w = 0;
++    initial_robot_pose.pose.pose.orientation.w = 1;
+     initial_robot_pose.pose.pose.orientation.x = 0;
+     initial_robot_pose.pose.pose.orientation.y = 0;
+     initial_robot_pose.pose.pose.orientation.z = 0;
+diff --git a/src/CLaserOdometry2D.cpp b/src/CLaserOdometry2D.cpp
+index f6f70a5..4072ff9 100644
+--- a/src/CLaserOdometry2D.cpp
++++ b/src/CLaserOdometry2D.cpp
+@@ -79,7 +79,7 @@ void CLaserOdometry2D::init(const sensor_msgs::msg::LaserScan& scan,
+ 
+   //Set the initial pose
+   laser_pose_    = robot_initial_pose * laser_pose_on_robot_;
+-  laser_oldpose_ = laser_oldpose_;
++  laser_oldpose_ = laser_pose_;
+ 
+   // Init module (internal)
+   //------------------------
+diff --git a/src/CLaserOdometry2DNode.cpp b/src/CLaserOdometry2DNode.cpp
+index e50b356..da91db3 100644
+--- a/src/CLaserOdometry2DNode.cpp
++++ b/src/CLaserOdometry2DNode.cpp
+@@ -34,7 +34,7 @@ bool CLaserOdometry2DNode::setLaserPoseFromTf()
+   catch (tf2::TransformException &ex)
+   {
+     RCLCPP_ERROR(get_logger(), "%s",ex.what());
+-    retrieved = false;
++    return false;
+   }
+ 
+   //TF:transform -> Eigen::Isometry3d
+@@ -102,9 +102,11 @@ void CLaserOdometry2DNode::LaserCallBack(const sensor_msgs::msg::LaserScan::Shar
+     }
+     else
+     {
+-      setLaserPoseFromTf();
+-      rf2o_ref.init(last_scan, initial_robot_pose.pose.pose);
+-      rf2o_ref.first_laser_scan = false;
++      if (setLaserPoseFromTf())
++      {
++        rf2o_ref.init(last_scan, initial_robot_pose.pose.pose);
++        rf2o_ref.first_laser_scan = false;
++      }
+     }
+   }
+ }

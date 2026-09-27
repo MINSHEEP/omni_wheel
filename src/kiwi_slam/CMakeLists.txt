@@ -20,9 +20,10 @@ install(
     launch/kiwi_robot.launch.py
     launch/kiwi_slam.launch.py
     launch/m10p_uart_lidar.launch.py
+    launch/tracked_laser_mapping.launch.py
   DESTINATION share/${PROJECT_NAME}/launch)
 install(
-  FILES urdf/kiwi.urdf.xacro
+  FILES urdf/kiwi.urdf.xacro urdf/tracked.urdf.xacro
   DESTINATION share/${PROJECT_NAME}/urdf)
 
 if(BUILD_TESTING)
@@ -32,6 +33,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_compatibility test/test_compatibility.py)
   ament_add_pytest_test(test_runtime_contract test/test_runtime_contract.py)
   ament_add_pytest_test(test_mapping_gate test/test_mapping_gate.py)
+  ament_add_pytest_test(test_tracked_laser_config test/test_tracked_laser_config.py)
 endif()
 
 ament_package()

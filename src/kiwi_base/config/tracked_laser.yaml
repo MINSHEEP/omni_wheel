@@ -1,0 +1,49 @@
+# test 分支双履带底盘的 USB CDC 通信与 2026-09-24 标定值。
+# 仅适用于已核对 motor1=左、motor2=右且尺寸/安装与 test 分支相同的底盘。
+# 本配置不发布轮式 odom；定位与 odom TF 均由 RF2O 激光里程计提供。
+tracked_base_node:
+  ros__parameters:
+    device: /dev/robomaster_c
+    cmd_vel_topic: /cmd_vel
+    imu_topic: /chassis/imu/data_raw
+    imu_frame_id: chassis_imu_link
+    publish_rate: 50.0
+    cmd_vel_timeout_s: 0.20
+    max_linear_speed_m_s: 0.30
+    max_angular_speed_rad_s: 0.95
+    track_separation_m: 0.50
+    command_per_m_s: 21.2
+    max_motor_command: 20.0
+    gyro_z_sign: -1.0
+    gyro_z_scale: 1.69
+    gyro_z_bias_rad_s: -0.00355
+    gyro_z_variance: 0.01
+    hardware_calibrated: true
+    enable_motion: true
+    keyboard_trial_enabled: false
+    keyboard_trial_command_gain: 21.2
+    keyboard_trial_limit_rad_s: 5.0
+    open_loop_test_enabled: false
+    open_loop_test_topic: /chassis/open_loop_motor_cmd
+    open_loop_test_limit_rad_s: 10.0
+
+tracked_robot_model:
+  ros__parameters:
+    base_length_m: 0.70
+    base_width_m: 0.59
+    base_height_m: 0.15
+    base_z_m: 0.15
+    track_width_m: 0.10
+    track_height_m: 0.10
+    mass_kg: 15.0
+    lidar_xyz: [0.24, 0.0, 0.0]
+    lidar_rpy: [0.0, 0.0, 0.0]
+    imu_xyz: [0.08, 0.0, 0.0]
+    imu_rpy: [0.0, 0.0, 0.0]
+
+kiwi_teleop_keyboard:
+  ros__parameters:
+    cmd_vel_topic: /cmd_vel
+    speed_m_s: 0.235
+    yaw_rad_s: 0.95
+    deadman_timeout_ms: 200

@@ -130,3 +130,33 @@ ros2 topic echo /diagnostics
 
 诊断节点默认在 `kiwi_slam.launch.py` 中启动，在组合建图导航 launch 中默认关闭，可通过
 `start_monitor:=true` 开启。
+
+## 双履带纯激光建图（`激光odom` 分支）
+
+此入口复用 `test` 分支的 C 板 USB CDC 0x3A 电机指令和 0x3B IMU 遥测协议；
+`motor1=左履带`、`motor2=右履带`、`motor3=0`。0x3B 没有可用编码器反馈，
+因此底盘节点只执行 `/cmd_vel`，绝不从命令积分轮式里程计。原始 IMU 仍可供
+诊断，但不参与定位。唯一 `/odometry/filtered` 和 `odom→base_footprint` TF
+由 RF2O 从 M10P `/scan` 估算，SLAM Toolbox 再发布 `map→odom`。
+
+从本工作区根目录安装/构建（已有 `src/rf2o_laser_odometry` 时无需重复导入）：
+
+```bash
+source /opt/ros/humble/setup.bash
+vcs import src < tools/laser_odometry.repos
+git -C src/rf2o_laser_odometry apply ../../tools/laser_odometry.patch
+colcon build --symlink-install --packages-up-to kiwi_slam
+source install/setup.bash
+ros2 launch kiwi_slam tracked_laser_mapping.launch.py
+```
+
+RF2O 补丁修正无外部初始位姿时的零四元数，以及启动时静态雷达 TF 尚未可用的
+初始化问题。本地依赖已经导入并应用补丁；重复使用现有目录时不要再次执行
+`vcs import` 或 `git apply`。纯激光配置没有 EKF/INS，也不等待 IMU 标定，
+建图门控只在启动时确认静止和扫描一致；一旦打开不再反复关闭。
+
+`tracked_laser.yaml` 中的左右履带映射、中心距 0.50 m、速度换算 21.2、
+雷达前移 0.24 m 沿用 `test` 分支的已确认底盘。若实际安装或电机方向改变，
+必须先复测并修改这些值，再进行自动运动。可用 `start_base:=false` 对录包
+单独验证激光建图。RF2O 只能在连续有效扫描时更新位姿；激光断流时 TF 会
+变旧，纯激光方案无法凭空续推。这与“反复暂停”中的 IMU/EKF 门控问题不同。

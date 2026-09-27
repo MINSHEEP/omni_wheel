@@ -133,3 +133,77 @@ def validate_base_parameters(path: str | Path) -> Path:
             raise RuntimeContractError(f"{node_name}.{parameter_name} 必须是有限正数。")
 
     return parameter_path
+
+
+def validate_tracked_laser_parameters(
+    base_path: str | Path,
+    lidar_path: str | Path,
+    rf2o_path: str | Path,
+    gate_path: str | Path,
+    slam_path: str | Path,
+) -> None:
+    """启动前核对双履带、M10P、RF2O 和 SLAM 的单一里程计契约。"""
+    def load(path: str | Path) -> dict:
+        parameter_path = Path(path).expanduser().resolve()
+        try:
+            data = yaml.safe_load(parameter_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, yaml.YAMLError) as exc:
+            raise RuntimeContractError(f"无法读取参数 `{parameter_path}`：{exc}") from exc
+        if not isinstance(data, dict):
+            raise RuntimeContractError(f"参数 `{parameter_path}` 必须是节点映射。")
+        return data
+
+    base_data = load(base_path)
+    base = _require_parameters(
+        base_data, "tracked_base_node",
+        ("track_separation_m", "command_per_m_s", "max_motor_command",
+         "hardware_calibrated", "enable_motion", "cmd_vel_timeout_s"),
+    )
+    _require_parameters(base_data, "tracked_robot_model", ("lidar_xyz", "lidar_rpy"))
+    lidar = _require_parameters(
+        load(lidar_path), "lslidar_driver_node", ("laserscan_topic", "frame_id")
+    )
+    rf2o = _require_parameters(
+        load(rf2o_path), "rf2o_laser_odometry",
+        ("laser_scan_topic", "odom_topic", "publish_tf", "base_frame_id",
+         "odom_frame_id", "init_pose_from_topic", "freq"),
+    )
+    gate = _require_parameters(
+        load(gate_path), "kiwi_mapping_scan_gate",
+        ("input_scan_topic", "output_scan_topic", "odom_topic",
+         "require_imu_ready", "laser_frame", "odom_frame", "base_frame"),
+    )
+    slam = _require_parameters(
+        load(slam_path), "slam_toolbox",
+        ("scan_topic", "odom_frame", "base_frame", "map_frame"),
+    )
+    if base["enable_motion"] is True and base["hardware_calibrated"] is not True:
+        raise RuntimeContractError("履带运动已启用，但硬件标定未确认。")
+    for field in ("track_separation_m", "command_per_m_s", "max_motor_command",
+                  "cmd_vel_timeout_s"):
+        value = base[field]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or \
+                not math.isfinite(float(value)) or value <= 0.0:
+            raise RuntimeContractError(f"tracked_base_node.{field} 必须是有限正数。")
+    if rf2o["laser_scan_topic"] != lidar["laserscan_topic"] or \
+            gate["input_scan_topic"] != lidar["laserscan_topic"]:
+        raise RuntimeContractError("M10P、RF2O 和建图门控的扫描话题不一致。")
+    if rf2o["odom_topic"] != gate["odom_topic"] or \
+            rf2o["odom_topic"] != "/odometry/filtered":
+        raise RuntimeContractError("RF2O 必须是 /odometry/filtered 的唯一来源。")
+    if rf2o["publish_tf"] is not True or rf2o["init_pose_from_topic"] != "":
+        raise RuntimeContractError("RF2O 必须发布 odom TF，并从原点自行初始化。")
+    frequency = rf2o["freq"]
+    if isinstance(frequency, bool) or not isinstance(frequency, (int, float)) or \
+            not math.isfinite(float(frequency)) or frequency <= 0.0:
+        raise RuntimeContractError("RF2O 频率必须是有限正数。")
+    if gate["require_imu_ready"] is not False:
+        raise RuntimeContractError("纯激光建图不能等待 IMU 标定。")
+    if gate["output_scan_topic"] != slam["scan_topic"] or \
+            gate["laser_frame"] != lidar["frame_id"]:
+        raise RuntimeContractError("SLAM 扫描话题或雷达坐标系不一致。")
+    if rf2o["odom_frame_id"] != gate["odom_frame"] or \
+            rf2o["odom_frame_id"] != slam["odom_frame"] or \
+            rf2o["base_frame_id"] != gate["base_frame"] or \
+            rf2o["base_frame_id"] != slam["base_frame"]:
+        raise RuntimeContractError("RF2O、建图门控和 SLAM 的 odom/base 坐标系不一致。")

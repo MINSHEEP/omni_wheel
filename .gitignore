@@ -3,6 +3,9 @@
 /install/
 /log/
 
+# 由 tools/laser_odometry.repos 导入的独立上游仓库；补丁保存在 tools/。
+/src/rf2o_laser_odometry/
+
 # Python 与测试缓存
 __pycache__/
 *.py[cod]
