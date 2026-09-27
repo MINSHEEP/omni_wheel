@@ -61,13 +61,15 @@ ros2 run kiwi_web kiwi_web_server --host 0.0.0.0 --port 8080 \
 
 启动服务时不启动硬件。点击“开始建图”“加载此地图”或“启动遥控模式”才启动所需 ROS 节点，
 默认关闭 RViz。模式切换先归零速度、取消 action、退出本服务拥有的进程组，再启动新模式。
+从建图切换到导航前先检查地图和活动底盘的导航参数；检查失败时保留当前建图进程。
 不要同时用原来的导航 launch 或命令行键盘控制同一机器人；检测到旧节点时网页会拒绝重复启动。
-底盘、EKF、M10P、SLAM 与 Nav2 读取 `kiwi_platform/config/active_platform.yaml` 所选档案。切换活动底盘后要重启 Web 服务；履带横移上限为零；目前只有两档直线初测，普通 Web 遥控和导航仍被关锁拒绝。
+底盘、EKF、M10P、SLAM 与 Nav2 读取 `kiwi_platform/config/active_platform.yaml` 所选档案。切换活动底盘后要重启 Web 服务；履带横移上限为零，用户确认的速度换算值 `21.2` 已启用正常运动。Web 遥控和导航仍分别受实时传感器就绪、地图与参数链检查约束。
+页面从服务端读取活动底盘类型和速度能力：履带显示履带名称、IMU 数据状态并禁用 A/D 横移，Kiwi 保留全向遥控。服务端速度仲裁也会拒绝履带横移指令。
 
 第一次建图流程：
 
 1. 打开“建图”，点击“开始建图”。底盘保持静止，等待 IMU 标定与稳定扫描门控就绪。
-2. 完成运动标定后开启遥控，在现场确认空间后按住 W/S/Q/E 移动；Kiwi 还支持 A/D 横移。松开即停止。当前未解锁的履带可用现场遥控器；传感器核验通过后，也可停止 Web 并用临时键盘模式手动建图。Web 遥控仍保持未就绪。
+2. 确认场地安全和传感器就绪后，开启遥控并按住 W/S/Q/E 移动；Kiwi 还支持 A/D 横移。松开即停止。履带首次通过 Web 运动时观察低速起步、反向和转向。
 3. 完成后松开控制并停车，填写新地图名并保存。保存不会覆盖已有同名地图。
 4. 需要修图时打开“修图”，选择地图，点击“打开修图”，编辑后“覆盖保存”。
 5. 在“导航”加载地图，选择“设置初始点”，拖拽箭头指定真实位置和朝向。
@@ -196,6 +198,9 @@ python3 src/kiwi_web/test/browser_fixture.py
 npm install --prefix /tmp/kiwi-web-browser playwright
 NODE_PATH=/tmp/kiwi-web-browser/node_modules node src/kiwi_web/test/browser_e2e.cjs
 ```
+
+履带页面可用 `KIWI_BROWSER_CHASSIS=tracked_pwm python3 src/kiwi_web/test/browser_fixture.py`
+单独预览，端口为 `8083`、ROS 域为 `222`，同样不连接硬件。
 
 测试使用本机 `/usr/bin/google-chrome`，可通过 `CHROME` 指定其他 Chromium 可执行文件。
 截图默认保存到 `/tmp/kiwi-web-screenshots`，`KIWI_SCREENSHOTS` 可覆盖。

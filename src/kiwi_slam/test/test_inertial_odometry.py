@@ -224,9 +224,8 @@ def test_large_laser_covariance_is_preserved_while_additional_inertial_error_is_
     assert np.allclose(core.anchor_position_covariance, initial[:2, :2])
 
 
-def test_acceleration_shock_invalid_covariance_and_backwards_clock_cannot_output_pose():
-    for acceleration, covariance, stamp in [([2., 0.], ACCEL_COV, 10.42),
-                                             ([0., 0.], -ACCEL_COV, 10.42),
+def test_invalid_covariance_and_backwards_clock_cannot_output_pose():
+    for acceleration, covariance, stamp in [([0., 0.], -ACCEL_COV, 10.42),
                                              ([0., 0.], ACCEL_COV, 8.)]:
         core = primed()
         assert not core.push_imu(stamp, acceleration, 0., covariance, .001)
@@ -241,8 +240,12 @@ def test_acceleration_shock_invalid_covariance_and_backwards_clock_cannot_output
 def test_motion_limit_detail_reports_actual_sample_and_preserves_rejection(acceleration, rate, trigger):
     core = primed(config=InertialConfig(max_yaw_rate_rad_s=1.8))
     assert not push(core, 10.42, acceleration, rate)
-    assert core.reason == 'imu_motion_outside_validated_limits'
-    assert core.estimate(10.42) is None
+    if 'yaw_rate' in trigger:
+        assert core.reason == 'imu_motion_outside_validated_limits'
+        assert core.estimate(10.42) is None
+    else:
+        assert core.reason == 'imu_acceleration_outlier_pending'
+        assert core.estimate(10.42).valid
     detail = core.last_imu_rejection_detail
     assert detail == {
         'stamp': 10.42, 'ax_m_s2': acceleration[0], 'ay_m_s2': acceleration[1],
@@ -250,10 +253,40 @@ def test_motion_limit_detail_reports_actual_sample_and_preserves_rejection(accel
         'max_acceleration_m_s2': 1.5, 'wz_rad_s': rate,
         'max_yaw_rate_rad_s': 1.8, 'trigger': trigger,
     }
-    # 正常样本不能沿用上次拒绝的诊断，也不能凭一帧恢复丢失的锚点。
-    assert not push(core, 10.44)
+    # 正常样本不能沿用上次拒绝的诊断；单帧加速度毛刺可短窗插值续接。
+    recovered = push(core, 10.44)
     assert core.last_imu_rejection_detail is None
+    if 'yaw_rate' in trigger:
+        assert not recovered and core.estimate(10.44) is None
+    else:
+        assert recovered and core.estimate(10.44).valid
+
+
+def test_one_acceleration_spike_keeps_anchor_and_inflates_gap_uncertainty():
+    core = primed()
+    old_anchor = core.anchor_stamp
+    old_covariance = core.estimate(10.4).covariance.copy()
+    assert not push(core, 10.42, (2., 0.))
+    assert core.anchor_stamp == old_anchor
+    assert core.stamp == pytest.approx(10.4)
+    assert push(core, 10.44)
+    estimate = core.estimate(10.44)
+    assert estimate.valid and estimate.anchor_stamp == old_anchor
+    assert estimate.stamp == pytest.approx(10.44)
+    assert estimate.covariance[3, 3] > old_covariance[3, 3] + (1.5*.04)**2
+
+
+def test_two_acceleration_spikes_or_expired_gap_require_new_anchor():
+    core = primed()
+    assert not push(core, 10.42, (2., 0.))
+    assert not push(core, 10.44, (2., 0.))
     assert core.estimate(10.44) is None
+    assert core.reason == 'imu_motion_outside_validated_limits'
+    core = primed()
+    assert not push(core, 10.42, (2., 0.))
+    assert not push(core, 10.61)
+    assert core.estimate(10.61) is None
+    assert core.reason == 'imu_gap_requires_new_anchor'
 
 
 def test_motion_limit_boundary_remains_accepted_without_rejection_detail():

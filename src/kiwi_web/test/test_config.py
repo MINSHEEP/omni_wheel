@@ -91,7 +91,7 @@ def test_web_limits_follow_tracked_profile_and_disable_lateral(tmp_path):
     assert config["feedback_topic"] == "/chassis/odom/laser"
     assert config["imu_topic"] == "/chassis/imu/data_raw"
     assert config["imu_frame_id"] == "chassis_imu_link"
-    assert config["motion_enabled"] is False
+    assert config["motion_enabled"] is True
     assert manual[1] == navigation[1] == 0.0
     assert manual[0] > 0 and manual[2] > 0
 

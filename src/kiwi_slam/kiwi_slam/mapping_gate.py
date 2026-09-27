@@ -329,6 +329,7 @@ class MappingScanGateNode(Node):
         )
         self.require_laser_quality = bool(self.declare_parameter("require_laser_quality", False).value)
         self.require_estimation_ready = bool(self.declare_parameter("require_estimation_ready", False).value)
+        self.allow_laser_only_state = bool(self.declare_parameter("allow_laser_only_state", False).value)
         if self.require_estimation_ready and not self.require_laser_quality:
             raise ValueError("estimation readiness requires laser quality gating")
         self.require_imu_samples = bool(
@@ -482,7 +483,8 @@ class MappingScanGateNode(Node):
         imu = self.imu_ready_time is not None and now-self.imu_ready_time < .5 and self.gate.imu_ready
         estimation = (not self.require_estimation_ready or
                       (self.estimation_ready and self.estimation_time is not None and now-self.estimation_time < .3
-                       and self.estimation_state == 'VALID' and self.estimation_state_time is not None
+                       and self.estimation_state in (('VALID', 'LASER') if self.allow_laser_only_state
+                                                     else ('VALID',)) and self.estimation_state_time is not None
                        and now-self.estimation_state_time < .3))
         if not healthy or not imu or not estimation or not self.gate.opened or not self.gate._sources_ready(now):
             self.ready_pub.publish(Bool(data=False))
@@ -491,7 +493,8 @@ class MappingScanGateNode(Node):
     def _on_estimation_state(self, message):
         self.estimation_state = message.data
         self.estimation_state_time = time.monotonic()
-        if self.estimation_state != 'VALID':
+        if self.estimation_state != 'VALID' and not (
+                self.allow_laser_only_state and self.estimation_state == 'LASER'):
             self.ready_pub.publish(Bool(data=False))
 
     def _on_estimation(self, message):

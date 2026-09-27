@@ -5,6 +5,8 @@ from pathlib import Path
 import threading
 
 from aiohttp import ClientSession, web
+import pytest
+import yaml
 
 from kiwi_web.control import CommandGate
 from kiwi_web.maps import MapStore
@@ -140,6 +142,73 @@ def test_http_map_revision_and_websocket_ownership(tmp_path):
                 assert gate.estop
         finally:
             await runner.cleanup()
+
+    asyncio.run(exercise())
+
+
+def test_public_config_exposes_tracked_motion_capability(tmp_path):
+    async def exercise():
+        gate = CommandGate(linear=0.3, lateral=0.0, angular=0.6)
+        console = Console(
+            dict(port=8080, active_chassis="tracked_pwm", motion_enabled=False), Bridge(), gate,
+            MapStore(tmp_path), Supervisor(), Path(__file__).resolve().parents[1] / "web",
+        )
+        runner = web.AppRunner(console.app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        base = "http://127.0.0.1:" + str(site._server.sockets[0].getsockname()[1])
+        try:
+            async with ClientSession() as client:
+                config = await (await client.get(base + "/api/config")).json()
+                assert config["chassis"] == "tracked_pwm"
+                assert config["limits"][1] == 0.0
+                assert config["motion_enabled"] is False
+                status = await (await client.get(base + "/api/status")).json()
+                assert status["chassis"] == "tracked_pwm"
+                assert status["motion_enabled"] is False
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(exercise())
+
+
+def test_locked_navigation_keeps_mapping_running(tmp_path):
+    class RunningSupervisor(Supervisor):
+        def __init__(self):
+            self.mode = "mapping"
+            self.map_name = ""
+            self.stop_calls = 0
+
+        async def stop(self):
+            self.stop_calls += 1
+
+    store = MapStore(tmp_path)
+    store.save_grid(
+        "lab", dict(width=2, height=2, resolution=0.1, origin=[0, 0, 0]), [0] * 4
+    )
+    selector = tmp_path / "active.yaml"
+    selector.write_text("chassis: tracked_pwm\n")
+    from kiwi_platform import load_profile
+    base = load_profile(str(selector)).data("base")
+    motor = base["tracked_base_node"]["ros__parameters"]
+    motor.update(hardware_calibrated=False, enable_motion=False,
+                 keyboard_trial_enabled=True)
+    locked = tmp_path / "locked.yaml"
+    locked.write_text(yaml.safe_dump(base))
+    supervisor = RunningSupervisor()
+    console = Console(
+        dict(port=8080, platform_file=str(selector), base_params_file=str(locked)),
+        Bridge(), CommandGate(), store,
+        supervisor, Path(__file__).resolve().parents[1] / "web",
+    )
+
+    async def exercise():
+        with pytest.raises(ValueError, match="履带导航须关闭开环试车"):
+            await console.change_mode("navigation", "lab")
+        assert supervisor.mode == "mapping"
+        assert supervisor.stop_calls == 0
+        assert not console.transitioning
 
     asyncio.run(exercise())
 

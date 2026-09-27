@@ -18,6 +18,9 @@ lslidar_driver_node:
     publish_scan: true
     # 不使用雷达 GPS/授时，时间戳取驱动接收时刻的 ROS 时间。
     use_time_service: false
+    # M10P 驱动依据相邻 0° 分圈点，给 /scan 的 -180° 首槽、同圈点云
+    # 和 time_topic 使用约半圈时刻；异常扫圈不发布 LaserScan。
+    # 角度排序不等于物理采样顺序，time_increment=0 表示不提供逐束授时。
     use_first_point_time: false
     use_high_precision: false
     enable_noise_filter: false

@@ -1,4 +1,4 @@
-"""履带融合输出保护：独立惯导短时续接、可信观测恢复，并独占发布 odom TF。"""
+"""履带融合输出保护：有界激光/惯导续接、可信观测恢复，并独占发布 odom TF。"""
 from collections import deque
 from copy import deepcopy
 import math
@@ -206,15 +206,20 @@ class EstimationGuard(Node):
         self.max_source_age = float(param('max_measurement_age_s', .35))
         self.recovery_duration = float(param('recovery_duration_s', .3))
         self.max_error = float(param('max_position_error_m', .25))
+        self.max_handoff_error = float(param('max_handoff_position_error_m', .5))
         self.max_yaw_error = float(param('max_yaw_error_rad', .15))
         if not 0 < self.max_age <= .5 or not .1 <= self.recovery_duration <= 2:
             raise ValueError('invalid estimation time bounds')
-        if not 0 < self.max_error <= .5 or not 0 < self.max_yaw_error <= .3:
+        if (not 0 < self.max_error <= .5 or
+                not self.max_error <= self.max_handoff_error <= .75 or
+                not 0 < self.max_yaw_error <= .3):
             raise ValueError('invalid estimation consistency bounds')
         if not self.max_age <= self.max_source_age <= 1.:
             raise ValueError('invalid measurement age bound')
         self.inertial_enabled = bool(param('inertial_enabled', False))
         self.max_coast = float(param('max_inertial_duration_s', 2.0))
+        self.max_laser_fallback = float(param('max_laser_fallback_s', 2.0))
+        self.max_prediction_hold = float(param('max_prediction_hold_s', .45))
         self.max_inertial_xy = float(param('max_inertial_xy_variance', 4.0))
         self.max_inertial_yaw = float(param('max_inertial_yaw_variance', .15))
         self.max_inertial_growth = float(param('max_inertial_xy_growth_variance', .09))
@@ -223,8 +228,9 @@ class EstimationGuard(Node):
             raise ValueError('invalid inertial incremental uncertainty bound')
         self.trusted_xy_variance = 0.
         self.trusted_yaw_variance = 0.
-        if not 0 < self.max_coast <= 5. or not all(math.isfinite(v) and v > 0
-                for v in (self.max_inertial_xy,self.max_inertial_yaw,self.max_inertial_yaw_growth)):
+        if (not 0 < self.max_coast <= 5. or not 0 < self.max_laser_fallback <= 5.
+                or not .1 <= self.max_prediction_hold <= .5 or not all(math.isfinite(v) and v > 0
+                for v in (self.max_inertial_xy,self.max_inertial_yaw,self.max_inertial_yaw_growth))):
             raise ValueError('invalid bounded inertial fallback limits')
         self.health_reason = 'waiting_sensors'
         self.observation_reason = 'waiting_sensors'
@@ -279,6 +285,11 @@ class EstimationGuard(Node):
         self.valid = False
         self.last_state = None
         self.inertial_output = False
+        self.laser_output = False
+        self.laser_since = None
+        self.laser_fallback_exhausted = False
+        self.prediction_anchor = None
+        self.fallback_reason = None
         self.filtered_history, self.laser_history = deque(maxlen=120), deque(maxlen=50)
         self.gyro_history = deque(maxlen=200)
         self.last_source_message = {}
@@ -307,6 +318,8 @@ class EstimationGuard(Node):
             self.laser,self.laser_at = message,time.monotonic()
             if not self.laser_history or stamp_seconds(message) > stamp_seconds(self.laser_history[-1]):
                 self.laser_history.append(message)
+            if self.laser_output and self.laser_usable():
+                self.forward_laser()
 
     def on_gyro(self,message):
         if message.header.frame_id == self.base_frame and math.isfinite(message.angular_velocity.z):
@@ -322,9 +335,9 @@ class EstimationGuard(Node):
             return 'missing_message'
         age = self.get_clock().now().nanoseconds*1e-9-stamp_seconds(message)
         receipt_age=time.monotonic()-received
-        if not -.05 <= age <= self.max_source_age or receipt_age > self.max_age:
+        if not -.05 <= age <= self.max_source_age or receipt_age > self.max_source_age:
             return (f'header_age={age:.6f}s (allowed=-0.05..{self.max_source_age:.3f}), '
-                    f'receipt_age={receipt_age:.6f}s (limit={self.max_age:.3f})')
+                    f'receipt_age={receipt_age:.6f}s (limit={self.max_source_age:.3f})')
         return None
 
     def fresh(self,message,received):
@@ -335,8 +348,131 @@ class EstimationGuard(Node):
         if self.pause_reason is None:
             self.pause_reason=reason
         self.health_reason=self.pause_reason
-        self.valid=self.inertial_output=False
+        self.valid=self.inertial_output=self.laser_output=False
+        self.laser_since=None
         self.mode='PAUSING'
+
+    def prediction_usable(self):
+        """只允许从进入故障时的可信公开位姿预测，不能用自身输出续期。"""
+        if not self.ever_valid or self.last_output is None or self.last_forwarded is None:
+            return False
+        flag = self.flags.get('imu')
+        if (flag is None or not flag[0] or time.monotonic()-flag[1] >= .5
+                or not self.fresh(self.gyro, self.gyro_at)):
+            return False
+        if self.prediction_anchor is None and time.monotonic()-self.last_forwarded[1] > self.max_age:
+            return False
+        anchor = self.prediction_anchor or self.last_output
+        target = min(self.get_clock().now().nanoseconds*1e-9, stamp_seconds(self.gyro))
+        return 0 <= target-stamp_seconds(anchor) <= self.max_prediction_hold
+
+    def use_prediction(self, reason):
+        if not self.prediction_usable():
+            return False
+        if self.prediction_anchor is None:
+            self.prediction_anchor = deepcopy(self.last_output)
+        self.mode = 'PREDICTED'
+        self.inertial_output = self.laser_output = False
+        self.fallback_reason = reason
+        self.filtered_reject_reason = reason
+        candidate = predict_odometry(
+            self.prediction_anchor,
+            min(self.get_clock().now().nanoseconds*1e-9, stamp_seconds(self.gyro)),
+            self.gyro_history, self.max_prediction_hold,
+            self.prediction_acceleration_bound, self.prediction_yaw_acceleration_bound)
+        if candidate is None:
+            return False
+        if stamp_seconds(candidate) > stamp_seconds(self.last_output):
+            if not self.forward(candidate, 'predicted'):
+                return False
+        self.valid = (self.last_forwarded is not None and
+                      time.monotonic()-self.last_forwarded[1] <= self.max_age)
+        return self.valid
+
+    def laser_usable(self):
+        """激光质量独立确认后，允许 EKF 异常时以单源里程计短时续接。"""
+        flag = self.flags.get('laser')
+        return (self.ever_valid and not self.laser_fallback_exhausted
+                and flag is not None and flag[0]
+                and time.monotonic()-flag[1] < .5
+                and self.fresh(self.laser, self.laser_at)
+                and candidate_valid(self.laser))
+
+    def predicted_laser(self):
+        """用新鲜的质量合格激光观测短时传播到当前 TF 时刻。"""
+        if not self.laser_usable():
+            return None
+        target = self.get_clock().now().nanoseconds*1e-9
+        laser_stamp = stamp_seconds(self.laser)
+        if self.fresh(self.gyro, self.gyro_at) and stamp_seconds(self.gyro) >= laser_stamp:
+            target = min(target, stamp_seconds(self.gyro))
+        return predict_odometry(self.laser, target, self.gyro_history, self.max_source_age,
+                                self.prediction_acceleration_bound,
+                                self.prediction_yaw_acceleration_bound)
+
+    def forward_laser(self):
+        candidate = self.predicted_laser()
+        if candidate is None:
+            return False
+        issue = candidate_issue(candidate) or step_issue(
+            self.last_source_message.get('laser'), candidate, self.max_source_age)
+        if issue is not None:
+            self.filtered_reject_reason = 'laser_output_candidate_invalid: '+issue
+            return False
+        return self.forward(candidate, 'laser')
+
+    def use_laser(self, reason):
+        if not self.laser_usable():
+            self.pause(reason)
+            return False
+        self.prediction_anchor = None
+        if self.laser_since is None:
+            self.laser_since = time.monotonic()
+        self.mode = 'LASER'
+        self.laser_output = True
+        self.valid = (self.last_forwarded is not None and
+                      time.monotonic()-self.last_forwarded[1] <= self.max_age)
+        self.inertial_output = False
+        self.fallback_reason = reason
+        self.filtered_reject_reason = reason
+        self.filtered_history.clear()
+        self.recovery_since = None
+        self.handoff_started = None
+        if self.forward_laser():
+            self.valid = True
+        if self.mode == 'PAUSING':
+            return False
+        return True
+
+    def use_inertial(self, reason):
+        if not self.inertial_usable():
+            return False
+        self.prediction_anchor = None
+        self.mode = 'INERTIAL'
+        self.inertial_output = True
+        self.laser_output = False
+        self.laser_since = None
+        self.fallback_reason = reason
+        self.filtered_reject_reason = reason
+        self.filtered_history.clear()
+        self.recovery_since = None
+        self.handoff_started = None
+        self.valid = (self.last_forwarded is not None and
+                      time.monotonic()-self.last_forwarded[1] <= self.max_age)
+        if self.forward(self.inertial, 'inertial'):
+            self.valid = True
+        return self.mode != 'PAUSING'
+
+    def isolate_filtered_candidate(self, reason):
+        """隔离异常 EKF 帧，优先选用仍独立有效的观测续接。"""
+        if self.laser_usable():
+            return self.use_laser(reason)
+        if self.use_inertial(reason):
+            return True
+        if self.use_prediction(reason):
+            return True
+        self.pause(reason + '; fallback_unavailable')
+        return False
 
     def healthy(self):
         now = time.monotonic()
@@ -402,11 +538,12 @@ class EstimationGuard(Node):
                 if baseline_yaw <= self.max_inertial_yaw else baseline_yaw+self.max_inertial_yaw_growth))
 
     def publish_state(self):
-        state = 'INERTIAL' if self.inertial_output and self.valid else self.mode
+        state = ('LASER' if self.laser_output and self.valid else
+                 'INERTIAL' if self.inertial_output and self.valid else self.mode)
         self.valid_pub.publish(Bool(data=self.valid))
         self.state_pub.publish(String(data=state))
         if state != self.last_state:
-            detail=self.health_reason
+            detail=self.fallback_reason if state in ('LASER', 'PREDICTED') else self.health_reason
             if self.pause_reason and self.observation_reason != self.pause_reason:
                 detail+='; current_observations='+self.observation_reason
             self.get_logger().info('Estimation state: '+state+' ('+detail+')')
@@ -438,7 +575,11 @@ class EstimationGuard(Node):
         self.last_output=self.output_source=None
         self.output_offset=[0.,0.,0.]
         self.inconsistent_since=self.handoff_started=None
-        self.valid=self.inertial_output=False
+        self.valid=self.inertial_output=self.laser_output=False
+        self.laser_since=None
+        self.laser_fallback_exhausted=False
+        self.prediction_anchor=None
+        self.fallback_reason=None
         self.pause_reason=None
         self.health_reason='ekf_reset_confirmed_waiting_new_epoch'
         self.filtered_reject_reason='waiting_post_reset_output'
@@ -482,24 +623,42 @@ class EstimationGuard(Node):
             self.trusted_xy_variance = float(np.linalg.eigvalsh(covariance[:2,:2]).max())
             self.trusted_yaw_variance = float(covariance[5,5])
         can_coast = self.inertial_usable()
+        can_laser = self.laser_usable()
         if not healthy:
             self.recovery_since = None
             self.handoff_started = None
             self.inconsistent_since = None
-            if can_coast and self.mode not in ('PAUSING', 'PAUSED'):
+            if can_laser and self.mode not in ('PAUSING', 'PAUSED'):
+                self.prediction_anchor = None
+                if self.laser_since is None:
+                    self.laser_since = now
+                self.mode = 'LASER'
+                self.laser_output = True
+                self.valid = (self.last_forwarded is not None and
+                              now-self.last_forwarded[1] <= self.max_age)
+                self.inertial_output = False
+                self.fallback_reason = self.observation_reason
+            elif can_coast and self.mode not in ('PAUSING', 'PAUSED'):
+                self.prediction_anchor = None
                 # 保留 EKF 运行；公共输出选独立 INS，不把同源积分反灌融合。
                 self.inertial_output = True
+                self.laser_output = False
+                self.laser_since = None
                 self.mode = 'INERTIAL' if self.future is None else self.mode
                 self.valid = True
+            elif self.mode not in ('PAUSING', 'PAUSED') and self.use_prediction(self.observation_reason):
+                pass
             else:
-                self.valid = self.inertial_output = False
+                self.valid = self.inertial_output = self.laser_output = False
+                reason = ('prediction_window_or_gyro_expired' if self.mode == 'PREDICTED'
+                          else self.observation_reason+'; inertial_unavailable_or_expired')
                 if self.future is None:
                     if self.mode != 'PAUSED':
-                        self.pause(self.observation_reason+'; inertial_unavailable_or_expired')
+                        self.pause(reason)
                 if self.pause_reason is None:
-                    self.pause_reason=self.observation_reason+'; inertial_unavailable_or_expired'
+                    self.pause_reason=reason
                 self.health_reason=self.pause_reason
-        elif self.mode in ('PAUSED', 'INERTIAL'):
+        elif self.mode in ('PAUSED', 'INERTIAL', 'LASER', 'PREDICTED'):
             if self.recovery_since is None:
                 self.recovery_since = now
             if (self.mode == 'PAUSED' and now-self.recovery_since >= self.recovery_duration
@@ -521,18 +680,41 @@ class EstimationGuard(Node):
                     self.forward(self.inertial, 'inertial')
             else:
                 self.valid = self.inertial_output = False
+        if self.laser_output:
+            if self.laser_since is not None and now-self.laser_since > self.max_laser_fallback:
+                reason='laser_only_duration_exceeded: '+str(self.fallback_reason)
+                self.laser_fallback_exhausted = True
+                if not self.use_inertial(reason):
+                    self.pause(reason)
+            elif can_laser:
+                if self.forward_laser():
+                    self.valid = True
+            else:
+                self.valid = self.laser_output = False
+                self.laser_since = None
+        if self.mode == 'PREDICTED':
+            if self.prediction_usable():
+                self.use_prediction(self.fallback_reason or self.observation_reason)
+            elif not self.use_inertial('prediction_window_or_gyro_expired'):
+                self.pause('prediction_window_or_gyro_expired')
         if self.valid and (self.last_forwarded is None or now-self.last_forwarded[1] > self.max_age):
             self.valid = False
             if self.future is None:
                 age=math.inf if self.last_forwarded is None else now-self.last_forwarded[1]
-                self.pause(f'output_stale: age={age:.3f}s, limit={self.max_age:.3f}s; '
-                           +self.filtered_reject_reason)
+                reason=(f'output_stale: age={age:.3f}s, limit={self.max_age:.3f}s; '
+                        +self.filtered_reject_reason)
+                if self.mode in ('VALID', 'WARMING'):
+                    self.isolate_filtered_candidate(reason)
+                elif self.mode == 'LASER':
+                    self.use_inertial(reason)
+                if not self.valid:
+                    self.pause(reason)
         self.publish_state()
 
     def on_filtered(self, message):
         # 暂停/服务处理中来的 EKF 输出可能属于旧时期，不能改变恢复状态机，
         # 也不能先写进连续性历史。只有启用后的 WARMING 才开始核验新候选。
-        if self.mode not in ('WARMING', 'VALID', 'INERTIAL'):
+        if self.mode not in ('WARMING', 'VALID', 'INERTIAL', 'LASER', 'PREDICTED'):
             return
         now = time.monotonic()
         if self.filtered_epoch_stamp is not None and stamp_seconds(message) <= self.filtered_epoch_stamp:
@@ -540,7 +722,8 @@ class EstimationGuard(Node):
                                          f'epoch={self.filtered_epoch_stamp:.6f}')
             return
         if message.header.frame_id != self.odom_frame or message.child_frame_id != self.base_frame:
-            self.pause('ekf_frame_mismatch: '+message.header.frame_id+'->'+message.child_frame_id)
+            self.isolate_filtered_candidate(
+                'ekf_frame_mismatch: '+message.header.frame_id+'->'+message.child_frame_id)
             return
         issue=self.freshness_issue(message,now)
         if issue is not None:
@@ -552,7 +735,7 @@ class EstimationGuard(Node):
         issue=candidate_issue(message) or step_issue(
             self.filtered_history[-1] if self.filtered_history else None,message,self.max_source_age)
         if issue is not None:
-            self.pause('ekf_candidate_invalid: '+issue)
+            self.isolate_filtered_candidate('ekf_candidate_invalid: '+issue)
             return
         if not self.filtered_history or stamp_seconds(message) > stamp_seconds(self.filtered_history[-1]):
             self.filtered_history.append(message)
@@ -569,18 +752,22 @@ class EstimationGuard(Node):
             self.filtered_reject_reason='ekf_laser_aligned_innovation_exceeds_bound'
             if self.inconsistent_since is None:
                 self.inconsistent_since = now
-            if now-self.inconsistent_since >= self.recovery_duration:
-                self.get_logger().warning('EKF output persistently inconsistent at aligned timestamps; resetting filter',
+            output_age = (math.inf if self.last_forwarded is None else
+                          now-self.last_forwarded[1])
+            if (now-self.inconsistent_since >= self.recovery_duration or
+                    output_age >= .5*self.max_age):
+                self.get_logger().warning('EKF output inconsistent at aligned timestamps; isolating candidate',
                                           throttle_duration_sec=5.)
-                self.pause(self.filtered_reject_reason)
+                self.isolate_filtered_candidate(self.filtered_reject_reason)
             return
         self.inconsistent_since = None
         if self.mode == 'WARMING' and now-self.enabled_at < self.recovery_duration:
             return
-        if self.mode == 'INERTIAL':
+        if self.mode in ('INERTIAL', 'LASER', 'PREDICTED'):
             if self.recovery_since is None:
                 self.recovery_since = now
-            if now-self.recovery_since < self.recovery_duration:
+            duration = min(.1, self.recovery_duration) if self.mode == 'PREDICTED' else self.recovery_duration
+            if now-self.recovery_since < duration:
                 return
         # 持续 250 ms 合法迟到时，不能先停 INS 等 EKF 的旧时间戳追上。
         # 用实测 gyro / 有界常速度模型补齐到当前采样时刻，并传播误差。
@@ -594,12 +781,34 @@ class EstimationGuard(Node):
             # 已有当前采样时刻的完整预测候选；只让出下一帧发布权，
             # 不再等待延迟的原始 EKF 时间戳追赶数百毫秒。
             self.handoff_started=now
-        if self.forward(candidate, 'filtered'):
+        adopted = False
+        if (self.mode == 'PREDICTED' and self.last_output is not None and
+                abs(stamp_seconds(candidate)-stamp_seconds(self.last_output)) < 1e-8):
+            old = self.last_output.pose.pose.position
+            new = candidate.pose.pose.position
+            offset = [old.x-new.x, old.y-new.y,
+                      math.remainder(yaw(self.last_output)-yaw(candidate), 2*math.pi)]
+            if math.hypot(*offset[:2]) > self.max_handoff_error or abs(offset[2]) > self.max_yaw_error:
+                self.pause(f'handoff_innovation_exceeds_bound: xy={math.hypot(*offset[:2]):.6f}m '
+                           f'(limit={self.max_handoff_error}), yaw={offset[2]:.6f}rad '
+                           f'(limit={self.max_yaw_error})')
+                return
+            # 这一时间戳已发布预测位姿：只建立连续交接偏移，下一帧再发布。
+            self.output_offset = offset
+            self.output_source = 'filtered'
+            self.last_source_message['filtered'] = deepcopy(candidate)
+            adopted = True
+        if adopted or self.forward(candidate, 'filtered'):
             self.mode = 'VALID'
             self.pause_reason=None
             self.health_reason=self.observation_reason
             self.valid = self.ever_valid = True
             self.inertial_output = False
+            self.laser_output = False
+            self.laser_since = None
+            self.laser_fallback_exhausted = False
+            self.prediction_anchor = None
+            self.fallback_reason = None
             self.handoff_started = None
             self.last_trusted_laser_stamp = stamp_seconds(self.laser)
             self.recovery_since = None
@@ -630,9 +839,9 @@ class EstimationGuard(Node):
                     py = old.pose.pose.position.y+dt*(math.sin(old_yaw)*old_v.linear.x+math.cos(old_yaw)*old_v.linear.y)
                     offset = [px-message.pose.pose.position.x, py-message.pose.pose.position.y,
                               math.remainder(old_yaw+dt*old_v.angular.z-angle,2*math.pi)]
-                    if math.hypot(*offset[:2]) > self.max_error or abs(offset[2]) > self.max_yaw_error:
+                    if math.hypot(*offset[:2]) > self.max_handoff_error or abs(offset[2]) > self.max_yaw_error:
                         self.pause(f'handoff_innovation_exceeds_bound: xy={math.hypot(*offset[:2]):.6f}m '
-                                   f'(limit={self.max_error}), yaw={offset[2]:.6f}rad '
+                                   f'(limit={self.max_handoff_error}), yaw={offset[2]:.6f}rad '
                                    f'(limit={self.max_yaw_error})')
                         return False
                     self.output_offset = offset

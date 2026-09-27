@@ -119,6 +119,11 @@ tracked_imu_acceleration:
     rest_acceleration: [-7.8902080586, 0.0172483369, -5.9190847056]
     acceleration_variance: [0.04, 0.04, 0.04]
     imu_lever_xy: [0.08, 0.0]
+    # 单帧平面加速度突刺先隔离并增大方差；连续同向样本会确认真实运动。
+    # 只处理加速度，不更改 gyro_z、原始时间戳或串口断流判断。
+    acceleration_spike_threshold_m_s2: 0.8
+    acceleration_smoothing_time_constant_s: 0.04
+    acceleration_suspect_variance_scale: 25.0
 
 tracked_robot_model:
   ros__parameters:
@@ -144,7 +149,8 @@ kiwi_teleop_keyboard:
     yaw_rad_s: 0.95
     deadman_timeout_ms: 200
 
-# 激光短时失效时由独立 INS 续接公共里程计/TF；惯导超时后才暂停无约束预测。
+# EKF 候选异常时短时改用经质量核验的激光；激光不可用时由独立 INS
+# 有界续接公共里程计/TF。两路观测都失效时停止发布有效定位。
 tracked_estimation_guard:
   ros__parameters:
     input_topic: /chassis/odometry/filtered_unchecked
@@ -160,17 +166,27 @@ tracked_estimation_guard:
     odom_frame: odom
     base_frame: base_footprint
     max_prediction_s: 0.2
+    # 激光质量短暂抖动且独立 INS 不可用时，最后可信位姿仅由新鲜陀螺
+    # 和常速度模型续推 0.45 s；这一状态不允许写地图。
+    max_prediction_hold_s: 0.45
     max_measurement_age_s: 0.35
     recovery_duration_s: 0.3
     # 延迟传播的保守模型误差预算；不是实测加速度标定或执行器指令。
     prediction_acceleration_bound_m_s2: 1.5
     prediction_yaw_acceleration_bound_rad_s2: 2.0
-    max_position_error_m: 0.25
+    # 故障包里激光里程计常见单轴标准差约 0.5 m；0.25 m 绝对阈值
+    # 会把正常滤波差异误当硬故障。这里仍保留保守的 0.35 m 隔离阈值。
+    max_position_error_m: 0.35
+    # 源切换用偏移连续衔接并传播不确定度，不直接跳变 0.5 m。
+    max_handoff_position_error_m: 0.5
     max_yaw_error_rad: 0.15
     inertial_enabled: true
     inertial_topic: /chassis/odom/inertial
     inertial_valid_topic: /chassis/inertial/valid
     max_inertial_duration_s: 2.0
+    # 104124 故障包持续失配最长约 2.6 s；3 s 后若 INS 仍有效则转 INS，
+    # 否则停止有效定位，不无限放行单源建图。
+    max_laser_fallback_s: 3.0
     max_inertial_xy_variance: 4.0
     max_inertial_xy_growth_variance: 0.09
     max_inertial_yaw_growth_variance: 0.05

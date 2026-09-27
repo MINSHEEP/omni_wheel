@@ -92,21 +92,82 @@ reference_acceleration 为短窗口 RF2O vx 差分，仅用于方向交叉检查
 
 
 class AccelerationProcessor:
-    """合并 USB 成批样本；用约 0.1 s 角速度窗口估计角加速度，避免微秒 dt 爆值。"""
-    def __init__(self, calibration, lever=(0.08, 0.0), period=0.02, max_gap=0.2):
+    """合并 USB 成批样本，并在平面加速度通道隔离孤立突刺。"""
+    def __init__(self, calibration, lever=(0.08, 0.0), period=0.02, max_gap=0.2,
+                 spike_threshold=0.8, smoothing_time_constant=0.04,
+                 suspect_variance_scale=25.0):
         self.calibration = calibration
         self.lever = vector(lever, 2, "imu_lever_xy")
         self.period, self.max_gap = period, max_gap
         if not 0 < period < max_gap:
             raise ValueError("输出周期必须大于零且小于最大数据间隔")
+        if (not all(math.isfinite(v) for v in (spike_threshold, smoothing_time_constant,
+                                               suspect_variance_scale)) or
+                spike_threshold <= 0 or smoothing_time_constant <= 0 or
+                suspect_variance_scale < 1):
+            raise ValueError("加速度稳健滤波参数无效")
+        self.spike_threshold = spike_threshold
+        self.smoothing_time_constant = smoothing_time_constant
+        self.suspect_variance_scale = suspect_variance_scale
         self.pending = []
         self.rates = deque()
         self.last = None
+        self.filtered = None
+        self.filtered_at = None
+        self.suspect = None
+        self.suspect_at = None
+        self.suspect_since = None
+        self.last_covariance_scale = 1.0
 
     def reset(self):
         self.pending.clear()
         self.rates.clear()
         self.last = None
+        self.filtered = None
+        self.filtered_at = None
+        self.suspect = None
+        self.suspect_at = None
+        self.suspect_since = None
+        self.last_covariance_scale = 1.0
+
+    def _smooth(self, stamp, corrected):
+        if self.filtered is None:
+            self.filtered = corrected.copy()
+            self.filtered_at = stamp
+            self.last_covariance_scale = 1.0
+            return self.filtered.copy()
+
+        innovation = np.linalg.norm(corrected[:2] - self.filtered[:2])
+        overdue = (self.suspect_since is not None and
+                   stamp - self.suspect_since >= 0.12)
+        if innovation > self.spike_threshold:
+            # 首帧大跳变可能是串口突刺，也可能是真实启停；保留上次估计但
+            # 显著提高方差。连续相近的样本或持续 0.12 s 的变化会被接受。
+            confirmed = (self.suspect is not None and
+                         stamp - self.suspect_at <= max(0.1, 2*self.period) and
+                         np.linalg.norm(corrected[:2] - self.suspect[:2]) <=
+                         self.spike_threshold * 0.5)
+            if not confirmed and not overdue:
+                if self.suspect_since is None:
+                    self.suspect_since = stamp
+                self.suspect, self.suspect_at = corrected.copy(), stamp
+                self.last_covariance_scale = self.suspect_variance_scale
+                return self.filtered.copy()
+        else:
+            self.suspect = self.suspect_at = self.suspect_since = None
+
+        dt = stamp - self.filtered_at
+        weight = -math.expm1(-dt / self.smoothing_time_constant)
+        self.filtered[:2] += weight * (corrected[:2] - self.filtered[:2])
+        self.filtered[2] = corrected[2]
+        self.filtered_at = stamp
+        self.suspect = self.suspect_at = self.suspect_since = None
+        # 确认后的第一帧仍有滤波滞后，不按稳态小噪声看待。
+        if innovation > self.spike_threshold:
+            self.last_covariance_scale = self.suspect_variance_scale if overdue else 4.0
+        else:
+            self.last_covariance_scale = 1.0
+        return self.filtered.copy()
 
     def push(self, timestamp, raw, wz):
         if not math.isfinite(timestamp) or not math.isfinite(wz):
@@ -124,7 +185,8 @@ class AccelerationProcessor:
         if timestamp - self.pending[0][0] < self.period:
             return None
         stamp = self.pending[-1][0]
-        acceleration = np.mean([row[1] for row in self.pending], axis=0)
+        # 三帧以上取中位数可消除批内孤立突刺；两帧则由跨批确认逻辑处理。
+        acceleration = np.median([row[1] for row in self.pending], axis=0)
         rate = float(np.mean([row[2] for row in self.pending]))
         self.pending.clear()
         self.rates.append((stamp, rate))
@@ -136,7 +198,7 @@ class AccelerationProcessor:
             return None
         alpha = (rate - self.rates[0][1]) / span
         corrected = self.calibration.correct(acceleration, rate, alpha, self.lever)
-        return stamp, corrected
+        return stamp, self._smooth(stamp, corrected)
 
 
 def main(args=None):
@@ -186,7 +248,11 @@ def main(args=None):
             if not math.isfinite(self.gyro_variance_floor) or self.gyro_variance_floor <= 0:
                 raise ValueError("invalid gyro variance floor")
             self.timer = self.create_timer(.2, self.publish_ready)
-            self.processor = AccelerationProcessor(calibration, param("imu_lever_xy", [0.08, 0.0]))
+            self.processor = AccelerationProcessor(
+                calibration, param("imu_lever_xy", [0.08, 0.0]),
+                spike_threshold=float(param("acceleration_spike_threshold_m_s2", 0.8)),
+                smoothing_time_constant=float(param("acceleration_smoothing_time_constant_s", 0.04)),
+                suspect_variance_scale=float(param("acceleration_suspect_variance_scale", 25.0)))
             self.pub = self.create_publisher(Imu, output, qos_profile_sensor_data)
             self.sub = self.create_subscription(Imu, source, self.callback, qos_profile_sensor_data)
             self.get_logger().info(f"Planar acceleration enabled={self.enabled}; gyro_z sign/scale preserved, startup residual correction enabled; {source} -> {output}")
@@ -262,7 +328,8 @@ def main(args=None):
             output.orientation_covariance[0] = -1.0
             output.angular_velocity_covariance[0] = -1.0
             output.linear_acceleration.x, output.linear_acceleration.y, output.linear_acceleration.z = map(float, acceleration)
-            output.linear_acceleration_covariance = self.acc_cov.reshape(-1).tolist()
+            output.linear_acceleration_covariance = (
+                self.acc_cov * self.processor.last_covariance_scale).reshape(-1).tolist()
             self.pub.publish(output)
 
     rclpy.init(args=args)

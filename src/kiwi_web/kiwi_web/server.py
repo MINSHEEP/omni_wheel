@@ -22,6 +22,7 @@ import yaml
 
 from .control import CommandGate
 from kiwi_platform import load_profile, validate_profile
+from kiwi_platform.launching import validate_map_file
 from .config import PARAMETER_FILES, resolve_paths
 from .maps import MapStore, finite, pose
 from .ros_bridge import Navigator, RosBridge
@@ -109,7 +110,9 @@ class Console:
         return web.json_response(
             dict(
                 auth_required=not self.authorized(request),
+                chassis=self.config.get("active_chassis", "kiwi"),
                 limits=self.gate.limits,
+                motion_enabled=self.config.get("motion_enabled", True),
                 port=self.config["port"],
             )
         )
@@ -142,6 +145,8 @@ class Console:
 
     def snapshot(self):
         return dict(
+            chassis=self.config.get("active_chassis", "kiwi"),
+            motion_enabled=self.config.get("motion_enabled", True),
             mode=self.supervisor.mode,
             mode_id=self.mode_id,
             current_map=self.supervisor.map_name,
@@ -207,6 +212,21 @@ class Console:
         if mode == "navigation":
             await asyncio.to_thread(self.store.read, name)
             map_path = self.store.path(name)
+            # Reject an invalid navigation configuration before stopping mapping.
+            # Production load_config always resolves platform_file; test fixtures
+            # without a physical platform keep their synthetic ROS graph.
+            if self.config.get("platform_file"):
+                overrides = {
+                    key: self.config.get(argument, "")
+                    for argument, key in (
+                        ("base_params_file", "base"),
+                        ("lidar_params_file", "lidar"),
+                        ("nav2_params_file", "nav2"),
+                    )
+                }
+                profile = load_profile(self.config["platform_file"], overrides)
+                validate_profile(profile, "localization")
+                validate_map_file(str(map_path))
         if not self.supervisor.process and mode != "idle":
             await self.wait_for_robot_exit()
         self.transitioning = True

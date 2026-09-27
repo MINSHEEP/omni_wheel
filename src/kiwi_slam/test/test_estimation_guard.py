@@ -59,7 +59,10 @@ def guard(monkeypatch):
     monkeypatch.setattr('kiwi_slam.estimation_guard.time.monotonic', lambda: time[0])
     n = SimpleNamespace(
         max_age=.2, max_source_age=.35, recovery_duration=.3,
-        max_error=.25, max_yaw_error=.15, inertial_enabled=True, max_coast=2.,
+        max_error=.25, max_handoff_error=.5, max_yaw_error=.15,
+        inertial_enabled=True, max_coast=2.,
+        max_laser_fallback=2., laser_since=None, laser_fallback_exhausted=False,
+        max_prediction_hold=.45, prediction_anchor=None,
         max_inertial_xy=1., max_inertial_yaw=.15, max_inertial_growth=.09, max_inertial_yaw_growth=.05,
         trusted_xy_variance=.25, trusted_yaw_variance=.01,
         filtered_history=deque(maxlen=120), laser_history=deque(maxlen=50),
@@ -73,7 +76,8 @@ def guard(monkeypatch):
         last_trusted_laser_stamp=100., health_reason='',
         observation_reason='', pause_reason=None, filtered_epoch_stamp=None,
         filtered_reject_reason='waiting_filtered_output',
-        mode='VALID', valid=True, inertial_output=False,
+        mode='VALID', valid=True, inertial_output=False, laser_output=False,
+        fallback_reason=None,
         future=None, future_operation=None, request_started=None,
         recovery_since=None, enabled_at=None, last_forwarded=(99.9,99.9),
         last_state=None, publisher=Mock(), tf=Mock(), valid_pub=Mock(), state_pub=Mock(),
@@ -106,6 +110,45 @@ def test_laser_failure_does_not_disable_ekf_during_valid_inertial_bridge(guard):
     n.toggle.call_async.assert_not_called()
     assert n.publisher.publish.call_count==14
     assert n.publisher.publish.call_args.args[0].pose.pose.position.x > .27
+
+
+def test_short_laser_quality_loss_uses_bounded_prediction_without_ekf_reset(guard):
+    n,time,samples=guard
+    samples(100.,True);n.on_filtered(odom(100.))
+    n.flags['inertial']=(False,100.)
+    for stamp in (100.05,100.10,100.15):
+        samples(stamp,False)
+        n.flags['inertial']=(False,stamp)
+        n.tick()
+        assert n.mode=='PREDICTED' and n.valid
+        assert n.prediction_anchor.header.stamp.sec==100
+    assert n.publisher.publish.call_args.args[0].header.stamp.nanosec==150000000
+    n.toggle.call_async.assert_not_called()
+    n.set_pose.call_async.assert_not_called()
+    samples(100.20,True);n.flags['inertial']=(False,100.20)
+    n.tick();n.on_filtered(odom(100.20))
+    samples(100.32,True);n.flags['inertial']=(False,100.32)
+    n.tick();n.on_filtered(odom(100.32))
+    assert n.mode=='VALID' and n.valid and n.prediction_anchor is None
+    n.toggle.call_async.assert_not_called()
+    n.set_pose.call_async.assert_not_called()
+
+
+def test_prediction_cannot_refresh_its_own_anchor_or_bridge_gyro_loss(guard):
+    n,time,samples=guard
+    samples(100.,True);n.on_filtered(odom(100.))
+    for stamp in (100.1,100.2,100.3,100.4):
+        samples(stamp,False);n.flags['inertial']=(False,stamp);n.tick()
+        assert n.mode=='PREDICTED' and n.valid
+    samples(100.46,False);n.flags['inertial']=(False,100.46);n.tick()
+    assert n.mode=='PAUSING' and not n.valid
+    assert 'prediction_window_or_gyro_expired' in n.health_reason
+    n.mode='VALID';n.pause_reason=None;n.prediction_anchor=None
+    n.last_output=odom(100.5);n.last_forwarded=(100.5,100.5)
+    samples(100.51,False);n.flags['inertial']=(False,100.51)
+    n.gyro_at=100.0
+    n.tick()
+    assert n.mode=='PAUSING'
 
 
 def test_exhausted_inertial_window_is_invalid_and_pauses_instead_of_infinite_integration(guard):
@@ -262,8 +305,79 @@ def test_latest_bad_ekf_frame_is_rejected_even_when_aligned_old_frame_is_good(gu
     if bad=='speed':message.twist.twist.linear.x=10.
     before=n.publisher.publish.call_count
     n.on_filtered(message)
-    assert n.publisher.publish.call_count==before
-    assert not n.valid and n.mode=='PAUSING'
+    assert n.publisher.publish.call_count>=before
+    assert n.publisher.publish.call_args.args[0].pose.pose.position.x < .1
+    assert n.valid and n.mode=='LASER' and n.laser_output
+    assert 'ekf_candidate_invalid' in n.fallback_reason
+    n.toggle.call_async.assert_not_called()
+    samples(100.12,True)
+    n.on_laser(odom(100.12,.024))
+    assert n.output_source=='laser'
+    assert n.publisher.publish.call_args.args[0].pose.pose.position.x < .1
+
+
+def test_laser_only_fallback_expires_into_inertial_without_restarting_laser_window(guard):
+    n,_,samples=guard
+    samples(100.,True);n.on_filtered(odom(100.))
+    samples(100.05,True)
+    bad=odom(100.05);bad.twist.twist.linear.x=10.
+    n.on_filtered(bad)
+    assert n.mode=='LASER' and n.valid
+    assert n.laser_since==pytest.approx(100.05)
+    samples(102.06,True)
+    n.tick()
+    assert n.mode=='INERTIAL' and n.valid
+    assert n.laser_fallback_exhausted
+    assert 'laser_only_duration_exceeded' in n.fallback_reason
+    n.isolate_filtered_candidate('still_inconsistent')
+    assert n.mode=='INERTIAL' and not n.laser_output
+
+
+def test_laser_only_limit_pauses_when_inertial_is_unavailable(guard):
+    n,_,samples=guard
+    samples(100.,True);n.on_filtered(odom(100.))
+    samples(100.05,True)
+    bad=odom(100.05);bad.twist.twist.linear.x=10.
+    n.on_filtered(bad)
+    samples(102.06,True)
+    n.flags['inertial']=(False,102.06)
+    n.tick()
+    assert n.mode=='PAUSING' and not n.valid
+    assert 'laser_only_duration_exceeded' in n.health_reason
+
+
+def test_bad_ekf_uses_valid_inertial_when_laser_quality_is_unavailable(guard):
+    n,_,samples=guard
+    samples(100.,True);n.on_filtered(odom(100.))
+    samples(100.05,False)
+    bad=odom(100.05);bad.twist.twist.linear.x=10.
+    n.on_filtered(bad)
+    assert n.mode=='INERTIAL' and n.valid and n.inertial_output
+    assert not n.laser_output
+    n.toggle.call_async.assert_not_called()
+    samples(100.1,False);n.tick()
+    assert n.mode=='INERTIAL' and n.valid
+    assert n.output_source=='inertial'
+
+
+def test_laser_only_recovers_ekf_without_toggle_or_reset(guard):
+    n,_,samples=guard
+    samples(100.,True);n.on_filtered(odom(100.))
+    samples(100.05,True)
+    bad=odom(100.05);bad.pose.pose.position.x=10.
+    n.on_filtered(bad)
+    assert n.mode=='LASER'
+    for stamp in (100.1,100.2,100.3):
+        samples(stamp,True)
+        n.tick()
+        n.on_filtered(odom(stamp,.2*(stamp-100.)))
+        assert n.mode=='LASER' and n.valid
+    samples(100.4,True)
+    n.on_filtered(odom(100.4,.08))
+    assert n.mode=='VALID' and n.valid and not n.laser_output
+    assert n.laser_since is None
+    n.toggle.call_async.assert_not_called()
+    n.set_pose.call_async.assert_not_called()
 
 
 def test_same_source_cannot_publish_a_physical_pose_jump(guard):
@@ -423,24 +537,75 @@ def test_successful_set_pose_starts_new_filtered_epoch_without_zeroing_position(
     assert n.publisher.publish.call_args.args[0].pose.pose.position.x==pytest.approx(.5)
 
 
-def test_pause_reason_survives_healthy_observations_at_next_tick(guard):
+def test_laser_fallback_reason_survives_healthy_observations_at_next_tick(guard):
     n,_,samples=guard
     samples(100.,True);n.on_filtered(odom(100.))
     samples(100.05,True)
     message=odom(100.05);message.twist.twist.linear.x=10.
     n.on_filtered(message)
-    assert n.mode=='PAUSING'
-    reason=n.health_reason
+    assert n.mode=='LASER' and n.valid
+    reason=n.fallback_reason
     assert 'speed' in reason and '10' in reason
     n.tick()
-    assert n.health_reason==reason
+    assert n.fallback_reason==reason
     assert reason in n.get_logger.return_value.info.call_args.args[0]
 
 
-def test_output_watchdog_reports_why_fresh_sensor_input_cannot_publish(guard):
+def test_output_watchdog_switches_to_fresh_laser_without_reset(guard):
     n,_,samples=guard
     samples(100.5,True)
     n.last_forwarded=(100.,100.)
     n.tick()
+    assert n.mode=='LASER' and n.valid
+    assert n.output_source=='laser'
+    assert 'output_stale' in n.fallback_reason
+    n.toggle.call_async.assert_not_called()
+    n.set_pose.call_async.assert_not_called()
+
+
+def test_output_watchdog_pauses_when_no_observation_can_continue(guard):
+    n,_,samples=guard
+    samples(100.5,False)
+    n.last_trusted_laser_stamp=98.
+    n.last_forwarded=(100.,100.)
+    n.tick()
     assert n.mode=='PAUSING' and not n.valid
-    assert 'output_stale' in n.health_reason and '0.500' in n.health_reason
+    assert 'output_stale' in n.health_reason or 'laser_not_ready' in n.health_reason
+
+
+def test_aligned_mismatch_bridges_lagging_laser_before_output_watchdog(guard):
+    from kiwi_slam.estimation_guard import stamp_seconds
+    n,_,samples=guard
+    assert n.forward(odom(100.,0.),'filtered')
+    n.filtered_history.append(odom(99.8,0.))
+    samples(100.12,True)
+    n.laser=odom(99.99,.4)
+    n.laser_at=100.12
+    n.laser_history.extend((odom(99.8,.4),n.laser))
+    n.on_filtered(odom(100.12,0.))
+    assert n.mode=='LASER' and n.valid
+    assert n.output_source=='laser'
+    published=n.publisher.publish.call_args.args[0]
+    assert stamp_seconds(published)==pytest.approx(100.12)
+    assert published.pose.pose.position.x==pytest.approx(0.)
+    assert published.pose.covariance[0] > n.laser.pose.covariance[0]
+    n.toggle.call_async.assert_not_called()
+    n.set_pose.call_async.assert_not_called()
+
+
+def test_laser_candidate_jump_is_isolated_until_inertial_takes_over(guard):
+    n,_,samples=guard
+    samples(100.,True)
+    assert n.forward(odom(100.,0.),'filtered')
+    n.mode='LASER';n.laser_output=True;n.laser_since=100.
+    samples(100.05,True)
+    n.on_laser(odom(100.05,0.))
+    before=n.publisher.publish.call_count
+    samples(100.10,True)
+    n.on_laser(odom(100.10,.4))
+    assert n.mode=='LASER' and n.publisher.publish.call_count==before
+    samples(100.30,True)
+    n.laser=odom(100.10,.4);n.laser_at=100.30
+    n.tick()
+    assert n.mode=='INERTIAL' and n.valid
+    assert not n.laser_output

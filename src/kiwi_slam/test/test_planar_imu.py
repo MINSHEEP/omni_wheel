@@ -51,6 +51,71 @@ def test_usb_bursts_clock_reset_and_gaps_never_divide_by_microsecond_interval():
     assert processor.last is None
 
 
+def _push_planar(processor, stamp, ax):
+    raw = REST + ROTATION.T @ [ax, 0.0, 0.0]
+    return processor.push(stamp, raw, 0.0)
+
+
+def test_isolated_acceleration_spike_is_held_with_higher_covariance():
+    processor = AccelerationProcessor(calibration(), period=0.01)
+    for i in range(20):
+        _push_planar(processor, i * 0.02, 0.0)
+
+    # 一个串口样本异常；输出采用最新真实时间戳，但只发布高不确定度的旧估计。
+    assert _push_planar(processor, 0.40, 4.0) is None
+    stamp, acceleration = _push_planar(processor, 0.42, 0.0)
+    assert stamp == pytest.approx(0.42)
+    assert abs(acceleration[0]) < 0.05
+    assert processor.last_covariance_scale == 25.0
+
+    _push_planar(processor, 0.44, 0.0)
+    stamp, acceleration = _push_planar(processor, 0.46, 0.0)
+    assert stamp == pytest.approx(0.46)
+    assert abs(acceleration[0]) < 0.05
+    assert processor.last_covariance_scale == 1.0
+
+
+def test_sustained_acceleration_is_accepted_after_short_confirmation():
+    processor = AccelerationProcessor(calibration(), period=0.01)
+    outputs = []
+    for i in range(40):
+        value = 2.0 if i >= 20 else 0.0
+        result = _push_planar(processor, i * 0.02, value)
+        if result is not None:
+            outputs.append(result[1][0])
+    assert outputs[-1] > 1.8
+    assert max(outputs) > 1.5  # 不把真实持续超限运动无限钳在 INS 上限内
+
+
+def test_fast_ramp_does_not_keep_refreshing_suspect_forever():
+    processor = AccelerationProcessor(calibration(), period=0.01)
+    outputs = []
+    for i in range(40):
+        value = max(0.0, i - 19) * 0.3
+        result = _push_planar(processor, i * 0.02, value)
+        if result is not None:
+            outputs.append(result[1][0])
+    assert outputs[-1] > 2.0
+
+
+def test_long_input_gap_resets_history_without_fabricated_samples():
+    processor = AccelerationProcessor(calibration(), period=0.01, max_gap=0.2)
+    for i in range(20):
+        _push_planar(processor, i * 0.02, 0.0)
+    assert _push_planar(processor, 1.0, 1.0) is None
+    assert processor.filtered is None
+    assert processor.last_covariance_scale == 1.0
+    assert _push_planar(processor, 1.02, 1.0) is None
+    # 重新积累角速度历史后，第一帧采用新数据，不跨断流平滑或回填。
+    first = None
+    for i in range(2, 10):
+        first = _push_planar(processor, 1.0 + i * 0.02, 1.0)
+        if first is not None:
+            break
+    assert first is not None
+    assert first[1][0] == pytest.approx(1.0)
+
+
 def test_yaw_and_gravity_alone_cannot_calibrate_forward_axis():
     with pytest.raises(ValueError, match="激励不足"):
         fit_calibration(np.tile(REST, (2000, 1)), np.tile(REST, (30, 1)), np.zeros(30))

@@ -7,6 +7,7 @@
 
 #include "lslidar_driver/m10_packet_decoder.hpp"
 #include "lslidar_driver/scan_angle_mask.hpp"
+#include "lslidar_driver/scan_timing.hpp"
 #include "lslidar_driver/lslidar_x10_driver.hpp"
 
 namespace lslidar_driver {
@@ -56,9 +57,24 @@ TEST(M10pDecodeTest, CompletedSweepSnapshotKeepsItsOwnCloudAndTimestamp) {
   // 发布接口必须强制调用方同时传入本圈点云和时间戳，禁止后台任务再读取
   // point_cloud_xyzi_bak_ / sweep_end_time 这类可被下一圈覆盖的共享成员。
   using PublishSignature = void (LslidarX10Driver::*)(
-      const pcl::PointCloud<pcl::PointXYZI>::Ptr&, double);
+      const pcl::PointCloud<pcl::PointXYZI>::Ptr&, double, double);
   PublishSignature publish = &LslidarX10Driver::publishLiadrData;
   EXPECT_NE(publish, nullptr);
+}
+
+TEST(M10pScanTimingTest, FirstAngleBinIsAcquiredMidSweep) {
+  ScanTiming timing{};
+  ASSERT_TRUE(m10pScanTiming(100.0, 100.0 + 1.0 / 12.0, 12.0, &timing));
+  EXPECT_NEAR(timing.scan_time, 1.0 / 12.0, 1e-8);
+  EXPECT_NEAR(timing.first_bin_time, 100.0 + 1.0 / 24.0, 1e-8);
+}
+
+TEST(M10pScanTimingTest, DoesNotInventTimingAfterSerialGapOrClockJump) {
+  ScanTiming timing{};
+  EXPECT_FALSE(m10pScanTiming(0.0, 100.0, 12.0, &timing));
+  EXPECT_FALSE(m10pScanTiming(100.0, 100.4, 12.0, &timing));
+  EXPECT_FALSE(m10pScanTiming(100.0, 99.9, 12.0, &timing));
+  EXPECT_FALSE(m10pScanTiming(100.0, std::nan(""), 12.0, &timing));
 }
 
 TEST(M10pDecodeTest, ZeroDeclaredSlotsDoNotDivideByZero) {

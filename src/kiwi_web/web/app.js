@@ -28,6 +28,8 @@
     sequence = 0,
     speed = 0.5,
     limits = [0.4, 0.4, 0.6],
+    chassis = "",
+    lateralEnabled = true,
     keys = new Set(),
     heldPointers = new Map();
   let mapBusy = false,
@@ -60,6 +62,32 @@
   const setText = (id, text) => {
     if ($(id)) $(id).textContent = text;
   };
+  function applyChassis(value) {
+    if (!["kiwi", "tracked_pwm"].includes(value)) return;
+    if (chassis && chassis !== value) release();
+    chassis = value;
+    lateralEnabled = chassis === "kiwi" && limits[1] > 0;
+    document.body.dataset.chassis = chassis;
+    const name = chassis === "tracked_pwm" ? "履带底盘控制" : "Kiwi 底盘控制";
+    const brand = document.querySelector(".brand");
+    if (brand) brand.textContent = name;
+    document.title = document.title.replace(/Kiwi 底盘控制|履带底盘控制/, name);
+    document.querySelectorAll('[data-move="a"], [data-move="d"]').forEach((button) => {
+      button.disabled = !lateralEnabled;
+      button.title = lateralEnabled ? "" : "履带底盘不支持横移";
+    });
+    document.querySelectorAll("[data-lateral-hint]").forEach((hint) => {
+      hint.hidden = !lateralEnabled;
+    });
+    const imuLabel = $("imu-display")?.closest(".status-card")?.querySelector(".label");
+    if (imuLabel) imuLabel.textContent = chassis === "tracked_pwm" ? "IMU 数据" : "IMU 标定";
+    setText(
+      "remote-safety-hint",
+      lateralEnabled
+        ? "按住移动，松开停止。开启后仅当前页面持有遥控权。后退和横移前请确认周围空间。"
+        : "按住移动，松开停止。开启后仅当前页面持有遥控权。后退和转向前请确认周围空间。",
+    );
+  }
   function log(message, error = false) {
     const area = $("log-area");
     if (area) {
@@ -184,7 +212,7 @@
       return;
     }
     let x = (keys.has("w") ? 1 : 0) - (keys.has("s") ? 1 : 0),
-      y = (keys.has("a") ? 1 : 0) - (keys.has("d") ? 1 : 0),
+      y = lateralEnabled ? (keys.has("a") ? 1 : 0) - (keys.has("d") ? 1 : 0) : 0,
       a = (keys.has("q") ? 1 : 0) - (keys.has("e") ? 1 : 0);
     const norm = Math.max(1, Math.hypot(x, y));
     x /= norm;
@@ -243,6 +271,7 @@
   document.querySelectorAll("[data-move]").forEach((button) => {
     button.addEventListener("pointerdown", (e) => {
       e.preventDefault();
+      if (button.disabled) return;
       if (!enabled) {
         toast("请先开启遥控模式", true);
         return;
@@ -277,7 +306,7 @@
       return;
     }
     if (!enabled) return;
-    if ("wasdqe".includes(key) && key.length === 1) {
+    if ((lateralEnabled ? "wasdqe" : "wsqe").includes(key) && key.length === 1) {
       e.preventDefault();
       keys.add(key);
       drive();
@@ -344,7 +373,10 @@
     if (robot.conflicts.length) return "速度源冲突：请停止其他遥控或导航程序";
     if (state.mode === "idle") return "选择运行模式后启动设备";
     if (!robot.feedback) return "等待底盘反馈，请检查底盘供电和串口";
-    if (!robot.imu_ready) return "IMU 标定中，请保持底盘静止";
+    if (!robot.imu_ready)
+      return chassis === "tracked_pwm"
+        ? "等待 IMU 数据，请检查底盘连接"
+        : "IMU 标定中，请保持底盘静止";
     if (!robot.odom) return "等待里程计与 EKF";
     if (!robot.lidar) return "等待激光雷达，请检查雷达供电和串口";
     if (state.mode === "mapping" && !robot.mapping_ready)
@@ -353,10 +385,15 @@
       return "请在地图中设置初始位置与朝向";
     if (state.mode === "navigation" && !robot.action_ready)
       return "Nav2 初始化中";
+    if (!state.motion_enabled)
+      return state.mode === "mapping"
+        ? "建图数据就绪，底盘运动尚未解锁"
+        : "底盘运动尚未解锁，请检查标定配置";
     return "设备就绪";
   }
   function updateState(value) {
     state = value;
+    if (value.chassis && value.chassis !== chassis) applyChassis(value.chassis);
     lastState = performance.now();
     challenge = value.challenge || challenge;
     const r = state.robot,
@@ -400,7 +437,12 @@
     setText("gate-display", r.mapping_ready ? "已就绪" : "等待中");
     setText("feedback-display", r.feedback ? "在线" : "未连接");
     setText("lidar-display", r.lidar ? "在线" : "未连接");
-    setText("imu-display", r.imu_ready ? "已完成" : "未完成");
+    setText(
+      "imu-display",
+      chassis === "tracked_pwm"
+        ? r.imu_ready ? "在线" : "未连接"
+        : r.imu_ready ? "已完成" : "未完成",
+    );
     setText("readiness", readiness(r));
     setText(
       "localization-display",
@@ -429,7 +471,9 @@
     setText("latency-display", `${Math.round(latency)} ms`);
     setText(
       "limits-display",
-      `遥控上限：前后 ${limits[0]} m/s，横移 ${limits[1]} m/s，转向 ${limits[2]} rad/s。`,
+      lateralEnabled
+        ? `遥控上限：前后 ${limits[0]} m/s，横移 ${limits[1]} m/s，转向 ${limits[2]} rad/s。`
+        : `遥控上限：前后 ${limits[0]} m/s，转向 ${limits[2]} rad/s；不支持横移。`,
     );
     for (const [id, key] of [
       ["cpu", "cpu"],
@@ -1153,6 +1197,7 @@
   request("/api/config")
     .then((config) => {
       limits = config.limits;
+      applyChassis(config.chassis);
       if (config.auth_required) login();
       else connect();
     })

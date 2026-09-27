@@ -13,6 +13,8 @@ kiwi_mapping_scan_gate:
     require_imu_ready: true
     require_laser_quality: true
     require_estimation_ready: true
+    # 单源激光和短时预测可保持里程计/TF，但不再写地图；只接收融合核验后的 VALID。
+    allow_laser_only_state: false
     estimation_ready_topic: /chassis/estimation/valid
     # INERTIAL仍有定位输出，但必须恢复正常融合后才继续写地图。
     estimation_state_topic: /chassis/estimation/state

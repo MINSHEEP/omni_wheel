@@ -52,7 +52,12 @@ class FixtureSupervisor:
 
 
 def main():
-    os.environ["ROS_DOMAIN_ID"] = "217"
+    chassis = os.environ.get("KIWI_BROWSER_CHASSIS", "kiwi")
+    if chassis not in ("kiwi", "tracked_pwm"):
+        raise ValueError("KIWI_BROWSER_CHASSIS 必须是 kiwi 或 tracked_pwm")
+    tracked = chassis == "tracked_pwm"
+    port = 8083 if tracked else 8081
+    os.environ["ROS_DOMAIN_ID"] = "222" if tracked else "217"
     os.environ["ROS_LOCALHOST_ONLY"] = "1"
     rclpy.init()
     width, height = 160, 120
@@ -70,8 +75,13 @@ def main():
                 cells.append(100)
             else:
                 cells.append(0)
-    gate = CommandGate()
-    bridge, robot = RosBridge(gate), FixtureRobot(width, height, cells)
+    gate = CommandGate(lateral=0.0 if tracked else 0.4)
+    bridge = RosBridge(
+        gate, feedback_topic="/chassis/odom/laser" if tracked else "/chassis/odom/raw",
+        imu_topic="/chassis/imu/data_raw" if tracked else "",
+        motion_enabled=True,
+    )
+    robot = FixtureRobot(width, height, cells, tracked=tracked)
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(bridge)
     executor.add_node(robot)
@@ -83,7 +93,7 @@ def main():
         "fixture_lab", dict(width=width, height=height, resolution=0.1, origin=[0, 0, 0]), cells
     )
     console = Console(
-        dict(port=8081),
+        dict(port=port, active_chassis=chassis),
         bridge,
         gate,
         store,
@@ -91,7 +101,7 @@ def main():
         Path(__file__).resolve().parents[1] / "web",
     )
     try:
-        web.run_app(console.app, host="127.0.0.1", port=8081, access_log=None)
+        web.run_app(console.app, host="127.0.0.1", port=port, access_log=None)
     finally:
         executor.shutdown(timeout_sec=3)
         thread.join(timeout=3)

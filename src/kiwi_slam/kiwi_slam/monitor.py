@@ -183,10 +183,12 @@ class KiwiSlamMonitor(Node):
                 return DiagnosticStatus.WARN, "waiting for estimation state"
             if now - self.estimation_state_received > self.timeout_sec:
                 return DiagnosticStatus.ERROR, "estimation state timeout"
-            if self.estimation_state not in ("VALID", "INERTIAL"):
+            if self.estimation_state not in ("VALID", "INERTIAL", "LASER", "PREDICTED"):
                 return DiagnosticStatus.ERROR, f"mapping paused: estimation {self.estimation_state}"
             if self.estimation_state == "INERTIAL":
                 return DiagnosticStatus.WARN, "mapping paused: inertial prediction only"
+            if self.estimation_state != "VALID":
+                return DiagnosticStatus.WARN, f"mapping paused: {self.estimation_state.lower()} fallback only"
         if self.mapping_gate_ready_topic:
             if self.mapping_gate_ready is None:
                 return DiagnosticStatus.WARN, "waiting for mapping gate"

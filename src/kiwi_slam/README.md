@@ -34,7 +34,7 @@ ros2 topic echo /kiwi_slam/mapping_gate_ready std_msgs/msg/Bool --once --qos-dur
 ros2 param get /slam_toolbox do_loop_closing
 ```
 
-启动时四个 Bool 状态（标定、数据、估计有效、建图）都必须是 `data: true`，估计 String 状态为 `VALID`；`false` 表示当前未就绪，须等候或查日志。运动中的 `INERTIAL` 表示有界惯性续接，坏扫描此时仍暂停入图。
+启动时四个 Bool 状态（标定、数据、估计有效、建图）都必须是 `data: true`，估计 String 状态为 `VALID`；`false` 表示当前未就绪，须等候或查日志。运动中的 `INERTIAL` 或 `PREDICTED` 表示有界续接，扫描此时暂停入图。
 录制终端也必须执行上述 `export` 和 `source`。录包显示 `Recording...` 只表示
 录制器启动，不能证明传感器数据已订阅。确认 `/scan`、`/chassis/imu/data_raw`、
 `/chassis/odom/laser_raw` 等订阅成功后再开始动作。可用现场采集脚本同时保存日志：
@@ -100,6 +100,11 @@ Kiwi 轮式链路不启动该节点，继续由自己的 EKF 发布里程计和 
 并通过 EKF toggle 服务暂停内部积分。`max_prediction_s=0.2` 仍限制当前数据/输出
 的新鲜度，不是惯导的总续接时间；`max_measurement_age_s=0.35` 限制消息头测量延迟。
 
+激光质量心跳短时跌落且惯导也不可用时，`PREDICTED` 只从进入故障前最后可信的公开位姿
+用新鲜陀螺和常速度模型最多续推 0.45 秒，同时传播模型误差协方差；自己的预测输出
+不能刷新这个期限。恢复后先核验 EKF 与激光的同时间一致性再交回。该状态与单源
+`LASER` 状态都不允许向建图写扫描；期限到或陀螺失效仍停止有效输出。
+
 `max_position_variance=4.0` m² 是惯导 xy 的正常方差预算；锚点本身已超过该值时，
 保留真实继承方差，不因继承例如 12.5 m² 就立即判死，也不人为压低锚点。此时允许的总量
 受继承基线加有限增长约束；所有情况仍检查 `max_position_growth_variance=0.09` m²
@@ -113,7 +118,7 @@ Kiwi 轮式链路不启动该节点，继续由自己的 EKF 发布里程计和 
 `PAUSED`，或时间对齐后仍持续不一致时，才暂停滤波、在原 odom 坐标设置已核验的激光
 位姿、清除旧速度/加速度及积压观测，再恢复滤波并预热核验。即使惯导仍提供有效定位，
 建图门控也必须等到估计状态 `VALID` 才恢复 `/scan_slam`；
-`INERTIAL`、重置和预热期间的坏扫描均不入图。不会在恢复时归零机器人位置，
+`LASER`、`INERTIAL`、`PREDICTED`、重置和预热期间的扫描均不入图。不会在恢复时归零机器人位置，
 也不会把冻结显示冒充有效定位。
 保护状态服务未确认、观测不新鲜或 EKF 与激光位置/航向差超过配置阈值时继续拒绝。
 
@@ -128,8 +133,8 @@ VOLATILE、深度 10；对外状态发布仍为 TRANSIENT_LOCAL，命令行晚�
 加速度只用于否决零速，不单独判定绝对位置；激光匹配仍负责核验真实位移。恢复成功后，
 提前缓存的后续扫描按已核验参考重新匹配，不能继续使用旧失效状态，也不强行放行坏扫描。
 
-- `/chassis/estimation/valid`：带心跳的定位有效性状态；`INERTIAL` 期间可为 true，但此时建图门控仍为 false。消费端还应检查心跳新鲜度。
-- `/chassis/estimation/state`：`PAUSING`、`PAUSED`、`RESETTING`、`ENABLING`、`WARMING`、`VALID`、`INERTIAL`。
+- `/chassis/estimation/valid`：带心跳的定位有效性状态；`INERTIAL`、`LASER`、`PREDICTED` 期间可为 true，但此时建图门控仍为 false。消费端还应检查心跳新鲜度。
+- `/chassis/estimation/state`：`PAUSING`、`PAUSED`、`RESETTING`、`ENABLING`、`WARMING`、`VALID`、`INERTIAL`、`LASER`、`PREDICTED`。
 - `/chassis/inertial/reason`：惯导当前锚定、续接或失效原因；如 `coast_timeout` 或 `position_uncertainty_growth_limit`。
 - 短暂中断可自动核验恢复；超过 10 秒旧参考期限，停车后通过可靠重定位或重新建图处理，不能只重启 RViz。
 - 自动回环仍开启；数据恢复验证不等于长走廊定位精度已验收。

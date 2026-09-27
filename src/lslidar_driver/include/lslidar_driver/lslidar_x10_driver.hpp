@@ -87,6 +87,7 @@ namespace lslidar_driver {
         /** 发布一个不可变的完整扫圈快照，避免后台线程读取下一圈共享状态。 */
         void publishLiadrData(
             const pcl::PointCloud<pcl::PointXYZI>::Ptr &completed_cloud,
+            double completed_sweep_start_time,
             double completed_sweep_end_time);
 
         void publishMultiEchoLaserScan();

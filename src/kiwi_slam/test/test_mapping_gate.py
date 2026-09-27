@@ -240,6 +240,7 @@ def test_estimation_invalid_closes_gate_even_with_recent_odometry(monkeypatch):
     from kiwi_slam.mapping_gate import MappingScanGateNode
     monkeypatch.setattr('kiwi_slam.mapping_gate.time.monotonic',lambda:10.)
     node=SimpleNamespace(quality_ready=True, quality_time=9.9, imu_ready_time=9.9,
+        allow_laser_only_state=False,
         gate=SimpleNamespace(imu_ready=True, opened=True, _sources_ready=lambda t:True),
         require_estimation_ready=True, estimation_ready=False, estimation_time=9.9,
         estimation_state="VALID", estimation_state_time=9.9,
@@ -258,6 +259,7 @@ def test_inertial_tf_does_not_authorize_map_writes_before_filter_recovery(monkey
     from kiwi_slam.mapping_gate import MappingScanGateNode
     monkeypatch.setattr('kiwi_slam.mapping_gate.time.monotonic', lambda: 10.)
     node = SimpleNamespace(quality_ready=True, quality_time=9.9, imu_ready_time=9.9,
+        allow_laser_only_state=False,
         gate=SimpleNamespace(imu_ready=True, opened=True, _sources_ready=lambda t: True),
         require_estimation_ready=True, estimation_ready=True, estimation_time=9.9,
         estimation_state='INERTIAL', estimation_state_time=9.9, ready_pub=Mock())
@@ -265,4 +267,22 @@ def test_inertial_tf_does_not_authorize_map_writes_before_filter_recovery(monkey
     node.estimation_state = 'VALID'
     assert MappingScanGateNode._health(node)
     node.estimation_state_time = 9.0
+    assert not MappingScanGateNode._health(node)
+
+
+def test_laser_fallback_requires_fresh_quality_and_imu_before_mapping(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from kiwi_slam.mapping_gate import MappingScanGateNode
+    monkeypatch.setattr('kiwi_slam.mapping_gate.time.monotonic', lambda: 10.)
+    node = SimpleNamespace(quality_ready=True, quality_time=9.9, imu_ready_time=9.9,
+        allow_laser_only_state=True,
+        gate=SimpleNamespace(imu_ready=True, opened=True, _sources_ready=lambda t: True),
+        require_estimation_ready=True, estimation_ready=True, estimation_time=9.9,
+        estimation_state='LASER', estimation_state_time=9.9, ready_pub=Mock())
+    assert MappingScanGateNode._health(node)
+    node.quality_time = 9.0
+    assert not MappingScanGateNode._health(node)
+    node.quality_time = 9.9
+    node.imu_ready_time = 9.0
     assert not MappingScanGateNode._health(node)

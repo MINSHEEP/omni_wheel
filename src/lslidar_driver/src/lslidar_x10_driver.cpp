@@ -19,6 +19,7 @@
 #include "lslidar_driver/lslidar_x10_driver.hpp"
 #include "lslidar_driver/m10_packet_decoder.hpp"
 #include "lslidar_driver/scan_angle_mask.hpp"
+#include "lslidar_driver/scan_timing.hpp"
 
 namespace lslidar_driver {
     LslidarX10Driver::LslidarX10Driver(rclcpp::Node::SharedPtr node) : LslidarDriver(node),
@@ -333,18 +334,39 @@ namespace lslidar_driver {
 
     void LslidarX10Driver::publishLiadrData(
             const pcl::PointCloud<pcl::PointXYZI>::Ptr &completed_cloud,
+            double completed_sweep_start_time,
             double completed_sweep_end_time) {
         // completed_cloud 与时间戳在扫圈边界按值捕获；即使线程池积压，后续
         // poll() 也无法覆盖本任务的数据或把下一圈时间戳贴到旧点云上。
         if (!completed_cloud || completed_cloud->width < 50) return;
+        ScanTiming timing{};
+        const bool m10p_timing_valid =
+            lidar_model == "M10P" &&
+            m10pScanTiming(completed_sweep_start_time, completed_sweep_end_time,
+                           M10P_MOTOR_FREQUENCY, &timing);
+        const double completed_reference_time =
+            m10p_timing_valid ? timing.first_bin_time : completed_sweep_end_time;
         
         if (publish_scan) {
             sensor_msgs::msg::PointCloud2 raw_pc_msg;
             auto scan_msg = std::make_unique<sensor_msgs::msg::LaserScan>();
             pcl::toROSMsg(*completed_cloud, raw_pc_msg);
             pointcloudToLaserscan(raw_pc_msg, *scan_msg);
-            scan_msg->header.stamp = rclcpp::Time(completed_sweep_end_time * 1000000000LL);
-            laserscan_pub_->publish(std::move(scan_msg));
+            if (lidar_model == "M10P") {
+                if (m10p_timing_valid) {
+                    // 角度排序跨越 0° 分圈点，不存在全数组一致的逐束时间增量。
+                    // time_increment 保持 0；禁止假报逐束 deskew 所需的时刻。
+                    scan_msg->scan_time = timing.scan_time;
+                    scan_msg->header.stamp = rclcpp::Time(timing.first_bin_time * 1000000000LL);
+                    laserscan_pub_->publish(std::move(scan_msg));
+                } else {
+                    RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 5000,
+                                         "M10P sweep duration invalid; dropping LaserScan instead of guessing its time");
+                }
+            } else {
+                scan_msg->header.stamp = rclcpp::Time(completed_sweep_end_time * 1000000000LL);
+                laserscan_pub_->publish(std::move(scan_msg));
+            }
         }
 
         auto pc_msg = std::make_shared<sensor_msgs::msg::PointCloud2>();
@@ -353,11 +375,11 @@ namespace lslidar_driver {
             
         pcl::toROSMsg(*completed_cloud, *pc_msg);
 
-        pc_msg->header.stamp = rclcpp::Time(completed_sweep_end_time * 1000000000LL);
+        pc_msg->header.stamp = rclcpp::Time(completed_reference_time * 1000000000LL);
         pointcloud_pub_->publish(*pc_msg); 
 
         auto time_msg = std::make_shared<std_msgs::msg::Float64>();
-        time_msg->data = completed_sweep_end_time;
+        time_msg->data = completed_reference_time;
         time_pub_->publish(*time_msg);
 
         return;
@@ -620,6 +642,7 @@ namespace lslidar_driver {
 
             sweep_end_time = sweep_end_time > 0 ? sweep_end_time : 0;
 
+            const double completed_sweep_start_time = last_point_cloud_time;
             point_cloud_time = use_first_point_time ? last_point_cloud_time : sweep_end_time;
             last_point_cloud_time = sweep_end_time;
 
@@ -633,8 +656,9 @@ namespace lslidar_driver {
             }
 
             thread_pool_->enqueue(
-                [this, completed_cloud, completed_sweep_end_time]() {
-                    publishLiadrData(completed_cloud, completed_sweep_end_time);
+                [this, completed_cloud, completed_sweep_start_time, completed_sweep_end_time]() {
+                    publishLiadrData(completed_cloud, completed_sweep_start_time,
+                                     completed_sweep_end_time);
                 });
             if(publish_multiecholaserscan && lidar_model == "N10Plus") {
                 thread_pool_->enqueue([this]() { publishMultiEchoLaserScan(); });

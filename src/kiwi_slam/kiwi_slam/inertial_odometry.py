@@ -88,6 +88,7 @@ class InertialOdometry:
         self.last_partial_stamp = None
         self.last_partial_rejection = None
         self.last_imu_rejection_detail = None
+        self.pending_acceleration_outlier = None
 
     def invalidate(self, reason):
         self.state = self.covariance = None
@@ -100,6 +101,7 @@ class InertialOdometry:
         self.last_sample = None
         self.last_partial_stamp = None
         self.last_partial_rejection = None
+        self.pending_acceleration_outlier = None
         self.reason = str(reason)
 
     def add_anchor(self, stamp, pose, covariance):
@@ -367,7 +369,19 @@ class InertialOdometry:
         acceleration_exceeded = acceleration_norm > self.config.max_acceleration_m_s2
         yaw_rate_exceeded = abs(angular_velocity) > self.config.max_yaw_rate_rad_s
         if acceleration_exceeded or yaw_rate_exceeded:
-            self.invalidate('imu_motion_outside_validated_limits')
+            # A lone acceleration spike is an unobserved sample, not evidence that
+            # the laser anchor or the independently measured yaw rate is wrong.
+            # Never bridge a second spike, an implausible gyro, or a long gap.
+            can_bridge = (acceleration_exceeded and not yaw_rate_exceeded and
+                          self.state is not None and self.samples and
+                          self.pending_acceleration_outlier is None and
+                          0 < stamp-self.samples[-1][0] < self.config.max_imu_gap_s)
+            if not can_bridge:
+                self.invalidate('imu_motion_outside_validated_limits')
+            else:
+                self.pending_acceleration_outlier = (float(stamp), float(angular_velocity),
+                                                     float(angular_variance))
+                self.reason = 'imu_acceleration_outlier_pending'
             self.last_imu_rejection_detail = {
                 'stamp': float(stamp),
                 'ax_m_s2': float(acceleration[0]),
@@ -383,6 +397,42 @@ class InertialOdometry:
             return False
         sample = (float(stamp), acceleration.copy(), float(angular_velocity),
                   covariance, float(angular_variance))
+        missing = self.pending_acceleration_outlier
+        if missing is not None:
+            previous = self.samples[-1]
+            gap = stamp-previous[0]
+            if (stamp <= missing[0] or gap > self.config.max_imu_gap_s):
+                self.invalidate('imu_gap_requires_new_anchor')
+            else:
+                fraction = (missing[0]-previous[0])/gap
+                interpolated = (missing[0],
+                                previous[1]+fraction*(sample[1]-previous[1]),
+                                missing[1],
+                                previous[3]+fraction*(sample[3]-previous[3]),
+                                missing[2])
+                self.pending_acceleration_outlier = None
+                self.samples.append(interpolated)
+                self.samples.append(sample)
+                while len(self.samples) > 2 and stamp-self.samples[1][0] > 2.0:
+                    self.samples.popleft()
+                if self.pending_anchor is not None and self._replay_anchor():
+                    bridged = True
+                elif self.state is not None:
+                    bridged = self._advance(interpolated) and self._advance(sample)
+                else:
+                    bridged = False
+                if bridged:
+                    # Interpolation supplies a mean only. The missing acceleration
+                    # could have differed by the validated bound for this whole gap;
+                    # retain that correlated position/velocity uncertainty.
+                    bound2 = self.config.max_acceleration_m_s2**2
+                    position = .5*gap*gap
+                    velocity = gap
+                    self.covariance[:2, :2] += np.eye(2)*bound2*position**2
+                    self.covariance[:2, 3:] += np.eye(2)*bound2*position*velocity
+                    self.covariance[3:, :2] += np.eye(2)*bound2*position*velocity
+                    self.covariance[3:, 3:] += np.eye(2)*bound2*velocity**2
+                return bridged
         if self.samples:
             dt = stamp-self.samples[-1][0]
             if dt <= 0:
