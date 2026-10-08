@@ -1,10 +1,10 @@
 # MID-360S / FAST-LIO2 部署与现场核验
 
-本文针对 Ubuntu 22.04、ROS 2 Humble 和当前工作区的 **tracked_pwm 履带底盘**。实机外壳和 SDK2 发现报文均确认为 MID-360S（设备类型 35），使用内置 IMU；C 板 IMU 话题和底盘通信接口保留，但不进入这条定位链路。已核查 `a@192.168.66.112`：连接雷达的有线网卡是 `enp2s0`，雷达 IP 是 `192.168.1.117`。原先主机也配置为 `.117`，形成 IP 冲突；2026-09-27 已将主机该网卡改为 `192.168.1.50/24` 并持久保存，Wi‑Fi `wlo1=192.168.66.112/24` 和默认路由未改变。`.50 → .117` 的三次 ICMP 测试全部成功；现场已测得点云约 10 Hz、IMU 约 200 Hz、FAST-LIO2 里程计和二维投影扫描均约 10 Hz。尚未进行底盘运动及地图质量验收。
+本文针对 Ubuntu 22.04、ROS 2 Humble 和当前工作区的 **tracked_pwm 履带底盘**。实机外壳和 SDK2 发现报文均确认为 MID-360S（设备类型 35），使用内置 IMU；C 板 IMU 话题和底盘通信接口保留，但不进入这条定位链路。2026-09-27 核查 `a@192.168.66.112`：连接雷达的有线网卡是 `enp2s0`，雷达 IP 是 `192.168.1.117`。原先主机也配置为 `.117`，形成 IP 冲突；2026-09-27 已将主机该网卡改为 `192.168.1.50/24` 并持久保存，Wi‑Fi `wlo1=192.168.66.112/24` 和默认路由未改变。`.50 → .117` 的三次 ICMP 测试全部成功；现场已测得点云约 10 Hz、IMU 约 200 Hz、FAST-LIO2 里程计和二维投影扫描均约 10 Hz。这些是历史静止接口检查，尚未完成底盘运动及地图质量验收。2026-10-08 统一工作区整合按用户确认的“仅上位机、未连接雷达和 C 板”条件验收软件，`enp2s0` 为 DOWN、没有 IPv4 地址，且 `/dev/robomaster_c` 不存在属于预期条件。
 
 ## 1. 先确认实机网络和安装条件
 
-Livox [MID-360 用户手册](https://terra-1-g.djicdn.com/851d20f7b9f64838a34cd02351370894/Livox/Livox_Mid-360_User_Manual_CHS.pdf)说明：出厂静态地址是 `192.168.1.1XX/24`，`XX` 为序列号最后两位；地址可被修改。本站点已从 ARP 和独立 ICMP 验证 `.117` 的确在有线网上，官方配置文件示例 `.12` 不适用。主机连接雷达的网卡须有同子网地址，且不能与雷达、网关或其他设备冲突。优先用独立雷达网卡，保持 SSH/控制网卡原有地址与默认路由。本站点已经完成此设置；下方临时改 IP 命令仅供其他机器参考，不应在本机重复执行。
+Livox [MID-360 用户手册](https://terra-1-g.djicdn.com/851d20f7b9f64838a34cd02351370894/Livox/Livox_Mid-360_User_Manual_CHS.pdf)说明：出厂静态地址是 `192.168.1.1XX/24`，`XX` 为序列号最后两位；地址可被修改。本站点已从 ARP 和独立 ICMP 验证 `.117` 的确在有线网上，官方配置文件示例 `.12` 不适用。主机连接雷达的网卡须有同子网地址，且不能与雷达、网关或其他设备冲突。优先用独立雷达网卡，保持 SSH/控制网卡原有地址与默认路由。本站点在 2026-09-27 验证过此设置；当前网卡离线时，应先检查网线、雷达供电及既有网络连接配置，再确认地址和路由。下方临时改 IP 命令供维护参考，不应在地址已经正确时重复执行。
 
 ```bash
 ip -br link
@@ -22,36 +22,66 @@ ip route get "$LIDAR_IP"
 
 永久地址应写入该网卡既有的 NetworkManager/netplan 配置，并在维护窗口核对 SSH 路由；不要把雷达子网的默认网关覆盖现有远程连接。若实机地址已改到其他网段，主机地址须跟随实机网段，而非固定套用 `192.168.1.0/24`。雷达供电要求为 9–27 V DC，以太网口不能接 PoE；线缆、供电和网口连接也要核对用户手册。
 
-## 2. 安装驱动与 FAST-LIO ROS 2 移植版
+## 2. 统一工作区构建
 
-[Livox-SDK2](https://github.com/Livox-SDK/Livox-SDK2)和 [livox_ros_driver2](https://github.com/Livox-SDK/livox_ros_driver2)均由 Livox 提供；旧的 `livox_ros_driver` / Livox-SDK 不适用 MID-360。HKU-MARS 的 [FAST_LIO 主仓库](https://github.com/hku-mars/FAST_LIO)是 ROS 1 包，Humble 使用 [Ericsii/FAST_LIO_ROS2 的 `ros2` 分支](https://github.com/Ericsii/FAST_LIO_ROS2/tree/ros2)，这是第三方移植，应固定经现场构建、录包回放和运动测试确认的 commit，不把 `main` 或 ROS 1 包当成 Humble 依赖。以下示例使用分离工作区，避免覆盖本仓库已有的 M10P 路径。
+[Livox-SDK2](https://github.com/Livox-SDK/Livox-SDK2)和 [livox_ros_driver2](https://github.com/Livox-SDK/livox_ros_driver2)均由 Livox 提供；旧的 `livox_ros_driver` / Livox-SDK 不适用 MID-360。HKU-MARS 的 [FAST_LIO 主仓库](https://github.com/hku-mars/FAST_LIO)是 ROS 1 包，本工作区使用 [Ericsii/FAST_LIO_ROS2 的 `ros2` 分支](https://github.com/Ericsii/FAST_LIO_ROS2/tree/ros2)快照，这是第三方移植。上游来源、固定 commit、许可证及本地构建调整见 [第三方依赖记录](../../third_party/README.md)。
 
-```bash
-source /opt/ros/humble/setup.bash
-sudo apt update
-sudo apt install -y git cmake build-essential libeigen3-dev libpcl-dev python3-dev
+当前远程统一工作区为 `~/ros2_ws_mid360`，目录分工如下：
 
-mkdir -p "$HOME/livox_ws/src"
-git clone https://github.com/Livox-SDK/Livox-SDK2.git "$HOME/livox_ws/Livox-SDK2"
-cmake -S "$HOME/livox_ws/Livox-SDK2" -B "$HOME/livox_ws/Livox-SDK2/build"
-cmake --build "$HOME/livox_ws/Livox-SDK2/build" -j2
-sudo cmake --install "$HOME/livox_ws/Livox-SDK2/build"
-sudo ldconfig
-
-git clone https://github.com/Livox-SDK/livox_ros_driver2.git "$HOME/livox_ws/src/livox_ros_driver2"
-cd "$HOME/livox_ws/src/livox_ros_driver2"
-./build.sh humble
-source "$HOME/livox_ws/install/setup.bash"
-
-mkdir -p "$HOME/fastlio_ws/src"
-git clone --recursive --branch ros2 --single-branch https://github.com/Ericsii/FAST_LIO_ROS2.git "$HOME/fastlio_ws/src/FAST_LIO_ROS2"
-cd "$HOME/fastlio_ws"
-rosdep install --from-paths src --ignore-src -r -y --rosdistro humble
-colcon build --symlink-install --packages-select fast_lio --cmake-args -DCMAKE_BUILD_TYPE=Release
-source "$HOME/fastlio_ws/install/setup.bash"
+```text
+ros2_ws_mid360/
+├── src/
+│   ├── livox_ros_driver2/    # ROS 2 消息、共享组件与驱动节点
+│   ├── fast_lio/             # FAST-LIO2 ROS 2 移植包
+│   └── kiwi_*/               # 平台、底盘、建图、导航与 Web
+├── third_party/
+│   └── livox_sdk2/           # SDK 源码，含 COLCON_IGNORE
+├── maps/                     # YAML/PGM、PCD、.versions、.routes
+├── build/                    # colcon 生成目录
+├── install/
+└── log/
 ```
 
-以上仓库地址和构建命令来自各自上游说明；`liblivox_lidar_sdk_shared.so` 找不到时先查 SDK 安装结果和动态链接器搜索路径。保存三个仓库的 `git rev-parse HEAD`、SDK/驱动版本和 `colcon` 日志，部署到第二台机器时按这些版本复现。本站点已完成远程源码编译与单元测试；实机数据链路仍应按下文核验。
+`COLCON_IGNORE` 使 colcon 不将 SDK 目录发现为独立包；`buildignore` 不是 colcon 的有效标记。`livox_ros_driver2` 的 CMake 会从 `third_party/livox_sdk2` 编译静态 SDK，并将它链接进驱动共享组件。SDK 构建产物位于 `build/livox_ros_driver2/`，无需 `sudo cmake --install`、`ldconfig` 或 `/usr/local/lib/liblivox_lidar_sdk_shared.so`。ROS 功能包仍按各自类型产生可执行程序、消息库和共享组件；`src/` 表示 ROS 包边界，不能将其中所有代码都视作动态库。
+
+首次构建或部署到新机器时，使用未加载其他 colcon 工作区的终端，安装 Humble 系统依赖后直接构建：
+
+```bash
+cd "$HOME/ros2_ws_mid360"
+source /opt/ros/humble/setup.bash
+sudo apt update
+sudo apt install -y git cmake build-essential libeigen3-dev libpcl-dev python3-vcstool
+if [ ! -d src/rf2o_laser_odometry ]; then
+  vcs import src < tools/platform_dependencies.repos
+  bash tools/apply_rf2o_patch.sh
+fi
+rosdep install --from-paths src --ignore-src -r -y --rosdistro humble \
+  --skip-keys=cmake_modules
+colcon build --symlink-install --parallel-workers 2 \
+  --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo
+source tools/activate_workspace.sh
+mkdir -p "$KIWI_WORKSPACE_ROOT/maps"
+colcon test --packages-select livox_ros_driver2 kiwi_base kiwi_platform lslidar_driver kiwi_slam kiwi_navigation kiwi_web \
+  --event-handlers console_direct+
+colcon test-result --verbose
+```
+
+RF2O 是保留的 M10P 链路依赖，按固定版本导入同一个 `src/`，不需要另一个工作区。
+`cmake_modules` 是它的上游清单中不再使用的 ROS 1 字段，当前 CMake 直接查找 Eigen3，
+因此 rosdep 跳过此键。其他依赖照常安装。
+
+本仓库已固定 ROS 2 Humble 的 CMake 和包清单，直接使用上述 `colcon build`。
+当前 `src/livox_ros_driver2/build.sh humble` 也是非破坏的统一工作区构建入口，只构建驱动及其依赖；
+它不会像原上游脚本那样清空整个工作区或替换清单。
+
+加载脚本先清理先前登记的其他 colcon 工作区路径，再加载 Humble 和当前 `install/local_setup.bash`，避免重载旧 overlay。它会核对 `livox_ros_driver2`、`fast_lio`、`kiwi_platform`、`kiwi_base`、`kiwi_slam`、`kiwi_navigation` 的包前缀均位于当前工作区。可独立核对：
+
+```bash
+ros2 pkg prefix livox_ros_driver2
+ros2 pkg prefix fast_lio
+```
+
+两者必须位于 `/home/a/ros2_ws_mid360/install/`；若显示旧 `livox_ws` 或 `fastlio_ws`，当前终端不能作为统一部署的验证环境。迁移保留旧分离工作区和原 `~/ros2_ws`，运行入口与地图目录使用新布局；不要跨机器复制生成的 `build/`、`install/`、`log/`。
 
 ## 3. 配置设备 IP、接收 IP 和 UDP 端口
 
@@ -73,8 +103,7 @@ source "$HOME/fastlio_ws/install/setup.bash"
 驱动可先按官方 ROS 2 入口 `ros2 launch livox_ros_driver2 msg_MID360_launch.py` 独立启动；该 launch 默认读取其安装目录的 `MID360_config.json`，因此须确认启动日志显示的配置文件正是改过的站点文件。若用外部 JSON，可直接给节点参数 `user_config_path`，关键参数与[官方 launch](https://github.com/Livox-SDK/livox_ros_driver2/blob/master/launch_ROS2/msg_MID360_launch.py)对应：
 
 ```bash
-source /opt/ros/humble/setup.bash
-source "$HOME/livox_ws/install/setup.bash"
+source "$HOME/ros2_ws_mid360/tools/activate_workspace.sh"
 ros2 run livox_ros_driver2 livox_ros_driver2_node --ros-args \
   -p user_config_path:=/绝对路径/MID360_config.json \
   -p xfer_format:=1 -p multi_topic:=0 -p data_src:=0 \
@@ -82,11 +111,10 @@ ros2 run livox_ros_driver2 livox_ros_driver2_node --ros-args \
   -p cmdline_input_bd_code:=livox0000000001
 ```
 
-另开终端，加载 Livox 工作区，并在**相同的 ROS_DOMAIN_ID 和 RMW 设置**下核验：
+另开终端，加载统一工作区，并在**相同的 ROS_DOMAIN_ID 和 RMW 设置**下核验：
 
 ```bash
-source /opt/ros/humble/setup.bash
-source "$HOME/livox_ws/install/setup.bash"
+source "$HOME/ros2_ws_mid360/tools/activate_workspace.sh"
 ros2 topic type /livox/lidar
 ros2 topic type /livox/imu
 ros2 topic hz /livox/lidar
@@ -99,9 +127,7 @@ ros2 topic echo /livox/imu --once
 复制 `fast_lio/config/mid360.yaml` 为站点参数文件，现场核对话题、时间同步和以下外参，先设 `pcd_save_en: false`。驱动已正常推送后，在另一个终端启动：
 
 ```bash
-source /opt/ros/humble/setup.bash
-source "$HOME/livox_ws/install/setup.bash"
-source "$HOME/fastlio_ws/install/setup.bash"
+source "$HOME/ros2_ws_mid360/tools/activate_workspace.sh"
 ros2 launch fast_lio mapping.launch.py \
   config_path:=/站点参数所在目录 config_file:=mid360.yaml rviz:=false
 ros2 topic type /Odometry
@@ -124,32 +150,26 @@ AMCL 要求已有的**二维 OccupancyGrid 地图**和 `sensor_msgs/msg/LaserSca
 
 ## 6. 使用本仓库的 MID360 专用链路
 
-先停止原 M10P/RF2O/旧 EKF/旧 SLAM Toolbox 启动进程及上文的独立驱动调试进程。新入口不会修改 `active_platform.yaml` 的旧链路；活动底盘须仍为 `tracked_pwm`，两个入口不能同时运行。远程原 `~/ros2_ws` 有大量未提交修改，本站点将本分支部署在独立的 `~/ros2_ws_mid360`，没有覆盖原工作区。安装 `sensor_msgs_py`，编译该工作区后依次加载 Livox、FAST-LIO、MID360 工作区的环境：
+先停止原 M10P/RF2O/旧 EKF/旧 SLAM Toolbox 启动进程及上文的独立驱动调试进程。活动底盘须为 `tracked_pwm`，两个入口不能同时运行。远程原 `~/ros2_ws` 保留；新入口仅使用统一的 `~/ros2_ws_mid360`。按第 2 节构建完成后，每个运行、录包和检查终端只需：
 
 ```bash
-sudo apt install -y ros-humble-sensor-msgs-py
-source /opt/ros/humble/setup.bash
-source "$HOME/livox_ws/install/setup.bash"
-source "$HOME/fastlio_ws/install/setup.bash"
-cd "$HOME/ros2_ws_mid360"
-colcon build --symlink-install --packages-up-to kiwi_navigation --parallel-workers 2
-source install/setup.bash
+source "$HOME/ros2_ws_mid360/tools/activate_workspace.sh"
 ```
 
-本仓库的启动器根据**实机** `lidar_interface`、`host_ip`、`lidar_ip` 生成 Livox JSON，启动前会检查主机该网卡已有对应 IPv4 地址且去往雷达的路由确实经过该网卡。它不修改系统 IP；先执行第 1 节的临时地址测试，并在现场确认后将地址写入该网卡持久配置。`map_pcd` 必须是可写目录下的绝对路径，FAST-LIO 的 PCD 保存服务写入此路径；二维地图由 SLAM Toolbox 另存。将下方三个值替换为现场读数：
+本仓库的启动器根据**实机** `lidar_interface`、`host_ip`、`lidar_ip` 生成 Livox JSON，启动前会检查主机该网卡已有对应 IPv4 地址且去往雷达的路由确实经过该网卡。它不修改系统 IP；先执行第 1 节的临时地址测试，并在现场确认后将地址写入该网卡持久配置。`map_pcd` 留空时默认写入统一工作区根目录 `maps/mid360_map.pcd` 并创建 `maps/`；显式覆盖时必须使用可写目录下的绝对路径。FAST-LIO 的 PCD 保存服务写入此路径；二维地图由 SLAM Toolbox 另存。将下方三个值替换为现场读数：
 
 ```bash
-mkdir -p "$HOME/maps"
+mkdir -p "$KIWI_WORKSPACE_ROOT/maps"
 LIDAR_IF=enp2s0
 HOST_IP=192.168.1.50
 LIDAR_IP=192.168.1.117
 ros2 launch kiwi_navigation mid360_navigation.launch.py \
   mode:=mapping lidar_interface:="$LIDAR_IF" \
   host_ip:="$HOST_IP" lidar_ip:="$LIDAR_IP" \
-  map_pcd:="$HOME/maps/mid360_3d.pcd" use_rviz:=true
+  map_pcd:="$KIWI_WORKSPACE_ROOT/maps/mid360_3d.pcd" use_rviz:=true
 
 # 建图完成后，在另一个已加载相同环境的终端保存二维地图：
-ros2 run nav2_map_server map_saver_cli -f "$HOME/maps/mid360_2d"
+ros2 run nav2_map_server map_saver_cli -f "$KIWI_WORKSPACE_ROOT/maps/mid360_2d"
 # 如需保存 FAST-LIO 当前三维点云，调用移植版的服务；长时间建图注意内存。
 ros2 service call /map_save std_srvs/srv/Trigger '{}'
 ```
@@ -160,11 +180,29 @@ ros2 service call /map_save std_srvs/srv/Trigger '{}'
 
 ```bash
 ros2 launch kiwi_navigation mid360_navigation.launch.py \
-  mode:=localization map:="$HOME/maps/mid360_2d.yaml" \
+  mode:=localization map:="$KIWI_WORKSPACE_ROOT/maps/mid360_2d.yaml" \
   lidar_interface:="$LIDAR_IF" host_ip:="$HOST_IP" \
   lidar_ip:="$LIDAR_IP" use_rviz:=true
 ```
 
 在 RViz 设定初始位姿，核对 AMCL 的 `map → odom` 与真实位置吻合后，再下发低速导航目标。定位模式不运行 SLAM Toolbox，故 AMCL 是唯一 `map → odom` 发布者。AMCL 利用二维地图给出全局重定位，FAST-LIO2 持续给出局部三维运动估计；这不等于点云在既有三维地图上的 ICP 重定位。`/cmd_vel` 先经 `mid360_motion_gate`，仅当 LIO 里程计和投影扫描时间戳都在 0.5 秒内才转发至底盘 `/mid360/cmd_vel_safe`，失效时持续发送零速；底盘本身还有 0.2 秒命令看门狗。C 板 IMU 仍可在 `/chassis/imu/data_raw` 查看，但不会影响该定位链。
 
+历史部署记录（以下 `/home/a/maps` 是 2026-09-27 的原始保存路径；当前地图目录已统一为工作区根目录 `maps/`）：
+
 2026-09-27 静止实机检查已完成：有线网卡 `192.168.1.50/24`、雷达 `192.168.1.117`，Livox CustomMsg 约 10 Hz、内置 IMU 约 200 Hz、FAST-LIO2 三维里程计和 `/scan_mid360` 均约 10 Hz。抽查的一帧 720 束二维扫描有 517 束有限距离。SLAM Toolbox 发布 0.05 m 栅格图并成功保存到 `/home/a/maps/mid360_stationary_smoke.yaml` 与 `.pgm`；FAST-LIO `/map_save` 返回成功，生成 `/home/a/maps/mid360_stationary_3d_smoke.pcd`（57,970 点）。用该测试图启动 AMCL，设初始位姿后 `map → odom` 可查询，Nav2 托管节点进入 active。带底盘节点的零速检查确认 `/dev/robomaster_c` 打开、C 板原始 IMU 约 100 Hz、门控输出全零。上述文件仅是**静止接口检查产物**，不能用于实际导航；还须在受控区域完成外参、时间同步、点云/栅格地图质量、行驶漂移与 AMCL 重定位验证后，才下发导航目标。
+
+
+## 7. 统一工作区整合时的现场条件
+
+2026-10-08 用户确认本次只有上位机，雷达和 C 板均未连接，验收目标为统一工作区的软件构建、测试与 Web 正常使用。远程检查显示 `enp2s0` 为 DOWN、没有 IPv4 地址，`/dev/robomaster_c` 不存在，检查时未运行 ROS 进程，均符合本次测试条件。去往 `192.168.1.117` 的路由经过 Wi-Fi 网关，因此当前 `ping` 返回不能作为雷达直连在线证据。Web 应能启动并如实显示外设未连接，硬件链路的运动、地图质量与定位精度不在本次软件验收范围。后续接回外设后按第 4–6 节核验。
+
+整合完成：本地和远程各 10 个 ROS 包全量编译成功。所选 7 个功能包测试均无错误、
+无失败，其中 Livox 内嵌 SDK/消息烟测 3 项、Web 40 项通过。双端 FAST-LIO 无输入
+启动、服务发现和 SIGINT 退出通过；日志目录不可写时会关闭日志并正常退出。
+固定位置夹具下 Nav2 的 8 个生命周期节点激活、速度路由和 10 个子进程正常退出通过。
+原动态 TF 夹具曾触发远程 TF/scan 锁等待，固定位置夹具改用静态 TF 后退出通过，
+该结果不代表真实运动中的动态 TF 已验收。远程 Web 五个页面、地图读取/导出通过，
+未接外设时启动建图报告网卡缺少主机 IP 并返回空闲模式。旧地图已复制到
+`/home/a/ros2_ws_mid360/maps/`，原 `~/maps` 和旧分离工作区保留。
+
+根 README 仅保留当前 MID360S 链路的原生一行命令，不增加统一命令封装层。

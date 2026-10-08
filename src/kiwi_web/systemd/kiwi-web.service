@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 Environment="KIWI_WORKSPACE=@WORKSPACE@"
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/bin/bash -c 'source /opt/ros/humble/setup.bash && source "${KIWI_WORKSPACE}/install/setup.bash" && exec ros2 launch kiwi_web web.launch.py workspace:="${KIWI_WORKSPACE}"'
+ExecStart=/bin/bash -c 'source "${KIWI_WORKSPACE}/tools/activate_workspace.sh" && exec ros2 launch kiwi_web web.launch.py workspace:="${KIWI_WORKSPACE}"'
 Restart=on-failure
 RestartSec=3
 KillSignal=SIGINT

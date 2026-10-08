@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
-<!-- Kiwi 三轮全向底盘与镭神 M10P 的二维建图集成包。 -->
+<!-- Kiwi/履带底盘的 M10P 与 MID360S 建图集成包。 -->
 <package format="3">
   <name>kiwi_slam</name>
   <version>0.1.0</version>
-  <description>SLAM Toolbox integration for the Kiwi base and LSLIDAR M10P.</description>
+  <description>M10P and MID360S/FAST-LIO2 integration with SLAM Toolbox.</description>
   <maintainer email="maintainer@example.com">MSHEEP</maintainer>
   <license>Apache-2.0</license>
 
@@ -12,6 +12,8 @@
 
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>lslidar_driver</exec_depend>
+  <exec_depend>livox_ros_driver2</exec_depend>
+  <exec_depend>fast_lio</exec_depend>
   <exec_depend>diagnostic_msgs</exec_depend>
   <exec_depend>kiwi_base</exec_depend>
   <exec_depend>kiwi_platform</exec_depend>

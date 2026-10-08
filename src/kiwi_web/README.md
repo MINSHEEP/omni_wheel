@@ -28,12 +28,16 @@ rosbridge 或外部云服务依赖。Node.js 仅用于可选的浏览器自动�
 ```bash
 cd /path/to/your/workspace
 source /opt/ros/humble/setup.bash
-rosdep install --from-paths src --ignore-src -r -y --rosdistro humble
+rosdep install --from-paths src --ignore-src -r -y --rosdistro humble \
+  --skip-keys=cmake_modules
 colcon build --symlink-install --packages-up-to kiwi_web \
   --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo
-source install/setup.bash
+source tools/activate_workspace.sh
 ros2 launch kiwi_web web.launch.py
 ```
+
+首次检出时，先按[根目录环境准备](../../README.md#1-环境准备与底盘切换)
+补齐固定版本 RF2O 依赖并应用补丁；`cmake_modules` 是其不再使用的 ROS 1 清单字段。
 
 默认监听 `0.0.0.0:8080`。用 `hostname -I` 查询设备 IP，然后在局域网电脑/手机中打开
 `http://该IP:8080`。如果系统启用了防火墙，允许可信局域网访问 TCP 8080 即可；不需要向
@@ -41,14 +45,15 @@ ros2 launch kiwi_web web.launch.py
 
 默认使用独立 `ROS_DOMAIN_ID=42`，避免同一局域网其他 ROS 项目的同名话题影响底盘。
 服务启动的硬件、SLAM、Nav2 节点自动继承此域。命令行调试时先运行
-`source tools/activate_workspace.sh`（完整工作区），只构建 Web 时先执行
-`export ROS_DOMAIN_ID=42`；录包和 RViz 终端也要在同一个域。
+`source tools/activate_workspace.sh`；录包和 RViz 终端也要在同一个域。该脚本要求统一工作区的 Livox、FAST-LIO2 和生产包均已构建。
 可在 `web.yaml` 修改 `ros_domain_id`；如果启动前显式导出了 `ROS_DOMAIN_ID`，环境变量优先。
 
-履带 MID360S 实机位于 `a@192.168.66.112`，已部署在 `~/ros2_ws_mid360`。启动 Web 前必须按根目录 README 的 MID360S 节依次加载 `/opt/ros/humble`、`~/livox_ws`、`~/fastlio_ws` 和 `~/ros2_ws_mid360` 四层环境；雷达经 `enp2s0=192.168.1.50/24` 连接 `192.168.1.117`，SSH 仍走 Wi-Fi。与命令行工具共用 `~/maps`：
+履带 MID360S 实机位于 `a@192.168.66.112`，统一工作区为 `~/ros2_ws_mid360`。Livox 驱动、FAST-LIO2 和其他 ROS 功能包均由该工作区构建；SDK2 位于 `third_party/livox_sdk2`，由驱动嵌入编译为静态库，无需加载旧分离工作区或安装系统 Livox 共享库。预期雷达网络为 `enp2s0=192.168.1.50/24` 连接 `192.168.1.117`，SSH 走 Wi-Fi；当前硬件在线条件见根目录 README。Web 与命令行工具共用工作区根目录 `maps/`：
 
 ```bash
-ros2 launch kiwi_web web.launch.py maps_dir:="$HOME/maps"
+cd "$HOME/ros2_ws_mid360"
+source tools/activate_workspace.sh
+ros2 launch kiwi_web web.launch.py maps_dir:=maps
 ```
 
 首次打开 `http://192.168.66.112:8080` 时，服务仅提供网页，不启动传感器或底盘。可在 `web.yaml` 调整实机网络参数；Web 启动建图或导航前会校验网卡 IP/路由。该配置仅适用于这台实机，在另一台设备上使用前必须改成其实际地址。
@@ -117,7 +122,7 @@ ros2 launch kiwi_web web.launch.py port:=8080 \
   slam_params_file:=src/kiwi_slam/config/slam_toolbox.yaml  # Kiwi 示例；履带需用专属文件
 
 # 在这台 MID360S 实机上显式指定地图目录及网络参数时：
-ros2 launch kiwi_web web.launch.py maps_dir:="$HOME/maps" \
+ros2 launch kiwi_web web.launch.py maps_dir:=maps \
   sensor_pipeline:=mid360s lidar_interface:=enp2s0 \
   host_ip:=192.168.1.50 lidar_ip:=192.168.1.117 lidar_model:=Mid360s
 ```
@@ -141,7 +146,7 @@ journalctl --user -u kiwi-web.service -f
 用户服务在用户会话启动时启动；无人登录启动由设备管理员启用该用户的 linger。
 安装服务前先退出前台启动的 Web 服务。同一 ROS 域只允许一个本地服务实例。
 
-迁移时复制 `src/`、工作空间下的 `maps/`（包括 `.versions/`、`.routes/` 隐藏目录），
+迁移时复制 `src/`、`third_party/`、工作空间下的 `maps/`（包括 `.versions/`、`.routes/` 隐藏目录），
 以及需要的项目工具与文档。不要跨设备搬运 `build/`、`install/`、`log/`；
 在目标设备安装 ROS 2 Humble 依赖并重新构建。硬件串口名称和安装外参在所属功能包修改。
 前端使用当前页面的 IP / 端口，不需要修改 JS；本机 IP、用户名和参考页面目录均不是运行依赖。
@@ -192,8 +197,7 @@ ROS /map /plan /tf + 二维投影扫描 -> HTTP PNG + WS state -> Browser
 ## 验证
 
 ```bash
-source /opt/ros/humble/setup.bash
-source install/setup.bash
+source tools/activate_workspace.sh
 colcon test --packages-select kiwi_platform kiwi_base lslidar_driver kiwi_slam kiwi_navigation kiwi_web \
   --event-handlers console_direct+
 colcon test-result --verbose

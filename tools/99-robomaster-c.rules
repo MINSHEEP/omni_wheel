@@ -1,0 +1,1 @@
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", ATTRS{serial}=="364E30673533", SYMLINK+="robomaster_c", GROUP="dialout", MODE="0660"

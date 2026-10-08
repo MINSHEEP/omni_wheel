@@ -47,6 +47,8 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_mid360_scan_projector test/test_mid360_scan_projector.py)
   ament_add_pytest_test(test_mid360_contract test/test_mid360_contract.py)
   ament_add_pytest_test(test_mid360_motion_gate test/test_mid360_motion_gate.py)
+  ament_add_pytest_test(test_mid360_web_launch test/test_mid360_web_launch.py)
+  ament_add_pytest_test(test_workspace_paths test/test_workspace_paths.py)
 endif()
 
 ament_package()

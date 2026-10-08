@@ -17,6 +17,7 @@ from launch_ros.actions import Node
 from kiwi_platform import load_profile
 from kiwi_slam.mid360_contract import validate_mount
 from kiwi_slam.mid360_network import driver_config, validate_network
+from kiwi_slam.workspace_paths import default_map_pcd
 
 
 def _value(context, name):
@@ -46,7 +47,8 @@ def _setup(context):
     motion_input = _value(context, "motion_gate_input_topic")
     if not motion_input.startswith("/") or motion_input == "/mid360/cmd_vel_safe":
         raise ValueError("MID360 速度门控输入必须是独立的绝对话题")
-    pcd = Path(_value(context, "map_pcd")).expanduser()
+    pcd_value = _value(context, "map_pcd")
+    pcd = Path(pcd_value).expanduser() if pcd_value else default_map_pcd()
     if not pcd.is_absolute() or not pcd.parent.is_dir():
         raise ValueError("map_pcd 必须是父目录已存在的绝对 PCD 路径")
     z_min = float(_value(context, "scan_z_min"))
@@ -115,7 +117,7 @@ def _setup(context):
         try:
             get_package_share_directory("livox_ros_driver2")
         except Exception as error:
-            raise ValueError("缺少 livox_ros_driver2；请先安装 Livox-SDK2 和官方 ROS 2 驱动") from error
+            raise ValueError("缺少 livox_ros_driver2；请先编译并加载统一工作区") from error
         host, lidar = validate_network(_value(context, "lidar_interface"),
                                        _value(context, "host_ip"),
                                        _value(context, "lidar_ip"))
@@ -140,13 +142,14 @@ def generate_launch_description():
         DeclareLaunchArgument("mount_file", default_value=""),
         DeclareLaunchArgument("fastlio_params_file", default_value=""),
         DeclareLaunchArgument("mode", default_value="mapping"),
-        DeclareLaunchArgument("map_pcd", default_value="/tmp/mid360_map.pcd"),
+        DeclareLaunchArgument("map_pcd", default_value="",
+                              description="空值保存到工作区 maps/mid360_map.pcd"),
         DeclareLaunchArgument("start_base", default_value="true"),
         DeclareLaunchArgument("start_driver", default_value="true"),
         DeclareLaunchArgument("motion_gate_input_topic", default_value="/cmd_vel"),
-        DeclareLaunchArgument("lidar_interface", default_value=""),
-        DeclareLaunchArgument("host_ip", default_value=""),
-        DeclareLaunchArgument("lidar_ip", default_value=""),
+        DeclareLaunchArgument("lidar_interface", default_value="enp2s0"),
+        DeclareLaunchArgument("host_ip", default_value="192.168.1.50"),
+        DeclareLaunchArgument("lidar_ip", default_value="192.168.1.117"),
         DeclareLaunchArgument("lidar_model", default_value="Mid360s"),
         DeclareLaunchArgument("scan_z_min", default_value="0.10"),
         DeclareLaunchArgument("scan_z_max", default_value="1.20"),

@@ -14,7 +14,9 @@ coverage.xml
 
 # rosbag 与运行时输出
 /bags/
-/maps/
+/maps/*
+!/maps/.gitkeep
+/third_party/livox_sdk2/build/
 *.bag
 *.db3
 *.mcap

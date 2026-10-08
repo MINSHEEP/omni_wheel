@@ -17,9 +17,12 @@ from rclpy.executors import SingleThreadedExecutor
 from geometry_msgs.msg import TransformStamped
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
-from tf2_ros import TransformBroadcaster
+from tf2_ros import StaticTransformBroadcaster
 from lifecycle_msgs.srv import GetState
+from nav2_msgs.srv import ManageLifecycleNodes
 from launch import LaunchDescription, LaunchService, LaunchContext
+from launch.actions import RegisterEventHandler
+from launch.event_handlers import OnProcessExit
 from kiwi_web.maps import MapStore
 from kiwi_web.ros_bridge import ros_future
 
@@ -27,17 +30,15 @@ from kiwi_web.ros_bridge import ros_future
 class Sensors(Node):
     def __init__(self, pipeline="legacy"):
         super().__init__("web_nav_runtime_fixture")
-        self.tf = TransformBroadcaster(self)
+        # 夹具没有运动，固定 TF 使用 transient-local 静态广播。动态广播
+        # 与同时间戳 scan 的异步到达会制造不必要的 waitForTransform 请求。
+        self.tf = StaticTransformBroadcaster(self)
         self.scan = self.create_publisher(
             LaserScan, "/scan_mid360" if pipeline == "mid360s" else "/scan", 1
         )
         self.odom = self.create_publisher(
             Odometry, "/fastlio/odom_base" if pipeline == "mid360s" else "/odometry/filtered", 1
         )
-        self.create_timer(0.05, self.tick)
-
-    def tick(self):
-        stamp = self.get_clock().now().to_msg()
         transforms = []
         for parent, child, x in [
             ("map", "odom", 0.0),
@@ -45,13 +46,17 @@ class Sensors(Node):
             ("base_footprint", "lidar_link", 0.0),
         ]:
             t = TransformStamped()
-            t.header.stamp = stamp
+            t.header.stamp = self.get_clock().now().to_msg()
             t.header.frame_id = parent
             t.child_frame_id = child
             t.transform.rotation.w = 1.0
             t.transform.translation.x = x
             transforms.append(t)
         self.tf.sendTransform(transforms)
+        self.timer = self.create_timer(0.05, self.tick)
+
+    def tick(self):
+        stamp = self.get_clock().now().to_msg()
         s = LaserScan()
         s.header.stamp = stamp
         s.header.frame_id = "lidar_link"
@@ -100,8 +105,15 @@ async def main():
             nav2_params_file="",
         )
         actions = module.setup(context)[1:]  # Do not start real hardware.
+        process_results = []
+
+        def record_exit(event, _context):
+            process_results.append((event.process_name, event.returncode))
+
         service = LaunchService()
-        service.include_launch_description(LaunchDescription(actions))
+        service.include_launch_description(
+            LaunchDescription([RegisterEventHandler(OnProcessExit(on_exit=record_exit)), *actions])
+        )
         launch_task = asyncio.create_task(service.run_async())
         rclpy.init()
         node = Sensors(pipeline)
@@ -148,12 +160,34 @@ async def main():
                 flush=True,
             )
         finally:
-            await service.shutdown()
-            await launch_task
-            executor.shutdown()
-            thread.join(3)
-            node.destroy_node()
-            rclpy.shutdown()
+            try:
+                # 先停止夹具数据并让已排队的 scan/TF 回调排空，避免在 costmap
+                # 销毁消息过滤器期间仍向它投递数据；executor 继续处理退出服务。
+                node.timer.cancel()
+                await asyncio.sleep(1)
+                # 在 ROS executor 仍有效时清理 costmap 的消息过滤器与 TF 线程。
+                # 同时 SIGINT 全部 active 节点会使 Humble 的清理回调互相等待。
+                for manager in ("lifecycle_manager_navigation", "lifecycle_manager_localization"):
+                    client = node.create_client(ManageLifecycleNodes, f"/{manager}/manage_nodes")
+                    try:
+                        assert await asyncio.to_thread(client.wait_for_service, timeout_sec=2), manager
+                        request = ManageLifecycleNodes.Request(command=ManageLifecycleNodes.Request.SHUTDOWN)
+                        response = await ros_future(client.call_async(request), 10)
+                        assert response.success, f"{manager} 退出失败"
+                    finally:
+                        node.destroy_client(client)
+                print("NAV2_SHUTDOWN_PASS: lifecycle managers cleaned up before process shutdown", flush=True)
+            finally:
+                await service.shutdown()
+                await launch_task
+                executor.shutdown()
+                thread.join(3)
+                node.destroy_node()
+                rclpy.shutdown()
+                # navigation_core 展开为 8 个生命周期节点与 2 个 manager。
+                assert len(process_results) == len(names) + 2, process_results
+                assert all(code == 0 for _, code in process_results), process_results
+                print("NAV2_EXIT_PASS: all launch processes exited with code 0", flush=True)
 
 
 if __name__ == "__main__":
